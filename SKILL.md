@@ -50,7 +50,7 @@ Do not run more than 3 fix/re-review cycles per PR. If the loop stops because th
 The skill is meant to auto-trigger after `gh pr create`. If the agent forgets — e.g., the workflow that created the PR ended the turn at the PR URL without chaining into this skill — the loop must be invoked retroactively at the next opportunity:
 
 - At session start (or whenever the skill is loaded), check if the current branch has an open PR.
-- If yes, AND the latest commit has not been re-reviewed (no Gemini review activity on or after that commit's SHA), AND the agent has posted zero `@gemini-code-assist please review` comments, run the loop now as catch-up cycle 0/1.
+- If yes, AND the latest commit has not been re-reviewed (no Gemini review activity on or after that commit's SHA), AND the agent has posted zero re-review trigger comments (e.g., "@gemini-code-assist please review"), run the loop now as catch-up cycle 0/1.
 - This is a recovery clause only — it should not run silently on every session start in repos that don't use Gemini Code Assist. Skip if `gemini-code-assist` is not a configured reviewer on the repo.
 
 ## Follow-up Pushes After the Loop Stops
