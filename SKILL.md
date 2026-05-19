@@ -39,7 +39,7 @@ Stop the loop and report status instead of pushing or asking Gemini again when a
 2. **All clean** — There are no `UNRESOLVED` actionable Gemini threads after stale-thread cleanup.
 3. **Human decision required** — All remaining `UNRESOLVED` threads are informational, duplicate, contradictory, or require a human product/design/security decision.
 4. **Test regression** — Tests fail after a fix attempt and the failure is not clearly caused by the latest Gemini-addressing change.
-5. **No progress** — A thread that was `UNRESOLVED` in the previous cycle is still `UNRESOLVED` after a fix attempt AND the surrounding code/hunk was not changed AND no maintainer reply was posted on it. This catches genuine stuckness — distinct from `ADDRESSED_BY_REPLY`, which is intentional deferral and should not trip this condition.
+5. **No progress** — A thread that was UNRESOLVED in the previous cycle is still UNRESOLVED after a fix attempt AND the surrounding code/hunk was not changed AND no substantive maintainer reply (as defined in Thread States) was posted on it. This catches genuine stuckness — distinct from ADDRESSED_BY_REPLY, which is intentional deferral and should not trip this condition.
 
 If a thread was deliberately deferred via a substantive reply (state `ADDRESSED_BY_REPLY`), treat it as condition 3 (human decision), not condition 5 (no progress). The loop must not re-try the same fix on the same thread cycle after cycle.
 
