@@ -11,17 +11,56 @@ Use this skill to run the full GitHub PR loop: after PR creation, wait for `gemi
 
 Prefer thread-aware review data over flat PR comments. GitHub review threads preserve `isResolved`, `isOutdated`, file paths, line anchors, and diff hunks, which are necessary for reliable automation.
 
+## Thread States
+
+Each Gemini review thread is in one of these states. The fetch script tags each thread accordingly, and the stop logic consumes the tag:
+
+- **`RESOLVED`** — Gemini or the maintainer has explicitly resolved the thread. Skip.
+- **`OUTDATED`** — The line anchor has moved out from under the thread (the code Gemini commented on no longer exists at that position). Auto-resolved by the script. Skip.
+- **`ADDRESSED_BY_REPLY`** — Unresolved, but the current user (or another maintainer) has posted a substantive reply (≥30 chars, not a bot, not a token "ack"). Treated as a human decision to defer/wontfix; the loop does not try to fix this thread again. The script SHOULD resolve these via GraphQL on the next pass (see "GitHub Write Safety" below).
+- **`UNRESOLVED`** — Actionable. Drives the next fix attempt.
+
+A thread can transition `UNRESOLVED → ADDRESSED_BY_REPLY → RESOLVED` (reply + auto-resolve), or `UNRESOLVED → fixed in code → OUTDATED → RESOLVED` (line moves out, auto-resolved).
+
+## Cycle Counting
+
+A **cycle** is one `@gemini-code-assist please review` re-review request posted by the agent after Gemini's initial review.
+
+- **Cycle 0:** Gemini's initial automatic review at PR open. Free; does not count toward the cap.
+- **Cycles 1–3:** Each subsequent re-review request the agent posts. After cycle 3, hard stop.
+- Replies posted via `repos/.../pulls/comments/{id}/replies` do **NOT** count as a cycle.
+- Pushes to the PR branch without a re-review request do **NOT** count as a cycle.
+
 ## Stopping Conditions
 
 Stop the loop and report status instead of pushing or asking Gemini again when any condition is true:
 
-- Gemini has already been asked to re-review the PR 3 times.
-- There are no unresolved, non-outdated, actionable Gemini threads after stale-thread cleanup.
-- The remaining Gemini threads are informational, duplicate, contradictory, or require a human product/design/security decision.
-- Tests fail after a fix attempt and the failure is not clearly caused by the latest Gemini-addressing change.
-- The same actionable thread fingerprint appears after a fix attempt, indicating no progress.
+1. **Cap reached** — Gemini has already been asked to re-review the PR 3 times (cycle 3 used).
+2. **All clean** — There are no `UNRESOLVED` actionable Gemini threads after stale-thread cleanup.
+3. **Human decision required** — All remaining `UNRESOLVED` threads are informational, duplicate, contradictory, or require a human product/design/security decision.
+4. **Test regression** — Tests fail after a fix attempt and the failure is not clearly caused by the latest Gemini-addressing change.
+5. **No progress** — A thread that was UNRESOLVED in the previous cycle is still UNRESOLVED after a fix attempt AND the surrounding code/hunk was not changed AND no substantive maintainer reply (as defined in Thread States) was posted on it. This catches genuine stuckness — distinct from ADDRESSED_BY_REPLY, which is intentional deferral and should not trip this condition.
+
+If a thread was deliberately deferred via a substantive reply (state `ADDRESSED_BY_REPLY`), treat it as condition 3 (human decision), not condition 5 (no progress). The loop must not re-try the same fix on the same thread cycle after cycle.
 
 Do not run more than 3 fix/re-review cycles per PR. If the loop stops because the cap is reached, summarize the latest unresolved actionable comments and leave the PR for a human decision.
+
+## Recovery: Missed Initial Trigger
+
+The skill is meant to auto-trigger after `gh pr create`. If the agent forgets — e.g., the workflow that created the PR ended the turn at the PR URL without chaining into this skill — the loop must be invoked retroactively at the next opportunity:
+
+- At session start (or whenever the skill is loaded), check if the current branch has an open PR.
+- If yes, AND the latest commit has not been re-reviewed (no Gemini review activity on or after that commit's SHA), AND the agent has posted zero re-review trigger comments (e.g., "@gemini-code-assist please review"), run the loop now as catch-up cycle 0/1.
+- This is a recovery clause only — it should not run silently on every session start in repos that don't use Gemini Code Assist. Skip if `gemini-code-assist` is not a configured reviewer on the repo.
+
+## Follow-up Pushes After the Loop Stops
+
+If the agent pushes new commits to a PR branch after the loop has already stopped:
+
+- If any of those commits touch files where Gemini left `UNRESOLVED` or `ADDRESSED_BY_REPLY` threads, automatically resume the loop (subject to the 3-cycle cap).
+- Otherwise stay stopped — Gemini's own automatic re-review on the new commit will run unattended, and the agent need not coordinate.
+
+Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their own.
 
 ## Workflow
 
@@ -117,4 +156,13 @@ python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py -
 
 ## GitHub Write Safety
 
-This skill's default full loop includes committing, pushing, asking Gemini for re-review, and resolving outdated Gemini threads after PR creation or when the user asks for the Gemini loop. Do not resolve non-outdated review threads or submit GitHub reviews unless explicitly asked. Stop before publishing if the fixes are ambiguous, tests expose a regression, local unrelated changes make it unsafe to commit cleanly, or the PR has already reached the 3 re-review request cap.
+This skill's default full loop includes committing, pushing, asking Gemini for re-review, and resolving outdated Gemini threads after PR creation or when the user asks for the Gemini loop.
+
+**Resolution policy:**
+
+- **OUTDATED threads** — auto-resolved (line anchor no longer matches code).
+- **ADDRESSED_BY_REPLY threads** — auto-resolved on the next pass if the substantive reply criteria are met (see Thread States). This prevents the same thread from re-tripping the loop forever after a deliberate deferral. Skip if the user has said "don't resolve" earlier in the session.
+- **UNRESOLVED threads** — never resolved without an explicit "resolve" request from the user.
+- **Reviews (approve/request-changes)** — never submitted unless explicitly asked.
+
+Stop before publishing if the fixes are ambiguous, tests expose a regression, local unrelated changes make it unsafe to commit cleanly, or the PR has already reached the 3 re-review request cap.
