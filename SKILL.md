@@ -161,7 +161,7 @@ This skill's default full loop includes committing, pushing, asking Gemini for r
 **Resolution policy:**
 
 - **OUTDATED threads** — auto-resolved (line anchor no longer matches code).
-- **ADDRESSED_BY_REPLY threads** — auto-resolved on the next pass IF the maintainer's reply is ≥30 characters AND the maintainer is the current authenticated user (not a different reviewer's reply). This prevents the same thread from re-tripping the loop forever after a deliberate deferral. Skip if the user has said "don't resolve" earlier in the session.
+- **ADDRESSED_BY_REPLY threads** — auto-resolved on the next pass if the substantive reply criteria are met (see Thread States). This prevents the same thread from re-tripping the loop forever after a deliberate deferral. Skip if the user has said "don't resolve" earlier in the session.
 - **UNRESOLVED threads** — never resolved without an explicit "resolve" request from the user.
 - **Reviews (approve/request-changes)** — never submitted unless explicitly asked.
 
