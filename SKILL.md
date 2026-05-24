@@ -30,6 +30,15 @@ A **cycle** is one `@gemini-code-assist please review` re-review request posted 
 - **Cycles 1–3:** Each subsequent re-review request the agent posts. After cycle 3, hard stop.
 - Replies posted via `repos/.../pulls/comments/{id}/replies` do **NOT** count as a cycle.
 - Pushes to the PR branch without a re-review request do **NOT** count as a cycle.
+- **Only re-reviews posted by the agent itself count.** A human pinging `@gemini-code-assist` does not consume a cycle. The script auto-detects the agent's GitHub login via `gh api user`; override with `--agent-login NAME` or opt out with `--no-agent-filter`.
+
+## Severity Ordering
+
+Gemini prefixes inline review comments with a markdown image whose alt text is the severity (`critical` / `high` / `medium` / `low`). The script parses this and orders actionable threads `critical → high → medium → low → unknown`, so high-severity findings are reported and fixed first. The severity tag also appears in the per-thread markdown header, e.g. `## 1. src/auth.py:42 [high]`.
+
+## Loop Receipt
+
+Pass `--post-receipt` to leave a one-comment audit trail on the PR after the loop runs: cycles used, threads resolved (outdated + addressed-by-reply), threads still pending, and severity breakdown of remaining actionable threads. Use `--dry-run --post-receipt` to preview the receipt without posting.
 
 ## Stopping Conditions
 
