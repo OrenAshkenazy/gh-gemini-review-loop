@@ -18,6 +18,17 @@ DEFAULT_AUTHOR = "gemini-code-assist"
 DEFAULT_REREVIEW_LIMIT = 3
 REREVIEW_TRIGGER_RE = re.compile(r"@gemini-code-assist\b.*\breview\b", re.IGNORECASE | re.DOTALL)
 
+# Page sizes embedded in QUERY below. Used by the pagination guard to detect
+# when we may be silently dropping data.
+PAGE_LIMIT_REVIEW_THREADS = 100
+PAGE_LIMIT_REVIEWS = 100
+PAGE_LIMIT_PR_COMMENTS = 100
+PAGE_LIMIT_THREAD_COMMENTS = 50
+
+# Minimum reply length to count a non-bot comment as a substantive reply.
+# Filters out token acks like "ok", "ack", "thanks", "👍".
+ADDRESSED_BY_REPLY_MIN_CHARS = 30
+
 
 @dataclass(frozen=True)
 class PullRequest:
@@ -176,7 +187,10 @@ def fetch_threads(pr: PullRequest) -> dict[str, Any]:
         raise RuntimeError(f"Unexpected gh GraphQL shape: missing {exc}") from exc
 
 
-def resolve_thread(thread_id: str) -> None:
+def resolve_thread(thread_id: str, *, dry_run: bool = False, label: str = "thread") -> None:
+    if dry_run:
+        print(f"[dry-run] would resolve {label} {thread_id}", file=sys.stderr)
+        return
     run_gh(
         [
             "api",
@@ -189,17 +203,38 @@ def resolve_thread(thread_id: str) -> None:
     )
 
 
+def is_addressed_by_reply(thread: dict[str, Any], bot_author: str) -> bool:
+    """An unresolved thread where a non-bot human posted a substantive reply.
+
+    The reply is treated as a deliberate deferral (defer/wontfix/explanation).
+    The loop should not retry fixing the same thread cycle after cycle.
+    """
+    if thread.get("isResolved") or thread.get("isOutdated"):
+        return False
+    for comment in thread.get("comments", {}).get("nodes", []):
+        login = (comment.get("author") or {}).get("login") or ""
+        if not login or login == bot_author or login.endswith("[bot]"):
+            continue
+        body = (comment.get("body") or "").strip()
+        if len(body) >= ADDRESSED_BY_REPLY_MIN_CHARS:
+            return True
+    return False
+
+
 def filter_threads(
     pull_request: dict[str, Any],
     author: str,
     include_resolved: bool,
     include_outdated: bool,
+    include_addressed_by_reply: bool = False,
 ) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
     for thread in pull_request.get("reviewThreads", {}).get("nodes", []):
         if thread.get("isResolved") and not include_resolved:
             continue
         if thread.get("isOutdated") and not include_outdated:
+            continue
+        if not include_addressed_by_reply and is_addressed_by_reply(thread, author):
             continue
 
         comments = thread.get("comments", {}).get("nodes", [])
@@ -228,11 +263,66 @@ def outdated_unresolved_threads(pull_request: dict[str, Any], author: str) -> li
     return threads
 
 
-def resolve_outdated_threads(pull_request: dict[str, Any], author: str) -> int:
+def addressed_by_reply_threads(pull_request: dict[str, Any], author: str) -> list[dict[str, Any]]:
+    threads: list[dict[str, Any]] = []
+    for thread in pull_request.get("reviewThreads", {}).get("nodes", []):
+        if not is_addressed_by_reply(thread, author):
+            continue
+        comments = thread.get("comments", {}).get("nodes", [])
+        if any((comment.get("author") or {}).get("login") == author for comment in comments):
+            threads.append(thread)
+    return threads
+
+
+def resolve_outdated_threads(
+    pull_request: dict[str, Any], author: str, *, dry_run: bool = False
+) -> int:
     threads = outdated_unresolved_threads(pull_request, author)
     for thread in threads:
-        resolve_thread(thread["id"])
+        resolve_thread(thread["id"], dry_run=dry_run, label="outdated")
     return len(threads)
+
+
+def resolve_addressed_by_reply(
+    pull_request: dict[str, Any], author: str, *, dry_run: bool = False
+) -> int:
+    threads = addressed_by_reply_threads(pull_request, author)
+    for thread in threads:
+        resolve_thread(thread["id"], dry_run=dry_run, label="addressed-by-reply")
+    return len(threads)
+
+
+def pagination_warnings(pull_request: dict[str, Any]) -> list[str]:
+    """Return human-readable warnings when any GraphQL page hit its limit.
+
+    Hitting the limit means the script may be silently dropping data — the
+    loop should surface this so the user knows to paginate or scope the PR.
+    """
+    warnings: list[str] = []
+    pr_comments = pull_request.get("comments", {}).get("nodes", []) or []
+    reviews = pull_request.get("reviews", {}).get("nodes", []) or []
+    threads = pull_request.get("reviewThreads", {}).get("nodes", []) or []
+    if len(pr_comments) >= PAGE_LIMIT_PR_COMMENTS:
+        warnings.append(
+            f"PR comments hit page limit ({PAGE_LIMIT_PR_COMMENTS}); older comments may be missing."
+        )
+    if len(reviews) >= PAGE_LIMIT_REVIEWS:
+        warnings.append(
+            f"PR reviews hit page limit ({PAGE_LIMIT_REVIEWS}); older reviews may be missing."
+        )
+    if len(threads) >= PAGE_LIMIT_REVIEW_THREADS:
+        warnings.append(
+            f"reviewThreads hit page limit ({PAGE_LIMIT_REVIEW_THREADS}); older threads may be missing."
+        )
+    for thread in threads:
+        comments = thread.get("comments", {}).get("nodes", []) or []
+        if len(comments) >= PAGE_LIMIT_THREAD_COMMENTS:
+            thread_id = thread.get("id") or "(unknown)"
+            warnings.append(
+                f"thread {thread_id} comments hit page limit "
+                f"({PAGE_LIMIT_THREAD_COMMENTS}); older replies may be missing."
+            )
+    return warnings
 
 
 def filter_reviews(pull_request: dict[str, Any], author: str) -> list[dict[str, Any]]:
@@ -329,6 +419,7 @@ def render_markdown(pr: dict[str, Any], threads: list[dict[str, Any]], author: s
     reviews = filter_reviews(pr, author)
     rereviews = rereview_requests(pr)
     outdated = outdated_unresolved_threads(pr, author)
+    deferred = addressed_by_reply_threads(pr, author)
     lines = [
         f"# Gemini Code Assist Threads for PR #{pr.get('number')}",
         "",
@@ -337,6 +428,7 @@ def render_markdown(pr: dict[str, Any], threads: list[dict[str, Any]], author: s
         f"Reviews by author: {len(reviews)}",
         f"Re-review requests: {len(rereviews)}",
         f"Unresolved outdated threads: {len(outdated)}",
+        f"Addressed-by-reply threads: {len(deferred)}",
         f"Threads: {len(threads)}",
         "",
     ]
@@ -412,6 +504,32 @@ def main() -> int:
         action="store_true",
         help="Allow --resolve-outdated even when the re-review request cap has already been reached.",
     )
+    parser.add_argument(
+        "--resolve-addressed-by-reply",
+        dest="resolve_addressed_by_reply",
+        action="store_true",
+        default=True,
+        help=(
+            "Resolve unresolved threads where a non-bot maintainer posted a substantive reply "
+            "(>=%d chars). Enabled by default." % ADDRESSED_BY_REPLY_MIN_CHARS
+        ),
+    )
+    parser.add_argument(
+        "--no-resolve-addressed-by-reply",
+        dest="resolve_addressed_by_reply",
+        action="store_false",
+        help="Leave addressed-by-reply threads unresolved (they remain hidden from actionable output).",
+    )
+    parser.add_argument(
+        "--include-addressed-by-reply",
+        action="store_true",
+        help="Include addressed-by-reply threads in actionable output (default: hidden).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Do not call any GraphQL mutations; log intended writes to stderr instead.",
+    )
     args = parser.parse_args()
 
     try:
@@ -427,25 +545,54 @@ def main() -> int:
         else:
             pull_request = fetch_threads(pr)
         resolved_outdated = 0
+        resolved_addressed_by_reply = 0
         rereviews = rereview_requests(pull_request)
         limit_reached = len(rereviews) >= args.max_rereview_requests
-        if args.resolve_outdated and limit_reached and not args.ignore_loop_limit:
+        cap_blocks_writes = limit_reached and not args.ignore_loop_limit
+        if args.resolve_outdated and cap_blocks_writes:
             print(
                 f"warning: {len(rereviews)} Gemini re-review request(s) already exist; "
                 f"skipping outdated-thread resolution because the loop cap is {args.max_rereview_requests}.",
                 file=sys.stderr,
             )
         elif args.resolve_outdated:
-            resolved_outdated = resolve_outdated_threads(pull_request, args.author)
+            resolved_outdated = resolve_outdated_threads(
+                pull_request, args.author, dry_run=args.dry_run
+            )
             if resolved_outdated:
-                print(f"Resolved {resolved_outdated} outdated {args.author} thread(s).", file=sys.stderr)
-                pull_request = fetch_threads(pr)
+                tag = "[dry-run] would resolve" if args.dry_run else "Resolved"
+                print(f"{tag} {resolved_outdated} outdated {args.author} thread(s).", file=sys.stderr)
+                if not args.dry_run:
+                    pull_request = fetch_threads(pr)
+        if args.resolve_addressed_by_reply and cap_blocks_writes:
+            print(
+                f"warning: skipping addressed-by-reply resolution; "
+                f"re-review cap of {args.max_rereview_requests} already reached.",
+                file=sys.stderr,
+            )
+        elif args.resolve_addressed_by_reply:
+            resolved_addressed_by_reply = resolve_addressed_by_reply(
+                pull_request, args.author, dry_run=args.dry_run
+            )
+            if resolved_addressed_by_reply:
+                tag = "[dry-run] would resolve" if args.dry_run else "Resolved"
+                print(
+                    f"{tag} {resolved_addressed_by_reply} addressed-by-reply "
+                    f"{args.author} thread(s).",
+                    file=sys.stderr,
+                )
+                if not args.dry_run:
+                    pull_request = fetch_threads(pr)
         threads = filter_threads(
             pull_request,
             author=args.author,
             include_resolved=args.include_resolved,
             include_outdated=args.include_outdated,
+            include_addressed_by_reply=args.include_addressed_by_reply,
         )
+        page_warnings = pagination_warnings(pull_request)
+        for warning in page_warnings:
+            print(f"warning: {warning}", file=sys.stderr)
         rereviews = rereview_requests(pull_request)
         if len(rereviews) >= args.max_rereview_requests:
             print(
@@ -468,7 +615,11 @@ def main() -> int:
                         "reReviewLimit": args.max_rereview_requests,
                         "limitReached": len(rereview_requests(pull_request)) >= args.max_rereview_requests,
                         "unresolvedOutdatedThreads": len(outdated_unresolved_threads(pull_request, args.author)),
+                        "addressedByReplyThreads": len(addressed_by_reply_threads(pull_request, args.author)),
                         "resolvedOutdatedThreads": resolved_outdated,
+                        "resolvedAddressedByReplyThreads": resolved_addressed_by_reply,
+                        "pageLimitWarnings": page_warnings,
+                        "dryRun": args.dry_run,
                         "actionableThreadFingerprint": thread_fingerprint(threads),
                     },
                 },
