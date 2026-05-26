@@ -551,18 +551,34 @@ def post_or_update_sticky_receipt(
         return comment_id
 
     if comment_id:
-        run_gh(
-            [
-                "api",
-                "-X",
-                "PATCH",
-                f"repos/{pr.owner}/{pr.repo}/issues/comments/{comment_id}",
-                "-f",
-                f"body={body}",
-            ]
-        )
-        entry["updated_at"] = _now_iso()
-    else:
+        try:
+            run_gh(
+                [
+                    "api",
+                    "-X",
+                    "PATCH",
+                    f"repos/{pr.owner}/{pr.repo}/issues/comments/{comment_id}",
+                    "-f",
+                    f"body={body}",
+                ]
+            )
+            entry["updated_at"] = _now_iso()
+        except RuntimeError as exc:
+            # If the sticky comment was deleted on GitHub, PATCH returns 404.
+            # Drop the stale id and fall through to POST a fresh comment so
+            # the loop recovers without crashing.
+            msg = str(exc)
+            if "404" in msg or "Not Found" in msg:
+                print(
+                    f"warning: sticky receipt {comment_id} no longer exists on GitHub "
+                    "(deleted?). Posting a new comment.",
+                    file=sys.stderr,
+                )
+                comment_id = None
+            else:
+                raise
+
+    if not comment_id:
         result = run_gh(
             [
                 "api",
