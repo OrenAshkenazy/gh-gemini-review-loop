@@ -1,0 +1,65 @@
+{
+  "pr": 6,
+  "findings": [
+    {
+      "thread_id": "PRRT_kwDOShyq-M6E05y2",
+      "comment_id": "PRRC_kwDOShyq-M7E9664",
+      "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py",
+      "line": 352,
+      "severity": "medium",
+      "is_resolved": true,
+      "is_outdated": false,
+      "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nThe `filter_by_min_severity` function currently expects `min_severity` to be a non-null string. However, if a user specifies `--drop-unknown-severity` without `--min-severity`, we should still be able to filter out unknown-severity threads while keeping all other severities. Allowing `min_severity` to be `None` enables this behavior cleanly.\n\n```python\ndef filter_by_min_severity(\n    threads: list[dict[str, Any]], min_severity: str | None, *, keep_unknown: bool = True\n) -> list[dict[str, Any]]:\n    \"\"\"Drop threads with severity strictly lower than min_severity.\n\n    If min_severity is None, no minimum severity threshold is enforced.\n    `unknown` threads (no Gemini priority marker) are kept by default \u2014 dropping\n    them on a strict filter would silently swallow every thread Gemini didn't\n    annotate, which is the wrong default for a fast-feedback loop. Pass\n    keep_unknown=False to drop them anyway.\n    \"\"\"\n    cap = SEVERITY_ORDER[min_severity] if min_severity else None\n    out: list[dict[str, Any]] = []\n    for t in threads:\n        sev = thread_severity(t)\n        if sev == \"unknown\":\n            if keep_unknown:\n                out.append(t)\n            continue\n        if cap is None or SEVERITY_ORDER[sev] <= cap:\n            out.append(t)\n    return out\n```",
+      "diff_hunk": "@@ -325,6 +325,29 @@ def sort_by_severity(threads: list[dict[str, Any]]) -> list[dict[str, Any]]:\n     )\n \n \n+def filter_by_min_severity(\n+    threads: list[dict[str, Any]], min_severity: str, *, keep_unknown: bool = True\n+) -> list[dict[str, Any]]:\n+    \"\"\"Drop threads with severity strictly lower than min_severity.\n+\n+    `unknown` threads (no Gemini priority marker) are kept by default \u2014 dropping\n+    them on a strict filter would silently swallow every thread Gemini didn't\n+    annotate, which is the wrong default for a fast-feedback loop. Pass\n+    keep_unknown=False to drop them anyway.\n+    \"\"\"\n+    cap = SEVERITY_ORDER[min_severity]\n+    out: list[dict[str, Any]] = []\n+    for t in threads:\n+        sev = thread_severity(t)\n+        if sev == \"unknown\":\n+            if keep_unknown:\n+                out.append(t)\n+            continue\n+        if SEVERITY_ORDER[sev] <= cap:\n+            out.append(t)\n+    return out",
+      "url": "https://github.com/OrenAshkenazy/gh-gemini-review-loop/pull/6#discussion_r3304566456"
+    },
+    {
+      "thread_id": "PRRT_kwDOShyq-M6E05zl",
+      "comment_id": "PRRC_kwDOShyq-M7E9674",
+      "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py",
+      "line": 797,
+      "severity": "medium",
+      "is_resolved": true,
+      "is_outdated": true,
+      "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nCurrently, if `--drop-unknown-severity` is passed without `--min-severity`, the filtering logic is completely skipped, meaning `--drop-unknown-severity` is silently ignored. Updating the condition to check for either option ensures that users can drop unknown-severity threads independently of a minimum severity threshold.\n\n```suggestion\n        if args.min_severity or args.drop_unknown_severity:\n            before = len(threads)\n            threads = filter_by_min_severity(\n                threads, args.min_severity, keep_unknown=not args.drop_unknown_severity\n            )\n            dropped = before - len(threads)\n            if dropped:\n                if args.min_severity:\n                    tag = \" (kept unknown-severity)\" if not args.drop_unknown_severity else \"\"\n                    msg = f\"--min-severity {args.min_severity}: dropped {dropped} lower-severity thread(s){tag}.\"\n                else:\n                    msg = f\"Dropped {dropped} unknown-severity thread(s).\"\n                print(msg, file=sys.stderr)\n```",
+      "diff_hunk": "@@ -745,6 +783,18 @@ def main() -> int:\n             include_addressed_by_reply=args.include_addressed_by_reply,\n         )\n         threads = sort_by_severity(threads)\n+        if args.min_severity:\n+            before = len(threads)\n+            threads = filter_by_min_severity(\n+                threads, args.min_severity, keep_unknown=not args.drop_unknown_severity\n+            )\n+            dropped = before - len(threads)\n+            if dropped:\n+                tag = \" (kept unknown-severity)\" if not args.drop_unknown_severity else \"\"\n+                print(\n+                    f\"--min-severity {args.min_severity}: dropped {dropped} lower-severity thread(s){tag}.\",\n+                    file=sys.stderr,\n+                )",
+      "url": "https://github.com/OrenAshkenazy/gh-gemini-review-loop/pull/6#discussion_r3304566520"
+    },
+    {
+      "thread_id": "PRRT_kwDOShyq-M6E05z9",
+      "comment_id": "PRRC_kwDOShyq-M7E968c",
+      "path": "tests/test_fetch_gemini_threads.py",
+      "line": 347,
+      "severity": "medium",
+      "is_resolved": true,
+      "is_outdated": false,
+      "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nAdd a test case to verify that `filter_by_min_severity` correctly drops only unknown-severity threads when `min_severity` is `None` and `keep_unknown` is `False`.\n\n```suggestion\n    def test_keep_unknown_false_drops_unmarked(self):\n        items = [_sev_thread(\"critical\"), _sev_thread(None), _sev_thread(\"low\")]\n        out = filter_by_min_severity(items, \"high\", keep_unknown=False)\n        assert [thread_severity(t) for t in out] == [\"critical\"]\n\n    def test_drop_unknown_only(self):\n        items = [_sev_thread(\"critical\"), _sev_thread(None), _sev_thread(\"low\")]\n        out = filter_by_min_severity(items, None, keep_unknown=False)\n        assert [thread_severity(t) for t in out] == [\"critical\", \"low\"]\n```",
+      "diff_hunk": "@@ -297,3 +298,59 @@ def test_includes_all_metrics(self):\n         assert \"| 2 |\" in receipt  # outdated resolved\n         assert \"high=1\" in receipt\n         assert \"actionable threads remaining\" in receipt\n+\n+\n+# ---------------------------------------------------------------------------\n+# filter_by_min_severity\n+# ---------------------------------------------------------------------------\n+\n+def _sev_thread(sev: str | None):\n+    body = (f\"![{sev}](https://www.gstatic.com/codereviewagent/{sev}-priority.svg) fix me\"\n+            if sev else \"plain comment with no marker\")\n+    return {\n+        \"isResolved\": False,\n+        \"isOutdated\": False,\n+        \"comments\": {\"nodes\": [{\"author\": {\"login\": BOT}, \"body\": body}]},\n+    }\n+\n+\n+class TestFilterByMinSeverity:\n+    def test_high_drops_medium_and_low(self):\n+        items = [_sev_thread(s) for s in (\"critical\", \"high\", \"medium\", \"low\")]\n+        out = filter_by_min_severity(items, \"high\")\n+        assert [thread_severity(t) for t in out] == [\"critical\", \"high\"]\n+\n+    def test_medium_keeps_medium_and_above(self):\n+        items = [_sev_thread(s) for s in (\"critical\", \"high\", \"medium\", \"low\")]\n+        out = filter_by_min_severity(items, \"medium\")\n+        assert [thread_severity(t) for t in out] == [\"critical\", \"high\", \"medium\"]\n+\n+    def test_low_keeps_everything_severity_typed(self):\n+        items = [_sev_thread(s) for s in (\"critical\", \"high\", \"medium\", \"low\")]\n+        out = filter_by_min_severity(items, \"low\")\n+        assert len(out) == 4\n+\n+    def test_critical_keeps_only_critical(self):\n+        items = [_sev_thread(s) for s in (\"critical\", \"high\", \"medium\", \"low\")]\n+        out = filter_by_min_severity(items, \"critical\")\n+        assert [thread_severity(t) for t in out] == [\"critical\"]\n+\n+    def test_unknown_kept_by_default(self):\n+        items = [_sev_thread(\"low\"), _sev_thread(None), _sev_thread(\"critical\")]\n+        out = filter_by_min_severity(items, \"high\")\n+        # low dropped; critical kept; unknown kept (default keep_unknown=True)\n+        assert {thread_severity(t) for t in out} == {\"critical\", \"unknown\"}\n+\n+    def test_keep_unknown_false_drops_unmarked(self):\n+        items = [_sev_thread(\"critical\"), _sev_thread(None), _sev_thread(\"low\")]\n+        out = filter_by_min_severity(items, \"high\", keep_unknown=False)\n+        assert [thread_severity(t) for t in out] == [\"critical\"]",
+      "url": "https://github.com/OrenAshkenazy/gh-gemini-review-loop/pull/6#discussion_r3304566556"
+    },
+    {
+      "thread_id": "PRRT_kwDOShyq-M6E3QJv",
+      "comment_id": "PRRC_kwDOShyq-M7FBJL_",
+      "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py",
+      "line": 710,
+      "severity": "medium",
+      "is_resolved": true,
+      "is_outdated": true,
+      "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nThe help text states that `--drop-unknown-severity` is only used \"When --min-severity is set\". However, the implementation and tests explicitly support using `--drop-unknown-severity` on its own (without `--min-severity`) to filter out any threads that do not have an explicit severity marker.\\n\\nUpdating the help text to reflect this makes the CLI option much clearer and more discoverable.\n\n```suggestion\n        help=\"Drop threads with no severity marker (can be used alone or with --min-severity).\",\n```",
+      "diff_hunk": "@@ -667,6 +694,21 @@ def main() -> int:\n         action=\"store_true\",\n         help=\"Include addressed-by-reply threads in actionable output (default: hidden).\",\n     )\n+    parser.add_argument(\n+        \"--min-severity\",\n+        choices=[\"critical\", \"high\", \"medium\", \"low\"],\n+        default=None,\n+        help=(\n+            \"Drop actionable threads below this Gemini-assigned severity. \"\n+            \"Threads without a Gemini severity marker ('unknown') are kept regardless \"\n+            \"(use --drop-unknown-severity to remove them too).\"\n+        ),\n+    )\n+    parser.add_argument(\n+        \"--drop-unknown-severity\",\n+        action=\"store_true\",\n+        help=\"When --min-severity is set, also drop threads with no severity marker.\",",
+      "url": "https://github.com/OrenAshkenazy/gh-gemini-review-loop/pull/6#discussion_r3305411327"
+    },
+    {
+      "thread_id": "PRRT_kwDOShyq-M6E3QJ9",
+      "comment_id": "PRRC_kwDOShyq-M7FBJMO",
+      "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py",
+      "line": 799,
+      "severity": "medium",
+      "is_resolved": true,
+      "is_outdated": true,
+      "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nWhen `--min-severity` is set and `--drop-unknown-severity` is also enabled, the `dropped` count includes both threads that are below the minimum severity threshold and threads that have no severity marker (`unknown`). Referring to all of them as \"lower-severity thread(s)\" is misleading.\\n\\nSimplifying the message to \"dropped {dropped} thread(s)\" makes it accurate in all cases.\n\n```suggestion\n                    msg = f\"--min-severity {args.min_severity}: dropped {dropped} thread(s){tag}.\"\n```",
+      "diff_hunk": "@@ -745,6 +787,19 @@ def main() -> int:\n             include_addressed_by_reply=args.include_addressed_by_reply,\n         )\n         threads = sort_by_severity(threads)\n+        if args.min_severity or args.drop_unknown_severity:\n+            before = len(threads)\n+            threads = filter_by_min_severity(\n+                threads, args.min_severity, keep_unknown=not args.drop_unknown_severity\n+            )\n+            dropped = before - len(threads)\n+            if dropped:\n+                if args.min_severity:\n+                    tag = \" (kept unknown-severity)\" if not args.drop_unknown_severity else \"\"\n+                    msg = f\"--min-severity {args.min_severity}: dropped {dropped} lower-severity thread(s){tag}.\"",
+      "url": "https://github.com/OrenAshkenazy/gh-gemini-review-loop/pull/6#discussion_r3305411342"
+    }
+  ]
+}

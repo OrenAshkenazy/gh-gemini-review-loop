@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- **Layer B finding-quality eval** under `evals/`. LLM-as-judge (OpenAI `gpt-4o-mini` by default, overridable via `OPENAI_JUDGE_MODEL` env/var) rates each Gemini Code Assist finding as `useful` / `false-positive` / `borderline` / `dup`, then compares against hand-labeled human ground-truth fixtures. Cross-vendor on purpose: judging Gemini's output with a non-Google model reduces self-eval bias. Initial corpus: 11 findings from PRs #6–#9 of this repo (10 useful + 1 false-positive). Runner: `python3 -m evals.run_eval [--samples N] [--fixture pr-X] [--report out.json] [--exit-nonzero-on-disagreement]`. 23 hermetic pytest cases cover the runner with a mocked judge (no network).
+- **Weekly eval CI** at `.github/workflows/eval-weekly.yml`. Sundays 00:00 UTC + `workflow_dispatch`. Posts the eval summary to a rolling per-quarter GitHub Issue and fails the run if judge↔human agreement drops below 80% (calibration gate). Catches drift in Gemini's output format and regressions in the judge model. Needs `OPENAI_API_KEY` repo secret.
+- **`evals/README.md`** documents the cross-vendor rationale, fixture format, calibration workflow, cost (~$0.02 per run with `gpt-4o-mini`), and how to add new fixtures.
+
 ### Changed
 
 - **Sharpened `.claude-plugin/marketplace.json` metadata for claudemarketplaces.com indexing.** Marketplace-level `description` now leads with the differentiator phrasing (`"Fast-track ... thread-state-aware, severity-filtered, capped at 3 cycles, no CI coupling."`) instead of a meta description. Plugin-level `description` leads with the opinionated single-bot positioning and lists the four hard-to-replicate features (severity filter, 3-cycle cap, auto-resolve, sticky receipt). `tags` expanded to 7 (added `sticky-receipt`, `severity-aware`). `keywords` expanded to 9 (added `sticky-receipt`, `severity-aware`, `addressed-by-reply`, `auto-resolve`, `dry-run`) to improve hit-rate against search queries.

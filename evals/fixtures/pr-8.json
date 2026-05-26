@@ -1,0 +1,17 @@
+{
+  "pr": 8,
+  "findings": [
+    {
+      "thread_id": "PRRT_kwDOShyq-M6E4OMi",
+      "comment_id": "PRRC_kwDOShyq-M7FCeJK",
+      "path": "CONTRIBUTING.md",
+      "line": 32,
+      "severity": "medium",
+      "is_resolved": true,
+      "is_outdated": false,
+      "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nThe documentation states that `CHANGELOG.md` is human-maintained under `[Unreleased]`, but `CHANGELOG.md` currently lacks a `## [Unreleased]` heading (it only has `### Added` directly under the introduction). To avoid confusion and align with standard changelog practices, consider adding a `## [Unreleased]` heading to `CHANGELOG.md` above the `### Added` section.",
+      "diff_hunk": "@@ -0,0 +1,48 @@\n+# Contributing\n+\n+Thanks for opening a PR.\n+\n+## Release labels (required-ish)\n+\n+Every PR merge to `main` triggers `.github/workflows/release.yml`, which bumps the version in `plugins/gh-gemini-review-loop/.claude-plugin/plugin.json`, tags the commit, and publishes a GitHub Release whose body is the PR description.\n+\n+The **bump level** is controlled by a label on the PR:\n+\n+| Label | When to use | Effect |\n+|---|---|---|\n+| `release:major` | Breaking changes (CLI flag removed, behavior reversed, hard requirement bump) | `1.2.3 \u2192 2.0.0` |\n+| `release:minor` | New features (new flag, new exported helper, new SKILL.md section that changes agent behavior) | `1.2.3 \u2192 1.3.0` |\n+| `release:patch` | Bug fixes, doc updates, refactors, tests, internal cleanup | `1.2.3 \u2192 1.2.4` |\n+| `release:skip` | Chores you don't want to release (CI tweaks, README typos, .github/* only) | No bump, no tag, no Release. |\n+\n+If no `release:*` label is present, the workflow defaults to `release:patch`. To bootstrap the labels in a fresh fork, run the **Setup release labels** workflow once (Actions tab \u2192 run workflow). Precedence when multiple are set: `skip > major > minor > patch`.\n+\n+## Release notes\n+\n+The GitHub Release body is the merged PR's body verbatim. Structure PR descriptions accordingly:\n+\n+- Lead with a one-paragraph summary.\n+- Use `### Subsections` to group changes (Added / Changed / Fixed).\n+- The first heading after the summary becomes the highlight in the Release page card.\n+\n+Keep PR titles concise and prefixed with the change type (`fix:`, `feat:`, `chore:`, `docs:`, `refactor:`, `test:`). The Release title is built as `vX.Y.Z: <PR title>`.\n+\n+## CHANGELOG\n+\n+`CHANGELOG.md` is human-maintained under `[Unreleased]`. The release workflow does not modify it. When you open a PR, add an entry there too \u2014 it pairs with the auto-Release for users who prefer a single file.",
+      "url": "https://github.com/OrenAshkenazy/gh-gemini-review-loop/pull/8#discussion_r3305759306"
+    }
+  ]
+}

@@ -1,0 +1,288 @@
+"""Run the Layer B (finding-quality) eval over all fixtures.
+
+Compares the OpenAI judge's labels against the human ground-truth labels in
+``evals/fixtures/pr-*.label.json``. Prints per-severity metrics, the confusion
+matrix, and an agreement rate. Optionally writes a JSON report for the CI job.
+
+CLI:
+    python3 -m evals.run_eval                       # default: 1 sample/finding, all fixtures
+    python3 -m evals.run_eval --samples 3           # 3 samples per finding for variance
+    python3 -m evals.run_eval --fixture pr-8        # restrict to one fixture
+    python3 -m evals.run_eval --report out.json     # write a structured report
+
+Requires OPENAI_API_KEY in the environment unless ``--judge fake`` is passed
+(for self-testing).
+"""
+
+from __future__ import annotations
+
+import argparse
+import collections
+import dataclasses
+import json
+import pathlib
+import sys
+from typing import Any
+
+from evals.judge import VALID_LABELS, JudgeClient, JudgeResult
+
+
+FIXTURES_DIR = pathlib.Path(__file__).resolve().parent / "fixtures"
+
+
+@dataclasses.dataclass
+class EvaluatedFinding:
+    pr: int
+    comment_id: str
+    severity: str | None
+    path: str | None
+    line: int | str | None
+    human_label: str
+    judge_labels: list[str]  # one per sample
+    judge_confidences: list[float]
+    judge_reasons: list[str]
+    body_excerpt: str
+
+    @property
+    def majority_judge_label(self) -> str:
+        counts = collections.Counter(self.judge_labels)
+        return counts.most_common(1)[0][0]
+
+    @property
+    def agrees_with_human(self) -> bool:
+        return self.majority_judge_label == self.human_label
+
+    @property
+    def has_variance(self) -> bool:
+        return len(set(self.judge_labels)) > 1
+
+
+def load_fixture_pair(pr_id: str) -> tuple[dict, dict]:
+    """Load (findings, labels) for a fixture, keyed on filename stem like 'pr-6'."""
+    findings_path = FIXTURES_DIR / f"{pr_id}.json"
+    labels_path = FIXTURES_DIR / f"{pr_id}.label.json"
+    if not findings_path.exists():
+        raise FileNotFoundError(f"Missing findings fixture: {findings_path}")
+    if not labels_path.exists():
+        raise FileNotFoundError(
+            f"Missing human-label sidecar: {labels_path}. "
+            "Every fixture needs a `.label.json` for the eval to compute agreement."
+        )
+    return json.loads(findings_path.read_text()), json.loads(labels_path.read_text())
+
+
+def discover_fixtures() -> list[str]:
+    """Return sorted fixture stems (pr-6, pr-7, ...) with both data + labels present."""
+    out: list[str] = []
+    for findings_path in sorted(FIXTURES_DIR.glob("pr-*.json")):
+        if findings_path.name.endswith(".label.json"):
+            continue
+        stem = findings_path.stem
+        if (FIXTURES_DIR / f"{stem}.label.json").exists():
+            out.append(stem)
+    return out
+
+
+def evaluate_fixture(
+    stem: str,
+    client: JudgeClient,
+    *,
+    samples: int,
+) -> list[EvaluatedFinding]:
+    findings_doc, labels_doc = load_fixture_pair(stem)
+    pr = findings_doc["pr"]
+    label_by_id = {lbl["comment_id"]: lbl for lbl in labels_doc["human_labels"]}
+
+    out: list[EvaluatedFinding] = []
+    for finding in findings_doc["findings"]:
+        cid = finding["comment_id"]
+        human = label_by_id.get(cid)
+        if human is None:
+            print(
+                f"warning: PR #{pr} finding {cid} has no human label; skipping.",
+                file=sys.stderr,
+            )
+            continue
+
+        judge_results: list[JudgeResult] = []
+        for _ in range(samples):
+            judge_results.append(client.judge(finding))
+
+        out.append(
+            EvaluatedFinding(
+                pr=pr,
+                comment_id=cid,
+                severity=finding.get("severity"),
+                path=finding.get("path"),
+                line=finding.get("line"),
+                human_label=human["label"],
+                judge_labels=[r.label for r in judge_results],
+                judge_confidences=[r.confidence for r in judge_results],
+                judge_reasons=[r.reason for r in judge_results],
+                body_excerpt=(finding.get("body") or "")[:120].replace("\n", " "),
+            )
+        )
+    return out
+
+
+def confusion_matrix(rows: list[EvaluatedFinding]) -> dict[str, dict[str, int]]:
+    matrix: dict[str, dict[str, int]] = {
+        h: {j: 0 for j in VALID_LABELS} for h in VALID_LABELS
+    }
+    for r in rows:
+        matrix[r.human_label][r.majority_judge_label] += 1
+    return matrix
+
+
+def metrics(rows: list[EvaluatedFinding]) -> dict[str, Any]:
+    n = len(rows)
+    if n == 0:
+        return {"n": 0}
+    agreements = sum(1 for r in rows if r.agrees_with_human)
+    by_severity: dict[str, dict[str, int]] = collections.defaultdict(
+        lambda: {"n": 0, "agree": 0}
+    )
+    for r in rows:
+        sev = r.severity or "unknown"
+        by_severity[sev]["n"] += 1
+        if r.agrees_with_human:
+            by_severity[sev]["agree"] += 1
+    return {
+        "n": n,
+        "agreement_rate": round(agreements / n, 3),
+        "agreements": agreements,
+        "variance_count": sum(1 for r in rows if r.has_variance),
+        "by_severity": {
+            sev: {
+                "n": stats["n"],
+                "agreement_rate": round(stats["agree"] / stats["n"], 3) if stats["n"] else 0,
+            }
+            for sev, stats in by_severity.items()
+        },
+        "confusion": confusion_matrix(rows),
+        "by_human_label": dict(collections.Counter(r.human_label for r in rows)),
+        "by_judge_label": dict(collections.Counter(r.majority_judge_label for r in rows)),
+    }
+
+
+def render_summary(rows: list[EvaluatedFinding], m: dict[str, Any]) -> str:
+    lines = [
+        f"# Layer B finding-quality eval — {m['n']} findings",
+        "",
+        f"Judge↔human agreement: **{m['agreement_rate']:.1%}** ({m['agreements']}/{m['n']})",
+        f"Variance (judge labels differed across samples): {m['variance_count']}",
+        "",
+        "## By severity",
+        "",
+        "| severity | n | agreement |",
+        "|---|---|---|",
+    ]
+    for sev in ("critical", "high", "medium", "low", "unknown", None):
+        key = sev if sev is not None else "unknown"
+        stats = m["by_severity"].get(key)
+        if not stats:
+            continue
+        lines.append(f"| {key} | {stats['n']} | {stats['agreement_rate']:.1%} |")
+    lines.extend(["", "## Distribution", ""])
+    lines.append(f"- Human labels:  {m['by_human_label']}")
+    lines.append(f"- Judge labels:  {m['by_judge_label']}")
+    lines.append("")
+    lines.append("## Confusion matrix (rows = human, columns = judge majority)")
+    lines.append("")
+    header = "| human \\ judge | " + " | ".join(VALID_LABELS) + " |"
+    sep = "|---" * (len(VALID_LABELS) + 1) + "|"
+    lines.extend([header, sep])
+    for h in VALID_LABELS:
+        row = m["confusion"][h]
+        lines.append(f"| **{h}** | " + " | ".join(str(row[j]) for j in VALID_LABELS) + " |")
+    lines.extend(["", "## Disagreements (judge majority differs from human)", ""])
+    disagreements = [r for r in rows if not r.agrees_with_human]
+    if not disagreements:
+        lines.append("_None._")
+    else:
+        for r in disagreements:
+            lines.append(
+                f"- PR #{r.pr} {r.path}:{r.line} [{r.severity}]: "
+                f"human=`{r.human_label}` vs judge=`{r.majority_judge_label}` "
+                f"({r.judge_labels})"
+            )
+            lines.append(f"  - Finding excerpt: `{r.body_excerpt}`")
+            lines.append(f"  - Judge reason (sample 1): {r.judge_reasons[0]}")
+    return "\n".join(lines) + "\n"
+
+
+def _fake_judge_factory():
+    """Deterministic fake for self-test: labels everything as 'useful' with 0.8 confidence."""
+    def fake(_messages: list[dict]) -> dict:
+        return {
+            "content": json.dumps(
+                {"label": "useful", "confidence": 0.8, "reason": "fake judge always says useful"}
+            )
+        }
+    return fake
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--fixture", help="Run only one fixture (e.g. pr-8). Default: all.")
+    parser.add_argument(
+        "--samples",
+        type=int,
+        default=1,
+        help="Judge calls per finding for variance measurement. Default: 1.",
+    )
+    parser.add_argument(
+        "--judge",
+        choices=["openai", "fake"],
+        default="openai",
+        help="`fake` short-circuits the API for self-test of the runner.",
+    )
+    parser.add_argument(
+        "--report",
+        help="Write the full JSON eval report to this path (in addition to the stdout summary).",
+    )
+    parser.add_argument(
+        "--exit-nonzero-on-disagreement",
+        action="store_true",
+        help="Exit 1 if judge↔human agreement drops below 80%%. Useful for CI gates.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.judge == "fake":
+        client = JudgeClient(call_fn=_fake_judge_factory())
+    else:
+        client = JudgeClient()
+
+    stems = [args.fixture] if args.fixture else discover_fixtures()
+    if not stems:
+        print("error: no fixtures found in evals/fixtures/", file=sys.stderr)
+        return 1
+
+    rows: list[EvaluatedFinding] = []
+    for stem in stems:
+        rows.extend(evaluate_fixture(stem, client, samples=args.samples))
+
+    m = metrics(rows)
+    summary = render_summary(rows, m)
+    print(summary)
+
+    if args.report:
+        report = {
+            "metrics": m,
+            "rows": [dataclasses.asdict(r) for r in rows],
+            "summary_md": summary,
+        }
+        pathlib.Path(args.report).write_text(json.dumps(report, indent=2))
+        print(f"\nReport written to {args.report}", file=sys.stderr)
+
+    if args.exit_nonzero_on_disagreement and m.get("agreement_rate", 1.0) < 0.80:
+        print(
+            f"error: agreement rate {m['agreement_rate']:.1%} is below the 80% gate.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
