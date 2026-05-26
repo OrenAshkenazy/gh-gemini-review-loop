@@ -796,7 +796,7 @@ def main() -> int:
             if dropped:
                 if args.min_severity:
                     tag = " (kept unknown-severity)" if not args.drop_unknown_severity else ""
-                    msg = f"--min-severity {args.min_severity}: dropped {dropped} lower-severity thread(s){tag}."
+                    msg = f"--min-severity {args.min_severity}: dropped {dropped} thread(s){tag}."
                 else:
                     msg = f"--drop-unknown-severity: dropped {dropped} unknown-severity thread(s)."
                 print(msg, file=sys.stderr)
