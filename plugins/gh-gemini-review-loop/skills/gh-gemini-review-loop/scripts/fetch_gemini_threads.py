@@ -326,16 +326,20 @@ def sort_by_severity(threads: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def filter_by_min_severity(
-    threads: list[dict[str, Any]], min_severity: str, *, keep_unknown: bool = True
+    threads: list[dict[str, Any]], min_severity: str | None, *, keep_unknown: bool = True
 ) -> list[dict[str, Any]]:
     """Drop threads with severity strictly lower than min_severity.
+
+    If `min_severity` is None, no minimum-severity threshold is enforced — the
+    function then acts only on the `keep_unknown` axis, which lets callers use
+    `--drop-unknown-severity` independently of `--min-severity`.
 
     `unknown` threads (no Gemini priority marker) are kept by default — dropping
     them on a strict filter would silently swallow every thread Gemini didn't
     annotate, which is the wrong default for a fast-feedback loop. Pass
     keep_unknown=False to drop them anyway.
     """
-    cap = SEVERITY_ORDER[min_severity]
+    cap = SEVERITY_ORDER[min_severity] if min_severity else None
     out: list[dict[str, Any]] = []
     for t in threads:
         sev = thread_severity(t)
@@ -343,7 +347,7 @@ def filter_by_min_severity(
             if keep_unknown:
                 out.append(t)
             continue
-        if SEVERITY_ORDER[sev] <= cap:
+        if cap is None or SEVERITY_ORDER[sev] <= cap:
             out.append(t)
     return out
 
@@ -783,18 +787,19 @@ def main() -> int:
             include_addressed_by_reply=args.include_addressed_by_reply,
         )
         threads = sort_by_severity(threads)
-        if args.min_severity:
+        if args.min_severity or args.drop_unknown_severity:
             before = len(threads)
             threads = filter_by_min_severity(
                 threads, args.min_severity, keep_unknown=not args.drop_unknown_severity
             )
             dropped = before - len(threads)
             if dropped:
-                tag = " (kept unknown-severity)" if not args.drop_unknown_severity else ""
-                print(
-                    f"--min-severity {args.min_severity}: dropped {dropped} lower-severity thread(s){tag}.",
-                    file=sys.stderr,
-                )
+                if args.min_severity:
+                    tag = " (kept unknown-severity)" if not args.drop_unknown_severity else ""
+                    msg = f"--min-severity {args.min_severity}: dropped {dropped} lower-severity thread(s){tag}."
+                else:
+                    msg = f"--drop-unknown-severity: dropped {dropped} unknown-severity thread(s)."
+                print(msg, file=sys.stderr)
         page_warnings = pagination_warnings(pull_request)
         for warning in page_warnings:
             print(f"warning: {warning}", file=sys.stderr)

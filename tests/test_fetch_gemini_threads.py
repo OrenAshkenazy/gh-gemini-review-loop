@@ -346,6 +346,18 @@ class TestFilterByMinSeverity:
         out = filter_by_min_severity(items, "high", keep_unknown=False)
         assert [thread_severity(t) for t in out] == ["critical"]
 
+    def test_drop_unknown_only_with_none_min_severity(self):
+        # --drop-unknown-severity used alone: keep everything tagged, drop unknown.
+        items = [_sev_thread("critical"), _sev_thread(None), _sev_thread("low")]
+        out = filter_by_min_severity(items, None, keep_unknown=False)
+        assert [thread_severity(t) for t in out] == ["critical", "low"]
+
+    def test_none_min_severity_keeps_all_by_default(self):
+        # min_severity=None with keep_unknown=True is a pure no-op.
+        items = [_sev_thread(s) for s in ("critical", "high", "medium", "low", None)]
+        out = filter_by_min_severity(items, None)
+        assert len(out) == 5
+
     def test_preserves_input_order(self):
         # Stable: don't sort, don't shuffle. main() sorts separately.
         items = [_sev_thread("low"), _sev_thread("critical"), _sev_thread("high")]
