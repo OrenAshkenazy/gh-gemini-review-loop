@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -447,6 +450,157 @@ def post_pr_comment(pr: PullRequest, body: str, *, dry_run: bool = False) -> Non
         raise RuntimeError(f"gh pr comment failed: {message}")
 
 
+# ---------------------------------------------------------------------------
+# Sticky receipt: a single PR comment that gets edited in place across
+# multiple loop invocations on the same PR. Provides background visibility
+# in the GitHub UI without spamming new comments per cycle.
+# ---------------------------------------------------------------------------
+
+# Marker embedded in the rendered body so a sticky receipt can be identified
+# even if the local state file is wiped. Used as a fallback discovery key.
+STICKY_RECEIPT_MARKER = "<!-- gh-gemini-review-loop:sticky-receipt -->"
+
+
+def sticky_state_path() -> Path:
+    """Return the path to the sticky-receipt state file.
+
+    Overridable via ``GGRL_STATE_DIR`` (useful for tests). Defaults to
+    ``~/.config/gh-gemini-review-loop/state.json`` per XDG conventions.
+    """
+    base = os.environ.get("GGRL_STATE_DIR") or os.path.expanduser(
+        "~/.config/gh-gemini-review-loop"
+    )
+    return Path(base) / "state.json"
+
+
+def _state_key(pr: PullRequest) -> str:
+    return f"{pr.owner}/{pr.repo}#{pr.number}"
+
+
+def load_sticky_state() -> dict[str, Any]:
+    path = sticky_state_path()
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_sticky_state(state: dict[str, Any]) -> None:
+    path = sticky_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2, sort_keys=True))
+
+
+def _now_iso() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def find_existing_sticky_comment(pr: PullRequest) -> int | None:
+    """Look up the sticky receipt for a PR by scanning issue comments for the marker.
+
+    Used as a recovery path when the local state file is missing — the marker
+    embedded in the receipt body is the source of truth on GitHub.
+    """
+    # `gh api --paginate` runs --jq on each page independently, so a per-page
+    # aggregator like `[...] | last` returns the last id PER PAGE — not the
+    # global last. Emit one id per line across all pages and pick the last
+    # valid one in Python.
+    result = run_gh(
+        [
+            "api",
+            f"repos/{pr.owner}/{pr.repo}/issues/{pr.number}/comments",
+            "--paginate",
+            "--jq",
+            f'.[] | select(.body != null and (.body | contains("{STICKY_RECEIPT_MARKER}"))) | .id',
+        ]
+    )
+    if isinstance(result, int):
+        return result
+    if isinstance(result, str):
+        ids = [int(line.strip()) for line in result.splitlines() if line.strip().isdigit()]
+        if ids:
+            return ids[-1]
+    return None
+
+
+def post_or_update_sticky_receipt(
+    pr: PullRequest, body: str, *, dry_run: bool = False
+) -> int | None:
+    """Post or in-place edit the sticky receipt comment for ``pr``.
+
+    First invocation per PR posts a fresh comment and records its id in the
+    state file. Subsequent invocations PATCH the same comment so the user
+    sees one live status block on the PR instead of N new comments.
+    """
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key, {})
+    comment_id = entry.get("comment_id")
+
+    if comment_id is None:
+        # Fall back to GitHub-side discovery before posting a duplicate.
+        comment_id = find_existing_sticky_comment(pr)
+        if comment_id and not dry_run:
+            entry["comment_id"] = comment_id
+
+    if dry_run:
+        verb = "PATCH" if comment_id else "POST"
+        print(f"[dry-run] would {verb} sticky receipt on {key}", file=sys.stderr)
+        return comment_id
+
+    if comment_id:
+        try:
+            run_gh(
+                [
+                    "api",
+                    "-X",
+                    "PATCH",
+                    f"repos/{pr.owner}/{pr.repo}/issues/comments/{comment_id}",
+                    "-f",
+                    f"body={body}",
+                ]
+            )
+            entry["updated_at"] = _now_iso()
+        except RuntimeError as exc:
+            # If the sticky comment was deleted on GitHub, PATCH returns 404.
+            # Drop the stale id and fall through to POST a fresh comment so
+            # the loop recovers without crashing.
+            msg = str(exc)
+            if "404" in msg or "Not Found" in msg:
+                print(
+                    f"warning: sticky receipt {comment_id} no longer exists on GitHub "
+                    "(deleted?). Posting a new comment.",
+                    file=sys.stderr,
+                )
+                comment_id = None
+            else:
+                raise
+
+    if not comment_id:
+        result = run_gh(
+            [
+                "api",
+                "-X",
+                "POST",
+                f"repos/{pr.owner}/{pr.repo}/issues/{pr.number}/comments",
+                "-f",
+                f"body={body}",
+            ]
+        )
+        if not isinstance(result, dict) or "id" not in result:
+            raise RuntimeError(f"Failed to post sticky receipt: {result}")
+        comment_id = int(result["id"])
+        entry["comment_id"] = comment_id
+        entry["started_at"] = _now_iso()
+        entry["updated_at"] = entry["started_at"]
+
+    state[key] = entry
+    save_sticky_state(state)
+    return comment_id
+
+
 def render_receipt(
     pr: PullRequest,
     pull_request: dict[str, Any],
@@ -457,24 +611,40 @@ def render_receipt(
     resolved_addressed_by_reply: int,
     rereview_count: int,
     rereview_limit: int,
+    status: str | None = None,
+    sticky: bool = False,
 ) -> str:
+    """Render the markdown receipt body.
+
+    ``status`` (RUNNING / DONE / STOPPED) appears in the header when set.
+    ``sticky`` embeds the discovery marker and a "last updated" timestamp.
+    """
     counts = severity_counts(threads)
     deferred = len(addressed_by_reply_threads(pull_request, author))
     sev_line = ", ".join(
         f"{k}={counts[k]}" for k in ("critical", "high", "medium", "low", "unknown") if counts.get(k)
     ) or "none"
-    return (
-        f"### gh-gemini-review-loop receipt\n\n"
-        f"| metric | value |\n"
-        f"|---|---|\n"
-        f"| re-review cycles used | {rereview_count} / {rereview_limit} |\n"
-        f"| outdated threads resolved | {resolved_outdated} |\n"
-        f"| addressed-by-reply threads resolved | {resolved_addressed_by_reply} |\n"
-        f"| addressed-by-reply still pending | {deferred} |\n"
-        f"| actionable threads remaining | {len(threads)} |\n"
-        f"| severity breakdown (actionable) | {sev_line} |\n"
-        f"\n_Generated by `scripts/fetch_gemini_threads.py --post-receipt`._\n"
-    )
+    header_suffix = f" — {status}" if status else ""
+    parts = [
+        f"### gh-gemini-review-loop receipt{header_suffix}",
+        "",
+        "| metric | value |",
+        "|---|---|",
+        f"| re-review cycles used | {rereview_count} / {rereview_limit} |",
+        f"| outdated threads resolved | {resolved_outdated} |",
+        f"| addressed-by-reply threads resolved | {resolved_addressed_by_reply} |",
+        f"| addressed-by-reply still pending | {deferred} |",
+        f"| actionable threads remaining | {len(threads)} |",
+        f"| severity breakdown (actionable) | {sev_line} |",
+        "",
+    ]
+    if sticky:
+        parts.append(f"_Last updated: {_now_iso()}. Receipt edits in place as the loop progresses._")
+        parts.append("")
+        parts.append(STICKY_RECEIPT_MARKER)
+    else:
+        parts.append("_Generated by `scripts/fetch_gemini_threads.py --post-receipt`._")
+    return "\n".join(parts) + "\n"
 
 
 def thread_fingerprint(threads: list[dict[str, Any]]) -> str:
@@ -670,7 +840,26 @@ def main() -> int:
         action="store_true",
         help=(
             "Post a summary 'loop receipt' comment to the PR after fetch/filter. "
-            "Includes cycles used, threads resolved, severity breakdown, and remaining actionable count."
+            "Includes cycles used, threads resolved, severity breakdown, and remaining actionable count. "
+            "Posts a NEW comment each invocation; for one live comment edited in place, use --sticky-receipt."
+        ),
+    )
+    parser.add_argument(
+        "--sticky-receipt",
+        action="store_true",
+        help=(
+            "Like --post-receipt, but maintain ONE comment per PR that is edited in place across loop "
+            "invocations. State persists in ~/.config/gh-gemini-review-loop/state.json "
+            "(override with GGRL_STATE_DIR env var). Provides background visibility in the PR UI."
+        ),
+    )
+    parser.add_argument(
+        "--receipt-status",
+        choices=["running", "done", "stopped"],
+        default=None,
+        help=(
+            "Tag the receipt with a status header (RUNNING / DONE / STOPPED). Used with --sticky-receipt "
+            "to communicate loop phase. Defaults to RUNNING for sticky, none for one-shot."
         ),
     )
     parser.add_argument(
@@ -810,7 +999,11 @@ def main() -> int:
                 f"the configured loop cap is {args.max_rereview_requests}.",
                 file=sys.stderr,
             )
-        if args.post_receipt:
+        if args.post_receipt or args.sticky_receipt:
+            sticky = args.sticky_receipt
+            status = args.receipt_status.upper() if args.receipt_status else (
+                "RUNNING" if sticky else None
+            )
             receipt = render_receipt(
                 pr, pull_request, threads,
                 author=args.author,
@@ -818,8 +1011,13 @@ def main() -> int:
                 resolved_addressed_by_reply=resolved_addressed_by_reply,
                 rereview_count=len(rereviews),
                 rereview_limit=args.max_rereview_requests,
+                status=status,
+                sticky=sticky,
             )
-            post_pr_comment(pr, receipt, dry_run=args.dry_run)
+            if sticky:
+                post_or_update_sticky_receipt(pr, receipt, dry_run=args.dry_run)
+            else:
+                post_pr_comment(pr, receipt, dry_run=args.dry_run)
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
