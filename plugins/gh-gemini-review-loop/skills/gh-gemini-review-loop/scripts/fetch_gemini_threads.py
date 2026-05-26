@@ -513,7 +513,7 @@ def find_existing_sticky_comment(pr: PullRequest) -> int | None:
             f"repos/{pr.owner}/{pr.repo}/issues/{pr.number}/comments",
             "--paginate",
             "--jq",
-            f'.[] | select(.body | contains("{STICKY_RECEIPT_MARKER}")) | .id',
+            f'.[] | select(.body != null and (.body | contains("{STICKY_RECEIPT_MARKER}"))) | .id',
         ]
     )
     if isinstance(result, int):
