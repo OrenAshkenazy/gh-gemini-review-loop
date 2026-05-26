@@ -130,7 +130,7 @@ From any repository with a GitHub PR:
 python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py
 ```
 
-By default this resolves unresolved outdated Gemini threads before printing current feedback, unless the PR has already reached the 3 re-review request cap.
+By default this resolves unresolved outdated Gemini threads AND addressed-by-reply threads (unresolved threads where a non-bot maintainer posted a substantive reply, >=30 chars) before printing current feedback, unless the PR has already reached the 3 re-review request cap.
 
 Useful options:
 
@@ -138,8 +138,12 @@ Useful options:
 # Wait for Gemini review activity to appear and settle
 python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py --wait
 
-# Read-only fetch without resolving outdated Gemini threads
-python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py --no-resolve-outdated
+# Read-only fetch (no GraphQL mutations)
+python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py \
+    --no-resolve-outdated --no-resolve-addressed-by-reply
+
+# Dry-run all resolutions (logs intended writes to stderr without calling GraphQL)
+python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py --dry-run
 
 # Specific PR URL
 python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py --pr https://github.com/OWNER/REPO/pull/123
@@ -147,12 +151,15 @@ python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py -
 # JSON for automation
 python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py --format json
 
-# Include outdated or resolved threads while investigating history
-python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py --no-resolve-outdated --include-outdated --include-resolved
+# Include outdated, resolved, or addressed-by-reply threads while investigating history
+python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py \
+    --no-resolve-outdated --include-outdated --include-resolved --include-addressed-by-reply
 
 # Use a different bot login
 python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py --author google-gemini-code-assist
 ```
+
+The script emits `warning: ... hit page limit ...` to stderr if any GraphQL page maxes out (review threads, reviews, PR comments, or comments within a thread), indicating older items may be silently missing.
 
 ## GitHub Write Safety
 
@@ -161,8 +168,10 @@ This skill's default full loop includes committing, pushing, asking Gemini for r
 **Resolution policy:**
 
 - **OUTDATED threads** — auto-resolved (line anchor no longer matches code).
-- **ADDRESSED_BY_REPLY threads** — auto-resolved on the next pass if the substantive reply criteria are met (see Thread States). This prevents the same thread from re-tripping the loop forever after a deliberate deferral. Skip if the user has said "don't resolve" earlier in the session.
+- **ADDRESSED_BY_REPLY threads** — auto-resolved on the next pass when a non-bot maintainer has posted a substantive reply (>=30 chars). Implemented in `scripts/fetch_gemini_threads.py` via `is_addressed_by_reply` and resolved through the same GraphQL mutation as outdated threads. This prevents the same thread from re-tripping the loop forever after a deliberate deferral. Skip if the user has said "don't resolve" earlier in the session (pass `--no-resolve-addressed-by-reply`).
 - **UNRESOLVED threads** — never resolved without an explicit "resolve" request from the user.
 - **Reviews (approve/request-changes)** — never submitted unless explicitly asked.
+
+For any uncertain run, prefer `--dry-run` first: the script logs `[dry-run] would resolve <kind> <thread-id>` to stderr without calling GraphQL. Useful when debugging the reply-detection heuristic against a real PR.
 
 Stop before publishing if the fixes are ambiguous, tests expose a regression, local unrelated changes make it unsafe to commit cleanly, or the PR has already reached the 3 re-review request cap.
