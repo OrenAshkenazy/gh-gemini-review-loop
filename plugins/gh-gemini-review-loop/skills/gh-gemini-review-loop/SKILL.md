@@ -40,6 +40,27 @@ Gemini prefixes inline review comments with a markdown image whose alt text is t
 
 Pass `--post-receipt` to leave a one-comment audit trail on the PR after the loop runs: cycles used, threads resolved (outdated + addressed-by-reply), threads still pending, and severity breakdown of remaining actionable threads. Use `--dry-run --post-receipt` to preview the receipt without posting.
 
+## Progress Narration
+
+While the loop is running, the agent MUST emit one-line status updates to the user-facing chat at each phase transition. The format is `[loop] cycle N/3 — <phase>`. This is the cheapest user visibility — no code path, just instructions to the agent.
+
+Required narration points:
+
+| Phase | Narration line |
+|---|---|
+| Before script fetch | `[loop] cycle N/3 — fetching threads from PR #<num>...` |
+| After fetch, before fixes | `[loop] cycle N/3 — <K> actionable thread(s) (severity: <breakdown>). Fixing.` |
+| After fix attempt, before verify | `[loop] cycle N/3 — fixes applied. Verifying.` |
+| After verify | `[loop] cycle N/3 — verified (<test summary>).` |
+| Before push | `[loop] cycle N/3 — committing and pushing <commit-sha>...` |
+| After push, before re-review | `[loop] cycle N/3 — pushed. Requesting Gemini re-review (cycle N consumed).` |
+| Stop condition triggered | `[loop] STOP — <stop-condition>: <one-line explanation>.` |
+| Loop complete (all clean) | `[loop] DONE — 0 actionable threads remaining. Cycles used: N/3.` |
+
+Skip narration only when running in pure non-interactive batch mode (e.g. `gh pr create` chained into a script that captures output for later — but in Claude Code interactive sessions, never skip).
+
+Rationale: in interactive Claude Code sessions, the user is watching the chat. Silent loops feel broken even when they're working. One line per phase is the right cadence — enough to show progress without burying signal.
+
 ## Variations (user-prompt → flag mapping)
 
 When the user phrases the request differently, dispatch to the right flag combination. This table is authoritative; if a phrasing isn't here, fall back to defaults.
