@@ -36,7 +36,7 @@ To set this up in a fresh fork:
    - Value: paste the PAT
 4. `release.yml`'s `actions/checkout` and `gh release create` steps both reference `secrets.RELEASE_TOKEN`.
 
-If your repo has no branch ruleset (or `github-actions[bot]` is bypass-eligible because the repo is owned by an org rather than a user), you can change both `${{ secrets.RELEASE_TOKEN }}` references back to `${{ secrets.GITHUB_TOKEN }}` and skip the PAT entirely.
+If your repo has no branch ruleset (or `github-actions[bot]` is bypass-eligible because the repo is owned by an org rather than a user), `RELEASE_TOKEN` is optional — the workflow falls back to `${{ secrets.GITHUB_TOKEN }}` automatically via the `${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}` expression in `release.yml`. Just don't set the secret.
 
 ## Release notes
 

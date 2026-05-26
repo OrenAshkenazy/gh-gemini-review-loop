@@ -27,12 +27,14 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-          # PAT (acts as repo admin) is required to push the version-bump commit
-          # past the "Changes must be made through a pull request" ruleset rule.
-          # The built-in GITHUB_TOKEN is github-actions[bot], which is NOT in
-          # the ruleset bypass list on personal repos (the bypass picker doesn't
-          # expose github-actions as a selectable actor). See CONTRIBUTING.md.
-          token: ${{ secrets.RELEASE_TOKEN }}
+          # On personal repos with a "Changes must be made through a pull
+          # request" ruleset, GITHUB_TOKEN (github-actions[bot]) cannot push
+          # directly to main — and the bypass-actor picker doesn't expose
+          # github-actions for non-org repos. Use RELEASE_TOKEN (a fine-grained
+          # PAT acting as the repo admin, which IS in the bypass list) when
+          # present; fall back to GITHUB_TOKEN for forks without a ruleset.
+          # See CONTRIBUTING.md "Required secret: RELEASE_TOKEN".
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Determine bump level from PR labels
         id: bump
@@ -111,9 +113,9 @@ jobs:
       - name: Create GitHub Release
         if: steps.bump.outputs.level != 'skip'
         env:
-          # Use the PAT for consistency with the push step; this also lets the
-          # release appear authored by the repo owner instead of github-actions[bot].
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          # Match the checkout token: PAT if set (release authored by repo
+          # owner), otherwise GITHUB_TOKEN (authored by github-actions[bot]).
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           TAG: ${{ steps.version.outputs.tag }}
