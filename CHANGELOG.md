@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
-- **Release workflow uses `RELEASE_TOKEN` PAT** instead of the built-in `GITHUB_TOKEN`. The repo ruleset blocks direct pushes to `main`, and personal repos can't add `github-actions[bot]` to the bypass actor list (the UI picker doesn't expose it for non-org repos). A fine-grained PAT acting as the repo admin (already in the bypass list) is the cleanest workaround. CONTRIBUTING.md documents the one-time PAT setup. Fixes the failure mode observed on the first auto-release attempt (PR #7's merge: workflow ran but push was rejected with `GH013: Repository rule violations`).
+- **Sharpened `.claude-plugin/marketplace.json` metadata for claudemarketplaces.com indexing.** Marketplace-level `description` now leads with the differentiator phrasing (`"Fast-track ... thread-state-aware, severity-filtered, capped at 3 cycles, no CI coupling."`) instead of a meta description. Plugin-level `description` leads with the opinionated single-bot positioning and lists the four hard-to-replicate features (severity filter, 3-cycle cap, auto-resolve, sticky receipt). `tags` expanded to 7 (added `sticky-receipt`, `severity-aware`). `keywords` expanded to 9 (added `sticky-receipt`, `severity-aware`, `addressed-by-reply`, `auto-resolve`, `dry-run`) to improve hit-rate against search queries.
 
 ### Added
 
