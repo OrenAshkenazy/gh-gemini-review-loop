@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- **Release workflow uses `RELEASE_TOKEN` PAT** instead of the built-in `GITHUB_TOKEN`. The repo ruleset blocks direct pushes to `main`, and personal repos can't add `github-actions[bot]` to the bypass actor list (the UI picker doesn't expose it for non-org repos). A fine-grained PAT acting as the repo admin (already in the bypass list) is the cleanest workaround. CONTRIBUTING.md documents the one-time PAT setup. Fixes the failure mode observed on the first auto-release attempt (PR #7's merge: workflow ran but push was rejected with `GH013: Repository rule violations`).
+
 ### Added
 
 - **Sticky receipt** (`--sticky-receipt`). Maintains one comment per PR that the script edits in place across loop invocations, instead of accreting a new comment per cycle. State persists in `~/.config/gh-gemini-review-loop/state.json` (override with `GGRL_STATE_DIR`). Discovery fallback: if the local state file is missing, the script scans PR comments for an embedded marker and re-attaches to the existing receipt. New `--receipt-status {running,done,stopped}` flag tags the header so PR watchers can see loop phase at a glance. Pairs with the in-chat Progress Narration for end users who want visibility outside the terminal.

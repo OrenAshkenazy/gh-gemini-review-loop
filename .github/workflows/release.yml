@@ -27,7 +27,12 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # PAT (acts as repo admin) is required to push the version-bump commit
+          # past the "Changes must be made through a pull request" ruleset rule.
+          # The built-in GITHUB_TOKEN is github-actions[bot], which is NOT in
+          # the ruleset bypass list on personal repos (the bypass picker doesn't
+          # expose github-actions as a selectable actor). See CONTRIBUTING.md.
+          token: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Determine bump level from PR labels
         id: bump
@@ -106,7 +111,9 @@ jobs:
       - name: Create GitHub Release
         if: steps.bump.outputs.level != 'skip'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Use the PAT for consistency with the push step; this also lets the
+          # release appear authored by the repo owner instead of github-actions[bot].
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           TAG: ${{ steps.version.outputs.tag }}

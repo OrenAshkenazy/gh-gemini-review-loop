@@ -17,6 +17,27 @@ The **bump level** is controlled by a label on the PR:
 
 If no `release:*` label is present, the workflow defaults to `release:patch`. To bootstrap the labels in a fresh fork, run the **Setup release labels** workflow once (Actions tab → run workflow). Precedence when multiple are set: `skip > major > minor > patch`.
 
+### Required secret: `RELEASE_TOKEN`
+
+The release workflow pushes a `chore(release): vX.Y.Z [skip ci]` commit directly to `main`. The repo's branch ruleset blocks direct pushes (requires a PR), and on personal repos the GitHub UI does NOT let you add `github-actions[bot]` to the ruleset bypass list (it's not exposed as a selectable actor for non-org repos).
+
+Workaround: the workflow authenticates with a fine-grained PAT stored in the repo secret `RELEASE_TOKEN`. The PAT acts as the repo admin, who IS in the bypass list, so the push succeeds.
+
+To set this up in a fresh fork:
+
+1. Create a fine-grained PAT at <https://github.com/settings/personal-access-tokens/new>:
+   - Resource owner: your account/org owning the fork
+   - Repository access: only this repo
+   - Repository permissions: `Contents: Read and write`, `Pull requests: Read`
+   - Expiration: pick a date you'll remember to rotate (1 year max)
+2. Copy the token (`github_pat_...`).
+3. In repo Settings → Secrets and variables → Actions → New repository secret:
+   - Name: `RELEASE_TOKEN` (underscore, not hyphen — GitHub secret names disallow hyphens)
+   - Value: paste the PAT
+4. `release.yml`'s `actions/checkout` and `gh release create` steps both reference `secrets.RELEASE_TOKEN`.
+
+If your repo has no branch ruleset (or `github-actions[bot]` is bypass-eligible because the repo is owned by an org rather than a user), you can change both `${{ secrets.RELEASE_TOKEN }}` references back to `${{ secrets.GITHUB_TOKEN }}` and skip the PAT entirely.
+
 ## Release notes
 
 The GitHub Release body is the merged PR's body verbatim. Structure PR descriptions accordingly:
