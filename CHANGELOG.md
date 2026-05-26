@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- `--min-severity {critical,high,medium,low}` flag and `filter_by_min_severity()` helper. Drops actionable threads below the chosen severity. By default, threads with no Gemini priority marker (`unknown`) are kept; pass `--drop-unknown-severity` to remove them too.
+- **Variations** section in SKILL.md mapping common user phrasings ("only fix high severity", "audit-only run", "be persistent") to the right script flag combinations. Makes agent dispatch deterministic.
+- 8 new pytest cases for `filter_by_min_severity` (covering each severity threshold, unknown handling, stability, empty input). Test count: 36 → 44.
+
+### Changed
+
+- README rewritten to lead with **fast-track Gemini loop, no CI coupling** positioning. New "When to use this skill" table contrasting against [Gemini's official GitHub Action](https://github.com/marketplace/gemini-code-assist). Adds a "Configuring the skill" section pointing users at CLAUDE.md preferences as the idiomatic config layer.
+
 ## [0.1.0] - 2026-05-24
 
 First publishable release. Packaged as a Claude Code plugin marketplace.

@@ -12,6 +12,7 @@ from fetch_gemini_threads import (
     PAGE_LIMIT_THREAD_COMMENTS,
     PullRequest,
     addressed_by_reply_threads,
+    filter_by_min_severity,
     filter_threads,
     is_addressed_by_reply,
     pagination_warnings,
@@ -297,3 +298,59 @@ class TestRenderReceipt:
         assert "| 2 |" in receipt  # outdated resolved
         assert "high=1" in receipt
         assert "actionable threads remaining" in receipt
+
+
+# ---------------------------------------------------------------------------
+# filter_by_min_severity
+# ---------------------------------------------------------------------------
+
+def _sev_thread(sev: str | None):
+    body = (f"![{sev}](https://www.gstatic.com/codereviewagent/{sev}-priority.svg) fix me"
+            if sev else "plain comment with no marker")
+    return {
+        "isResolved": False,
+        "isOutdated": False,
+        "comments": {"nodes": [{"author": {"login": BOT}, "body": body}]},
+    }
+
+
+class TestFilterByMinSeverity:
+    def test_high_drops_medium_and_low(self):
+        items = [_sev_thread(s) for s in ("critical", "high", "medium", "low")]
+        out = filter_by_min_severity(items, "high")
+        assert [thread_severity(t) for t in out] == ["critical", "high"]
+
+    def test_medium_keeps_medium_and_above(self):
+        items = [_sev_thread(s) for s in ("critical", "high", "medium", "low")]
+        out = filter_by_min_severity(items, "medium")
+        assert [thread_severity(t) for t in out] == ["critical", "high", "medium"]
+
+    def test_low_keeps_everything_severity_typed(self):
+        items = [_sev_thread(s) for s in ("critical", "high", "medium", "low")]
+        out = filter_by_min_severity(items, "low")
+        assert len(out) == 4
+
+    def test_critical_keeps_only_critical(self):
+        items = [_sev_thread(s) for s in ("critical", "high", "medium", "low")]
+        out = filter_by_min_severity(items, "critical")
+        assert [thread_severity(t) for t in out] == ["critical"]
+
+    def test_unknown_kept_by_default(self):
+        items = [_sev_thread("low"), _sev_thread(None), _sev_thread("critical")]
+        out = filter_by_min_severity(items, "high")
+        # low dropped; critical kept; unknown kept (default keep_unknown=True)
+        assert {thread_severity(t) for t in out} == {"critical", "unknown"}
+
+    def test_keep_unknown_false_drops_unmarked(self):
+        items = [_sev_thread("critical"), _sev_thread(None), _sev_thread("low")]
+        out = filter_by_min_severity(items, "high", keep_unknown=False)
+        assert [thread_severity(t) for t in out] == ["critical"]
+
+    def test_preserves_input_order(self):
+        # Stable: don't sort, don't shuffle. main() sorts separately.
+        items = [_sev_thread("low"), _sev_thread("critical"), _sev_thread("high")]
+        out = filter_by_min_severity(items, "high")
+        assert [thread_severity(t) for t in out] == ["critical", "high"]
+
+    def test_empty_input(self):
+        assert filter_by_min_severity([], "high") == []

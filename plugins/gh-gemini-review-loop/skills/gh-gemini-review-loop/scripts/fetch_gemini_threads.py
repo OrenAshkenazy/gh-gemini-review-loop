@@ -325,6 +325,29 @@ def sort_by_severity(threads: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
+def filter_by_min_severity(
+    threads: list[dict[str, Any]], min_severity: str, *, keep_unknown: bool = True
+) -> list[dict[str, Any]]:
+    """Drop threads with severity strictly lower than min_severity.
+
+    `unknown` threads (no Gemini priority marker) are kept by default — dropping
+    them on a strict filter would silently swallow every thread Gemini didn't
+    annotate, which is the wrong default for a fast-feedback loop. Pass
+    keep_unknown=False to drop them anyway.
+    """
+    cap = SEVERITY_ORDER[min_severity]
+    out: list[dict[str, Any]] = []
+    for t in threads:
+        sev = thread_severity(t)
+        if sev == "unknown":
+            if keep_unknown:
+                out.append(t)
+            continue
+        if SEVERITY_ORDER[sev] <= cap:
+            out.append(t)
+    return out
+
+
 def severity_counts(threads: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for thread in threads:
@@ -668,6 +691,21 @@ def main() -> int:
         help="Include addressed-by-reply threads in actionable output (default: hidden).",
     )
     parser.add_argument(
+        "--min-severity",
+        choices=["critical", "high", "medium", "low"],
+        default=None,
+        help=(
+            "Drop actionable threads below this Gemini-assigned severity. "
+            "Threads without a Gemini severity marker ('unknown') are kept regardless "
+            "(use --drop-unknown-severity to remove them too)."
+        ),
+    )
+    parser.add_argument(
+        "--drop-unknown-severity",
+        action="store_true",
+        help="When --min-severity is set, also drop threads with no severity marker.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Do not call any GraphQL mutations; log intended writes to stderr instead.",
@@ -745,6 +783,18 @@ def main() -> int:
             include_addressed_by_reply=args.include_addressed_by_reply,
         )
         threads = sort_by_severity(threads)
+        if args.min_severity:
+            before = len(threads)
+            threads = filter_by_min_severity(
+                threads, args.min_severity, keep_unknown=not args.drop_unknown_severity
+            )
+            dropped = before - len(threads)
+            if dropped:
+                tag = " (kept unknown-severity)" if not args.drop_unknown_severity else ""
+                print(
+                    f"--min-severity {args.min_severity}: dropped {dropped} lower-severity thread(s){tag}.",
+                    file=sys.stderr,
+                )
         page_warnings = pagination_warnings(pull_request)
         for warning in page_warnings:
             print(f"warning: {warning}", file=sys.stderr)

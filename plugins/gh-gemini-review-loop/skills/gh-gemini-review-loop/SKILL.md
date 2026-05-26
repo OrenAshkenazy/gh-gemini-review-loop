@@ -40,6 +40,29 @@ Gemini prefixes inline review comments with a markdown image whose alt text is t
 
 Pass `--post-receipt` to leave a one-comment audit trail on the PR after the loop runs: cycles used, threads resolved (outdated + addressed-by-reply), threads still pending, and severity breakdown of remaining actionable threads. Use `--dry-run --post-receipt` to preview the receipt without posting.
 
+## Variations (user-prompt → flag mapping)
+
+When the user phrases the request differently, dispatch to the right flag combination. This table is authoritative; if a phrasing isn't here, fall back to defaults.
+
+| User intent | Phrasing examples | Pass to script |
+|---|---|---|
+| **Default loop** | "run the gemini loop" / "handle gemini feedback" / "yeet this PR" | (no extra flags) |
+| **High-severity only** | "only fix high severity" / "skip the nits" / "just the important stuff" | `--min-severity high` |
+| **Medium and above** | "skip low-priority comments" | `--min-severity medium` |
+| **Critical only** | "just the critical findings" | `--min-severity critical` |
+| **Strict severity filter** | "only what Gemini flagged as high — ignore unmarked" | `--min-severity high --drop-unknown-severity` |
+| **Audit-only** | "summarize Gemini comments" / "read-only review" / "show me what's pending" | `--dry-run --post-receipt --no-resolve-outdated --no-resolve-addressed-by-reply` |
+| **More cycles** | "be persistent" / "do 4 cycles" | `--max-rereview-requests 4` |
+| **Fewer cycles** | "one cycle only" / "don't loop, just fix once" | `--max-rereview-requests 1` |
+| **Specific PR** | "handle PR https://github.com/..." | `--pr <URL>` |
+| **Different bot login** | "handle review comments from google-gemini-code-assist" | `--author google-gemini-code-assist` |
+| **Post status without acting** | "leave a status comment without touching anything" | `--post-receipt --no-resolve-outdated --no-resolve-addressed-by-reply` |
+| **History investigation** | "show me all Gemini threads ever, including resolved" | `--include-resolved --include-outdated --include-addressed-by-reply --no-resolve-outdated --no-resolve-addressed-by-reply` |
+
+If the user explicitly opts out of any default behavior (e.g. "don't auto-resolve anything"), respect it for the rest of the session via `--no-resolve-outdated --no-resolve-addressed-by-reply`.
+
+This skill does NOT support multi-bot loops (CodeRabbit, Copilot, etc.). It is opinionated for `gemini-code-assist` only. If the user asks for a different bot, change `--author`, but severity parsing and addressed-by-reply heuristics are calibrated for Gemini's output format.
+
 ## Stopping Conditions
 
 Stop the loop and report status instead of pushing or asking Gemini again when any condition is true:
