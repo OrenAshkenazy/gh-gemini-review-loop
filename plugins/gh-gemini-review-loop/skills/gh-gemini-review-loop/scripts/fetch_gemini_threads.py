@@ -707,7 +707,7 @@ def main() -> int:
     parser.add_argument(
         "--drop-unknown-severity",
         action="store_true",
-        help="When --min-severity is set, also drop threads with no severity marker.",
+        help="Drop threads with no severity marker (can be used alone or with --min-severity).",
     )
     parser.add_argument(
         "--dry-run",
