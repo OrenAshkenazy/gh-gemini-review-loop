@@ -248,7 +248,7 @@ class TestConfusionMatrix:
 
 
 class TestEvaluateFixture:
-    def test_real_fixture_pr8_with_perfectly_calibrated_fake(self, monkeypatch):
+    def test_real_fixture_pr8_with_perfectly_calibrated_fake(self):
         # Force the fake judge to always return the human label for PR #8 (false-positive).
         client = JudgeClient(call_fn=fake_constant("false-positive"))
         rows = evaluate_fixture("pr-8", client, samples=1)

@@ -178,18 +178,10 @@ class JudgeClient:
             raise JudgeError(f"Judge confidence is not a number: {payload!r}") from exc
         confidence = max(0.0, min(1.0, confidence))
 
-        reason = (payload.get("reason") or "").strip()
+        # Coerce to str defensively: a misbehaving model could return a non-string
+        # for `reason` (int, bool, list); strip() would then AttributeError.
+        reason = str(payload.get("reason") or "").strip()
         return JudgeResult(label=label, confidence=confidence, reason=reason, raw_response=content)
-
-
-def judge_finding_n_times(
-    client: JudgeClient, finding: dict, *, samples: int = 3
-) -> list[JudgeResult]:
-    """Call the judge multiple times to measure variance on borderline cases."""
-    out: list[JudgeResult] = []
-    for _ in range(samples):
-        out.append(client.judge(finding))
-    return out
 
 
 if __name__ == "__main__":  # pragma: no cover

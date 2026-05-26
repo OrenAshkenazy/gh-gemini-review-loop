@@ -68,7 +68,12 @@ def load_fixture_pair(pr_id: str) -> tuple[dict, dict]:
             f"Missing human-label sidecar: {labels_path}. "
             "Every fixture needs a `.label.json` for the eval to compute agreement."
         )
-    return json.loads(findings_path.read_text()), json.loads(labels_path.read_text())
+    # Explicit utf-8 encoding so platforms with non-UTF8 locale defaults (some
+    # Windows + older CI runners) don't decode-error on Unicode in finding bodies.
+    return (
+        json.loads(findings_path.read_text(encoding="utf-8")),
+        json.loads(labels_path.read_text(encoding="utf-8")),
+    )
 
 
 def discover_fixtures() -> list[str]:
@@ -292,7 +297,17 @@ def main(argv: list[str] | None = None) -> int:
 
     rows: list[EvaluatedFinding] = []
     for stem in stems:
-        rows.extend(evaluate_fixture(stem, client, samples=args.samples))
+        try:
+            rows.extend(evaluate_fixture(stem, client, samples=args.samples))
+        except FileNotFoundError as exc:
+            # Friendly handling when --fixture points at a nonexistent stem.
+            # Without this the user gets a raw traceback.
+            available = ", ".join(discover_fixtures()) or "(none)"
+            print(
+                f"error: {exc}\nAvailable fixtures: {available}",
+                file=sys.stderr,
+            )
+            return 1
 
     m = metrics(rows)
     summary = render_summary(rows, m)
@@ -307,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
         report_path = pathlib.Path(args.report)
         # Create parent dirs so users can pass nested paths like /tmp/eval/report.json.
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(json.dumps(report, indent=2))
+        report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(f"\nReport written to {args.report}", file=sys.stderr)
 
     if args.exit_nonzero_on_disagreement and m.get("agreement_rate", 1.0) < 0.80:
