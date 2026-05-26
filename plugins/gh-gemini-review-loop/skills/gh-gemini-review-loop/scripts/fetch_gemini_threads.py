@@ -503,19 +503,25 @@ def find_existing_sticky_comment(pr: PullRequest) -> int | None:
     Used as a recovery path when the local state file is missing — the marker
     embedded in the receipt body is the source of truth on GitHub.
     """
+    # `gh api --paginate` runs --jq on each page independently, so a per-page
+    # aggregator like `[...] | last` returns the last id PER PAGE — not the
+    # global last. Emit one id per line across all pages and pick the last
+    # valid one in Python.
     result = run_gh(
         [
             "api",
             f"repos/{pr.owner}/{pr.repo}/issues/{pr.number}/comments",
             "--paginate",
             "--jq",
-            f'[.[] | select(.body | contains("{STICKY_RECEIPT_MARKER}")) | .id] | last',
+            f'.[] | select(.body | contains("{STICKY_RECEIPT_MARKER}")) | .id',
         ]
     )
     if isinstance(result, int):
         return result
-    if isinstance(result, str) and result.strip().isdigit():
-        return int(result.strip())
+    if isinstance(result, str):
+        ids = [int(line.strip()) for line in result.splitlines() if line.strip().isdigit()]
+        if ids:
+            return ids[-1]
     return None
 
 
