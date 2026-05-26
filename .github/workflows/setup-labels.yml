@@ -1,0 +1,30 @@
+name: Setup release labels
+
+# One-time setup: create the release:* labels used by .github/workflows/release.yml.
+# Run manually via the Actions tab → "Setup release labels" → Run workflow.
+# Idempotent — gh label create --force replaces existing labels with the same name.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create release:* labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create release:major --color B60205 --force \
+              --description "Bump MAJOR version on merge (breaking changes)"
+          gh label create release:minor --color 1D76DB --force \
+              --description "Bump MINOR version on merge (new features, backwards compatible)"
+          gh label create release:patch --color 0E8A16 --force \
+              --description "Bump PATCH version on merge (fixes, docs, refactors). Default if no label."
+          gh label create release:skip --color C5DEF5 --force \
+              --description "Do NOT bump version or create a release for this PR."
