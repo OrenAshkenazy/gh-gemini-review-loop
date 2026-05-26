@@ -40,6 +40,20 @@ Gemini prefixes inline review comments with a markdown image whose alt text is t
 
 Pass `--post-receipt` to leave a one-comment audit trail on the PR after the loop runs: cycles used, threads resolved (outdated + addressed-by-reply), threads still pending, and severity breakdown of remaining actionable threads. Use `--dry-run --post-receipt` to preview the receipt without posting.
 
+### Sticky receipt (background visibility)
+
+For richer visibility while the loop is in flight, use `--sticky-receipt` instead. It maintains **one comment per PR that the script edits in place** across loop invocations. State persists in `~/.config/gh-gemini-review-loop/state.json` (override with `GGRL_STATE_DIR` env var).
+
+- First invocation: posts a fresh comment with status `RUNNING`, stores its id locally.
+- Subsequent invocations: PATCH the same comment in place. No new comments accrete on the PR.
+- Status header is configurable via `--receipt-status {running,done,stopped}`. Default is `RUNNING` for sticky receipts.
+- Tag the final invocation with `--receipt-status done` (or `stopped`) so the user sees the loop has finished.
+- Discovery fallback: if the local state file is missing, the script searches PR comments for the embedded marker and re-attaches to the existing receipt.
+
+When `--sticky-receipt` is appropriate: long-running interactive loops where the user is watching the PR tab, not the chat. Always paired with `--receipt-status running` at cycle start, `done` at clean exit, `stopped` at stop-condition.
+
+When the one-shot `--post-receipt` is appropriate: scripted/batch contexts where each invocation is independent and you want a fresh audit comment per run.
+
 ## Progress Narration
 
 While the loop is running, the agent MUST emit one-line status updates to the user-facing chat at each phase transition. The format is `[loop] cycle N/3 — <phase>`. This is the cheapest user visibility — no code path, just instructions to the agent.
@@ -61,6 +75,8 @@ Skip narration only when running in pure non-interactive batch mode (e.g. `gh pr
 
 Rationale: in interactive Claude Code sessions, the user is watching the chat. Silent loops feel broken even when they're working. One line per phase is the right cadence — enough to show progress without burying signal.
 
+When the user explicitly wants visibility outside the chat (e.g. they'll step away from the terminal, or other reviewers will look at the PR while the loop runs), pair the chat narration with `--sticky-receipt`. See [Sticky receipt](#sticky-receipt-background-visibility) above.
+
 ## Variations (user-prompt → flag mapping)
 
 When the user phrases the request differently, dispatch to the right flag combination. This table is authoritative; if a phrasing isn't here, fall back to defaults.
@@ -78,6 +94,7 @@ When the user phrases the request differently, dispatch to the right flag combin
 | **Specific PR** | "handle PR https://github.com/..." | `--pr <URL>` |
 | **Different bot login** | "handle review comments from google-gemini-code-assist" | `--author google-gemini-code-assist` |
 | **Post status without acting** | "leave a status comment without touching anything" | `--post-receipt --no-resolve-outdated --no-resolve-addressed-by-reply` |
+| **Live status comment** | "show me a live status comment on the PR" / "I want background visibility" | `--sticky-receipt --receipt-status running` per cycle; `--sticky-receipt --receipt-status done` at the final invocation |
 | **History investigation** | "show me all Gemini threads ever, including resolved" | `--include-resolved --include-outdated --include-addressed-by-reply --no-resolve-outdated --no-resolve-addressed-by-reply` |
 
 If the user explicitly opts out of any default behavior (e.g. "don't auto-resolve anything"), respect it for the rest of the session via `--no-resolve-outdated --no-resolve-addressed-by-reply`.

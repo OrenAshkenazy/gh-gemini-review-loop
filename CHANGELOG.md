@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Added
 
+- **Sticky receipt** (`--sticky-receipt`). Maintains one comment per PR that the script edits in place across loop invocations, instead of accreting a new comment per cycle. State persists in `~/.config/gh-gemini-review-loop/state.json` (override with `GGRL_STATE_DIR`). Discovery fallback: if the local state file is missing, the script scans PR comments for an embedded marker and re-attaches to the existing receipt. New `--receipt-status {running,done,stopped}` flag tags the header so PR watchers can see loop phase at a glance. Pairs with the in-chat Progress Narration for end users who want visibility outside the terminal.
 - **Progress Narration** section in SKILL.md. Requires the agent to emit one-line status updates (`[loop] cycle N/3 — <phase>`) at each phase transition during the loop. No code change — pure agent-instruction layer. Eliminates the "silent loop feels broken" UX problem in interactive sessions.
 - `--min-severity {critical,high,medium,low}` flag and `filter_by_min_severity()` helper. Drops actionable threads below the chosen severity. By default, threads with no Gemini priority marker (`unknown`) are kept; pass `--drop-unknown-severity` to remove them too.
 - `filter_by_min_severity` now accepts `min_severity=None`, enabling `--drop-unknown-severity` to be used independently of `--min-severity` (closes a silent no-op).
