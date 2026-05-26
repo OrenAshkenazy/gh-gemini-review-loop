@@ -299,9 +299,9 @@ def pagination_warnings(pull_request: dict[str, Any]) -> list[str]:
     loop should surface this so the user knows to paginate or scope the PR.
     """
     warnings: list[str] = []
-    pr_comments = pull_request.get("comments", {}).get("nodes", []) or []
-    reviews = pull_request.get("reviews", {}).get("nodes", []) or []
-    threads = pull_request.get("reviewThreads", {}).get("nodes", []) or []
+    pr_comments = (pull_request.get("comments") or {}).get("nodes") or []
+    reviews = (pull_request.get("reviews") or {}).get("nodes") or []
+    threads = (pull_request.get("reviewThreads") or {}).get("nodes") or []
     if len(pr_comments) >= PAGE_LIMIT_PR_COMMENTS:
         warnings.append(
             f"PR comments hit page limit ({PAGE_LIMIT_PR_COMMENTS}); older comments may be missing."
