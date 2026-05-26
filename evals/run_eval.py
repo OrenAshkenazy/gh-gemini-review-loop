@@ -177,12 +177,14 @@ def render_summary(rows: list[EvaluatedFinding], m: dict[str, Any]) -> str:
         "| severity | n | agreement |",
         "|---|---|---|",
     ]
-    for sev in ("critical", "high", "medium", "low", "unknown", None):
-        key = sev if sev is not None else "unknown"
-        stats = m["by_severity"].get(key)
+    # metrics() maps None severities to "unknown", so we only iterate over the
+    # four known severity keys plus "unknown". Including None here would be dead
+    # code — the lookup against m["by_severity"] always uses the "unknown" key.
+    for sev in ("critical", "high", "medium", "low", "unknown"):
+        stats = m["by_severity"].get(sev)
         if not stats:
             continue
-        lines.append(f"| {key} | {stats['n']} | {stats['agreement_rate']:.1%} |")
+        lines.append(f"| {sev} | {stats['n']} | {stats['agreement_rate']:.1%} |")
     lines.extend(["", "## Distribution", ""])
     lines.append(f"- Human labels:  {m['by_human_label']}")
     lines.append(f"- Judge labels:  {m['by_judge_label']}")
@@ -232,6 +234,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Judge calls per finding for variance measurement. Default: 1.",
     )
     parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.0,
+        help=(
+            "Sampling temperature for the judge. Default 0.0 (deterministic, "
+            "single-sample reproducible). Bump above zero (e.g. 0.3-0.7) when "
+            "using --samples N > 1 — at temp=0 every sample returns the same "
+            "label so variance is always zero."
+        ),
+    )
+    parser.add_argument(
         "--judge",
         choices=["openai", "fake"],
         default="openai",
@@ -249,9 +262,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.judge == "fake":
-        client = JudgeClient(call_fn=_fake_judge_factory())
+        client = JudgeClient(call_fn=_fake_judge_factory(), temperature=args.temperature)
     else:
-        client = JudgeClient()
+        client = JudgeClient(temperature=args.temperature)
+    if args.samples > 1 and args.temperature == 0.0:
+        print(
+            "warning: --samples > 1 with --temperature 0.0 produces identical samples "
+            "(variance will be 0). Consider --temperature 0.3-0.7 for a real variance signal.",
+            file=sys.stderr,
+        )
 
     stems = [args.fixture] if args.fixture else discover_fixtures()
     if not stems:

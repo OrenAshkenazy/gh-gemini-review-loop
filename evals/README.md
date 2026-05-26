@@ -84,8 +84,10 @@ python3 -m evals.run_eval --judge fake
 # Real eval, 1 sample per finding
 OPENAI_API_KEY=sk-... python3 -m evals.run_eval
 
-# Variance check — 3 samples per finding, see if the judge is stable
-OPENAI_API_KEY=sk-... python3 -m evals.run_eval --samples 3
+# Variance check — 3 samples per finding with non-zero temperature.
+# At --temperature 0.0 (default), every sample returns the same label, so
+# variance is always 0. Bump temperature to get a real ambiguity signal.
+OPENAI_API_KEY=sk-... python3 -m evals.run_eval --samples 3 --temperature 0.5
 
 # Restrict to one fixture
 python3 -m evals.run_eval --fixture pr-8

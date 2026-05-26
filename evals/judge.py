@@ -89,10 +89,16 @@ class JudgeError(RuntimeError):
 
 
 class JudgeClient:
-    """Thin wrapper around OpenAI chat completions with JSON mode + retries.
+    """Thin wrapper around OpenAI chat completions with JSON mode.
 
     ``call_fn`` is the underlying API callable; in tests, replace it with a fake
     that returns a canned response without hitting the network.
+
+    ``temperature`` controls determinism. Default 0.0 — same input always yields
+    the same label, so single-sample runs are reproducible. To use the
+    ``--samples N > 1`` variance signal in run_eval.py, bump this above zero
+    (typical range: 0.3–0.7); identical samples mean zero variance regardless of
+    how many you take.
     """
 
     def __init__(
@@ -101,10 +107,12 @@ class JudgeClient:
         model: str = DEFAULT_MODEL,
         api_key: str | None = None,
         call_fn: t.Callable[..., dict] | None = None,
+        temperature: float = 0.0,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self._call_fn = call_fn
+        self.temperature = temperature
 
     def _openai_call(self, messages: list[dict]) -> dict:
         """Default OpenAI Python SDK call. Imported lazily so tests don't need it installed."""
@@ -123,7 +131,7 @@ class JudgeClient:
             model=self.model,
             messages=messages,
             response_format={"type": "json_object"},
-            temperature=0.0,
+            temperature=self.temperature,
         )
         return {
             "content": resp.choices[0].message.content,

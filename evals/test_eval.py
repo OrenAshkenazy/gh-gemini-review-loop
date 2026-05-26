@@ -82,6 +82,14 @@ class TestJudgeClient:
         assert result.confidence == 0.95
         assert result.reason == "looks legit"
 
+    def test_temperature_default_is_zero(self):
+        client = JudgeClient(call_fn=fake_constant("useful"))
+        assert client.temperature == 0.0
+
+    def test_temperature_override(self):
+        client = JudgeClient(call_fn=fake_constant("useful"), temperature=0.7)
+        assert client.temperature == 0.7
+
     def test_raises_on_invalid_label(self):
         client = JudgeClient(
             call_fn=lambda _m: {"content": json.dumps({"label": "maybe", "confidence": 0.5})}
