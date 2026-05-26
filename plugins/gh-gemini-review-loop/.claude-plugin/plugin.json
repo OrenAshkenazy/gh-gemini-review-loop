@@ -1,12 +1,18 @@
 {
   "name": "gh-gemini-review-loop",
   "description": "Run the gemini-code-assist PR review loop: wait, fetch actionable threads, fix, push, re-request review. Capped at 3 cycles, severity-aware, auditable.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "Oren Ashkenazy"
   },
   "homepage": "https://github.com/OrenAshkenazy/gh-gemini-review-loop",
   "repository": "https://github.com/OrenAshkenazy/gh-gemini-review-loop",
   "license": "MIT",
-  "keywords": ["gemini-code-assist", "pull-request", "code-review", "gh-cli", "graphql"]
+  "keywords": [
+    "gemini-code-assist",
+    "pull-request",
+    "code-review",
+    "gh-cli",
+    "graphql"
+  ]
 }
