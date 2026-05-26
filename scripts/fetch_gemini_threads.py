@@ -320,7 +320,7 @@ def pagination_warnings(pull_request: dict[str, Any]) -> list[str]:
             thread_id = thread.get("id") or "(unknown)"
             warnings.append(
                 f"thread {thread_id} comments hit page limit "
-                f"({PAGE_LIMIT_THREAD_COMMENTS}); older replies may be missing."
+                f"({PAGE_LIMIT_THREAD_COMMENTS}); newer replies may be missing."
             )
     return warnings
 
