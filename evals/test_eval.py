@@ -116,6 +116,17 @@ class TestJudgeClient:
         result = client.judge({"body": "x"})
         assert result.confidence == 0.0
 
+    def test_raises_when_payload_is_not_dict(self):
+        # Valid JSON but not an object: the model returned a bare string/list/null.
+        client = JudgeClient(call_fn=lambda _m: {"content": json.dumps(["useful"])})
+        with pytest.raises(JudgeError, match="not a JSON object"):
+            client.judge({"body": "x"})
+
+    def test_raises_when_payload_is_null(self):
+        client = JudgeClient(call_fn=lambda _m: {"content": "null"})
+        with pytest.raises(JudgeError, match="not a JSON object"):
+            client.judge({"body": "x"})
+
 
 # ---------------------------------------------------------------------------
 # Runner: metrics / confusion / agreement
@@ -160,9 +171,26 @@ class TestMajorityAndAgreement:
 
 
 class TestMetrics:
-    def test_empty_input(self):
+    def test_empty_input_returns_full_shape(self):
+        # Must populate every key so render_summary() and JSON consumers work.
         m = metrics([])
-        assert m == {"n": 0}
+        assert m["n"] == 0
+        assert m["agreement_rate"] == 1.0
+        assert m["agreements"] == 0
+        assert m["variance_count"] == 0
+        assert m["by_severity"] == {}
+        assert m["by_human_label"] == {}
+        assert m["by_judge_label"] == {}
+        # Confusion matrix must be present and well-shaped even at n=0
+        assert "useful" in m["confusion"]
+        assert m["confusion"]["useful"]["useful"] == 0
+
+    def test_empty_input_renders_summary_without_keyerror(self):
+        # Regression: render_summary used to KeyError on empty rows.
+        m = metrics([])
+        out = render_summary([], m)
+        assert "0 findings" in out
+        assert "100.0%" in out  # vacuous agreement
 
     def test_perfect_agreement(self):
         rows = [

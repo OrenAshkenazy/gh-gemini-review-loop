@@ -133,6 +133,10 @@ class JudgeClient:
             response_format={"type": "json_object"},
             temperature=self.temperature,
         )
+        # Defensive: content filtering or upstream API anomalies can return
+        # an empty choices list, which would IndexError on [0].
+        if not resp.choices:
+            raise JudgeError("OpenAI response returned no choices.")
         return {
             "content": resp.choices[0].message.content,
             "model": resp.model,
@@ -156,6 +160,11 @@ class JudgeClient:
             payload = json.loads(content)
         except json.JSONDecodeError as exc:
             raise JudgeError(f"Judge response was not valid JSON: {content!r}") from exc
+
+        # Defensive: json.loads accepts non-object JSON (lists, strings, null).
+        # All downstream code assumes a dict, so reject anything else early.
+        if not isinstance(payload, dict):
+            raise JudgeError(f"Judge response was not a JSON object: {content!r}")
 
         label = payload.get("label")
         if label not in VALID_LABELS:

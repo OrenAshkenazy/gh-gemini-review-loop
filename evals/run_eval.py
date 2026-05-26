@@ -137,7 +137,20 @@ def confusion_matrix(rows: list[EvaluatedFinding]) -> dict[str, dict[str, int]]:
 def metrics(rows: list[EvaluatedFinding]) -> dict[str, Any]:
     n = len(rows)
     if n == 0:
-        return {"n": 0}
+        # Return a fully-populated shape so render_summary() and downstream
+        # JSON consumers don't trip on missing keys when a fixture is skipped
+        # or has zero labeled findings. agreement_rate of 1.0 on an empty set
+        # is a deliberate identity choice (vacuously true).
+        return {
+            "n": 0,
+            "agreement_rate": 1.0,
+            "agreements": 0,
+            "variance_count": 0,
+            "by_severity": {},
+            "confusion": {h: {j: 0 for j in VALID_LABELS} for h in VALID_LABELS},
+            "by_human_label": {},
+            "by_judge_label": {},
+        }
     agreements = sum(1 for r in rows if r.agrees_with_human)
     by_severity: dict[str, dict[str, int]] = collections.defaultdict(
         lambda: {"n": 0, "agree": 0}
@@ -291,7 +304,10 @@ def main(argv: list[str] | None = None) -> int:
             "rows": [dataclasses.asdict(r) for r in rows],
             "summary_md": summary,
         }
-        pathlib.Path(args.report).write_text(json.dumps(report, indent=2))
+        report_path = pathlib.Path(args.report)
+        # Create parent dirs so users can pass nested paths like /tmp/eval/report.json.
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(report, indent=2))
         print(f"\nReport written to {args.report}", file=sys.stderr)
 
     if args.exit_nonzero_on_disagreement and m.get("agreement_rate", 1.0) < 0.80:
