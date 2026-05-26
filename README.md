@@ -4,15 +4,6 @@
 
 > Different from [Gemini Code Assist's GitHub Action](https://github.com/marketplace/gemini-code-assist) which runs in CI on push. This skill runs interactively from your dev environment: Claude opens a PR, this skill closes the comments before you get up for coffee. No CI minutes spent. No org-wide rollout. Just install, work.
 
-## When to use this skill
-
-| Use it for | Don't use it for |
-|---|---|
-| Closing the loop on PRs you just opened, before merging | Org-wide enforcement of code review policy |
-| Iterating quickly — "fix Gemini's high-severity stuff, ignore the nits" | Multi-bot review aggregation (CodeRabbit + Gemini + Copilot) |
-| Headless / agent-driven PR workflows | Replacing human review |
-| Personal productivity in Claude Code sessions | Running on every push (use [Gemini's official Action](https://github.com/marketplace/gemini-code-assist) for that) |
-
 ## What it does
 
 1. Wait for Gemini's review.
@@ -93,12 +84,6 @@ Notable flags:
 - Python 3.10+ (uses PEP 604 `str | None` union syntax)
 - `gh` CLI authenticated against the repo
 - A repo where `gemini-code-assist` is a configured reviewer
-
-## Non-goals
-
-- Multi-bot review aggregation. By design — see [the rationale](https://github.com/OrenAshkenazy/gh-gemini-review-loop/issues) for why mixing bots hurts determinism.
-- CI integration. This skill is for the local dev loop. If you want Gemini to gate merges, use the official [Gemini Code Assist GitHub Action](https://github.com/marketplace/gemini-code-assist) — it's a different tool for a different job.
-- Replacing human review. Always pair with one.
 
 ## License
 
