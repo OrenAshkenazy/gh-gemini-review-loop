@@ -211,7 +211,7 @@ def is_addressed_by_reply(thread: dict[str, Any], bot_author: str) -> bool:
     """
     if thread.get("isResolved") or thread.get("isOutdated"):
         return False
-    for comment in thread.get("comments", {}).get("nodes", []):
+    for comment in (thread.get("comments") or {}).get("nodes") or []:
         login = (comment.get("author") or {}).get("login") or ""
         if not login or login == bot_author or login.endswith("[bot]"):
             continue
