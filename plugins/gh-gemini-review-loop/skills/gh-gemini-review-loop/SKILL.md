@@ -1,6 +1,6 @@
 ---
 name: gh-gemini-review-loop
-description: Use when Claude creates or opens a PR, after a PR is created, or when the user asks to handle gemini-code-assist PR comments, fix Gemini review feedback, wait for Gemini, run a Gemini review loop, commit fixes to the remote branch, or request Gemini re-review on the current branch PR or a specified PR.
+description: Use after a GitHub PR is opened, or when the user asks to handle gemini-code-assist review feedback, run the Gemini review loop, fix Gemini comments, or re-request Gemini review. Waits, fixes, pushes, re-asks. Capped at 3 cycles.
 ---
 
 # Gemini Code Assist PR Review Loop
@@ -17,7 +17,7 @@ Each Gemini review thread is in one of these states. The fetch script tags each 
 
 - **`RESOLVED`** — Gemini or the maintainer has explicitly resolved the thread. Skip.
 - **`OUTDATED`** — The line anchor has moved out from under the thread (the code Gemini commented on no longer exists at that position). Auto-resolved by the script. Skip.
-- **`ADDRESSED_BY_REPLY`** — Unresolved, but the current user (or another maintainer) has posted a substantive reply (≥30 chars, not a bot, not a token "ack"). Treated as a human decision to defer/wontfix; the loop does not try to fix this thread again. The script SHOULD resolve these via GraphQL on the next pass (see "GitHub Write Safety" below).
+- **`ADDRESSED_BY_REPLY`** — Unresolved, but the current user (or another maintainer) has posted a substantive reply (≥30 chars, not a bot, not a token "ack"). Treated as a human decision to defer/wontfix; the loop does not try to fix this thread again. The script auto-resolves these on the next pass via GraphQL (see "GitHub Write Safety" below). Opt out with `--no-resolve-addressed-by-reply`.
 - **`UNRESOLVED`** — Actionable. Drives the next fix attempt.
 
 A thread can transition `UNRESOLVED → ADDRESSED_BY_REPLY → RESOLVED` (reply + auto-resolve), or `UNRESOLVED → fixed in code → OUTDATED → RESOLVED` (line moves out, auto-resolved).
@@ -136,7 +136,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
 From any repository with a GitHub PR:
 
 ```bash
-python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py"
 ```
 
 By default this resolves unresolved outdated Gemini threads AND addressed-by-reply threads (unresolved threads where a non-bot maintainer posted a substantive reply, >=30 chars) before printing current feedback, unless the PR has already reached the 3 re-review request cap.
@@ -145,27 +145,27 @@ Useful options:
 
 ```bash
 # Wait for Gemini review activity to appear and settle
-python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py --wait
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --wait
 
 # Read-only fetch (no GraphQL mutations)
-python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py \
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
     --no-resolve-outdated --no-resolve-addressed-by-reply
 
 # Dry-run all resolutions (logs intended writes to stderr without calling GraphQL)
-python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py --dry-run
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --dry-run
 
 # Specific PR URL
-python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py --pr https://github.com/OWNER/REPO/pull/123
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --pr https://github.com/OWNER/REPO/pull/123
 
 # JSON for automation
-python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py --format json
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --format json
 
 # Include outdated, resolved, or addressed-by-reply threads while investigating history
-python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py \
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
     --no-resolve-outdated --include-outdated --include-resolved --include-addressed-by-reply
 
 # Use a different bot login
-python3 ~/.claude/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py --author google-gemini-code-assist
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --author google-gemini-code-assist
 ```
 
 The script emits `warning: ... hit page limit ...` to stderr if any GraphQL page maxes out (review threads, reviews, PR comments, or comments within a thread), indicating older items may be silently missing.

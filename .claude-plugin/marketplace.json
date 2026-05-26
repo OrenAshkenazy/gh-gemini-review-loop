@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "gh-gemini-review-loop",
+  "description": "Single-plugin marketplace hosting the gh-gemini-review-loop skill.",
+  "owner": {
+    "name": "Oren Ashkenazy"
+  },
+  "plugins": [
+    {
+      "name": "gh-gemini-review-loop",
+      "source": "./plugins/gh-gemini-review-loop",
+      "description": "Run the gemini-code-assist PR review loop end-to-end: wait for the review, fix actionable threads, push, re-request review. Capped at 3 cycles.",
+      "category": "code-review",
+      "tags": ["gemini", "code-review", "pr", "github", "gh-cli"],
+      "license": "MIT",
+      "repository": "https://github.com/OrenAshkenazy/gh-gemini-review-loop",
+      "homepage": "https://github.com/OrenAshkenazy/gh-gemini-review-loop",
+      "keywords": ["gemini-code-assist", "pull-request", "review-bot", "graphql"]
+    }
+  ]
+}
