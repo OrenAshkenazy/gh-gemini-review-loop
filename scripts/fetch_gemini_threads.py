@@ -315,7 +315,7 @@ def pagination_warnings(pull_request: dict[str, Any]) -> list[str]:
             f"reviewThreads hit page limit ({PAGE_LIMIT_REVIEW_THREADS}); older threads may be missing."
         )
     for thread in threads:
-        comments = thread.get("comments", {}).get("nodes", []) or []
+        comments = (thread.get("comments") or {}).get("nodes") or []
         if len(comments) >= PAGE_LIMIT_THREAD_COMMENTS:
             thread_id = thread.get("id") or "(unknown)"
             warnings.append(
