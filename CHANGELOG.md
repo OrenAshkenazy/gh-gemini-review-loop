@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Added
 
+- **Release automation** (`.github/workflows/release.yml`). On every PR merge to `main`, the workflow bumps `plugins/gh-gemini-review-loop/.claude-plugin/plugin.json` per the PR's `release:major` / `release:minor` / `release:patch` label (default patch, opt-out via `release:skip`), tags the commit, and creates a GitHub Release whose body is the merged PR's description verbatim. Aborts cleanly if the target tag already exists. Sibling workflow `setup-labels.yml` (manual `workflow_dispatch`) creates the four `release:*` labels in fresh forks.
+- **CONTRIBUTING.md** documents the label semantics, release-notes flow (PR body → GitHub Release body), local lint/test commands, and the stacked-PR footgun we hit earlier.
 - **Progress Narration** section in SKILL.md. Requires the agent to emit one-line status updates (`[loop] cycle N/3 — <phase>`) at each phase transition during the loop. No code change — pure agent-instruction layer. Eliminates the "silent loop feels broken" UX problem in interactive sessions.
 - `--min-severity {critical,high,medium,low}` flag and `filter_by_min_severity()` helper. Drops actionable threads below the chosen severity. By default, threads with no Gemini priority marker (`unknown`) are kept; pass `--drop-unknown-severity` to remove them too.
 - `filter_by_min_severity` now accepts `min_severity=None`, enabling `--drop-unknown-severity` to be used independently of `--min-severity` (closes a silent no-op).

@@ -1,0 +1,123 @@
+name: Release on PR merge
+
+# On every PR merge to main, bump plugins/gh-gemini-review-loop/.claude-plugin/plugin.json
+# according to the PR's `release:major` / `release:minor` / `release:patch` label
+# (default: patch). Then tag the new version and publish a GitHub Release whose body
+# is the merged PR's body.
+#
+# Skip the entire release with the `release:skip` label (useful for chore/doc PRs
+# you don't want to tag).
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    env:
+      MANIFEST: plugins/gh-gemini-review-loop/.claude-plugin/plugin.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine bump level from PR labels
+        id: bump
+        env:
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          # Precedence: skip > major > minor > patch (default).
+          if echo "$LABELS_JSON" | grep -q '"release:skip"'; then
+            level=skip
+          elif echo "$LABELS_JSON" | grep -q '"release:major"'; then
+            level=major
+          elif echo "$LABELS_JSON" | grep -q '"release:minor"'; then
+            level=minor
+          else
+            level=patch
+          fi
+          echo "level=$level" >> "$GITHUB_OUTPUT"
+          echo "::notice ::release bump level: $level"
+
+      - name: Skip release (release:skip label)
+        if: steps.bump.outputs.level == 'skip'
+        run: echo "Skipping release per release:skip label."
+
+      - name: Compute new version
+        if: steps.bump.outputs.level != 'skip'
+        id: version
+        run: |
+          current=$(python3 -c "import json; print(json.load(open('${MANIFEST}'))['version'])")
+          IFS=. read -r MA MI PA <<< "$current"
+          case "${{ steps.bump.outputs.level }}" in
+            major) MA=$((MA+1)); MI=0; PA=0;;
+            minor) MI=$((MI+1)); PA=0;;
+            patch) PA=$((PA+1));;
+          esac
+          new="${MA}.${MI}.${PA}"
+          tag="v${new}"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "::notice ::version: $current -> $new ($tag)"
+
+      - name: Abort if tag already exists
+        if: steps.bump.outputs.level != 'skip'
+        run: |
+          if git rev-parse "refs/tags/${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "::error ::tag ${{ steps.version.outputs.tag }} already exists; refusing to overwrite."
+            exit 1
+          fi
+
+      - name: Bump plugin.json
+        if: steps.bump.outputs.level != 'skip'
+        run: |
+          python3 - <<PY
+          import json, pathlib
+          p = pathlib.Path("${MANIFEST}")
+          d = json.loads(p.read_text())
+          d["version"] = "${{ steps.version.outputs.new }}"
+          # Preserve 2-space indentation + trailing newline (matches the file in repo).
+          p.write_text(json.dumps(d, indent=2) + "\n")
+          PY
+          git diff --stat -- "${MANIFEST}"
+
+      - name: Commit, tag, push
+        if: steps.bump.outputs.level != 'skip'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${MANIFEST}"
+          git commit -m "chore(release): ${{ steps.version.outputs.tag }} [skip ci]" \
+                     -m "Automated by .github/workflows/release.yml from PR #${{ github.event.pull_request.number }}."
+          git tag -a "${{ steps.version.outputs.tag }}" \
+                  -m "Release ${{ steps.version.outputs.tag }} from PR #${{ github.event.pull_request.number }}"
+          git push origin main
+          git push origin "${{ steps.version.outputs.tag }}"
+
+      - name: Create GitHub Release
+        if: steps.bump.outputs.level != 'skip'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # Body comes from the merged PR. Empty body falls back to "(no notes)".
+          notes_file=$(mktemp)
+          if [ -n "$PR_BODY" ]; then
+            printf '%s\n' "$PR_BODY" > "$notes_file"
+          else
+            printf '(no notes)\n' > "$notes_file"
+          fi
+          gh release create "$TAG" \
+            --title "$TAG: $PR_TITLE" \
+            --notes-file "$notes_file"
