@@ -18,6 +18,11 @@ DEFAULT_AUTHOR = "gemini-code-assist"
 DEFAULT_REREVIEW_LIMIT = 3
 REREVIEW_TRIGGER_RE = re.compile(r"@gemini-code-assist\b.*\breview\b", re.IGNORECASE | re.DOTALL)
 
+# Gemini prefixes inline review comments with a priority image whose alt text
+# is the severity. Example: ![high](https://www.gstatic.com/codereviewagent/high-priority.svg)
+SEVERITY_RE = re.compile(r"!\[(critical|high|medium|low)\]", re.IGNORECASE)
+SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "unknown": 4}
+
 # Page sizes embedded in QUERY below. Used by the pagination guard to detect
 # when we may be silently dropping data.
 PAGE_LIMIT_REVIEW_THREADS = 100
@@ -292,6 +297,42 @@ def resolve_addressed_by_reply(
     return len(threads)
 
 
+def _iter_comments(thread: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return thread comments regardless of pre/post-filter shape."""
+    comments = thread.get("comments")
+    if isinstance(comments, list):
+        return comments
+    if isinstance(comments, dict):
+        return comments.get("nodes", []) or []
+    return []
+
+
+def thread_severity(thread: dict[str, Any]) -> str:
+    """Return Gemini-assigned severity (critical/high/medium/low) or 'unknown'."""
+    for comment in _iter_comments(thread):
+        body = comment.get("body") or ""
+        match = SEVERITY_RE.search(body)
+        if match:
+            return match.group(1).lower()
+    return "unknown"
+
+
+def sort_by_severity(threads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sort threads by severity, highest first; stable for equal severities."""
+    return sorted(
+        threads,
+        key=lambda t: SEVERITY_ORDER.get(thread_severity(t), SEVERITY_ORDER["unknown"]),
+    )
+
+
+def severity_counts(threads: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for thread in threads:
+        sev = thread_severity(thread)
+        counts[sev] = counts.get(sev, 0) + 1
+    return counts
+
+
 def pagination_warnings(pull_request: dict[str, Any]) -> list[str]:
     """Return human-readable warnings when any GraphQL page hit its limit.
 
@@ -333,12 +374,80 @@ def filter_reviews(pull_request: dict[str, Any], author: str) -> list[dict[str, 
     ]
 
 
-def rereview_requests(pull_request: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        comment
-        for comment in pull_request.get("comments", {}).get("nodes", [])
-        if REREVIEW_TRIGGER_RE.search(comment.get("body") or "")
-    ]
+def rereview_requests(
+    pull_request: dict[str, Any], agent_login: str | None = None
+) -> list[dict[str, Any]]:
+    """Count comments that ping Gemini for a re-review.
+
+    When agent_login is provided, only comments authored by that login count.
+    This prevents arbitrary humans pinging Gemini from consuming the loop cap.
+    """
+    out = []
+    for comment in pull_request.get("comments", {}).get("nodes", []):
+        if not REREVIEW_TRIGGER_RE.search(comment.get("body") or ""):
+            continue
+        if agent_login is not None:
+            login = (comment.get("author") or {}).get("login") or ""
+            if login != agent_login:
+                continue
+        out.append(comment)
+    return out
+
+
+def gh_authenticated_login() -> str | None:
+    """Return the gh-authenticated user login, or None if it can't be resolved."""
+    try:
+        result = run_gh(["api", "user", "--jq", ".login"])
+    except RuntimeError:
+        return None
+    if isinstance(result, str) and result.strip():
+        return result.strip()
+    return None
+
+
+def post_pr_comment(pr: PullRequest, body: str, *, dry_run: bool = False) -> None:
+    """Post a comment on the PR via gh."""
+    pr_ref = f"{pr.owner}/{pr.repo}#{pr.number}"
+    if dry_run:
+        print(f"[dry-run] would post receipt to {pr_ref}:\n{body}", file=sys.stderr)
+        return
+    proc = subprocess.run(
+        ["gh", "pr", "comment", str(pr.number), "--repo", f"{pr.owner}/{pr.repo}", "--body", body],
+        check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        message = proc.stderr.strip() or proc.stdout.strip()
+        raise RuntimeError(f"gh pr comment failed: {message}")
+
+
+def render_receipt(
+    pr: PullRequest,
+    pull_request: dict[str, Any],
+    threads: list[dict[str, Any]],
+    *,
+    author: str,
+    resolved_outdated: int,
+    resolved_addressed_by_reply: int,
+    rereview_count: int,
+    rereview_limit: int,
+) -> str:
+    counts = severity_counts(threads)
+    deferred = len(addressed_by_reply_threads(pull_request, author))
+    sev_line = ", ".join(
+        f"{k}={counts[k]}" for k in ("critical", "high", "medium", "low", "unknown") if counts.get(k)
+    ) or "none"
+    return (
+        f"### gh-gemini-review-loop receipt\n\n"
+        f"| metric | value |\n"
+        f"|---|---|\n"
+        f"| re-review cycles used | {rereview_count} / {rereview_limit} |\n"
+        f"| outdated threads resolved | {resolved_outdated} |\n"
+        f"| addressed-by-reply threads resolved | {resolved_addressed_by_reply} |\n"
+        f"| addressed-by-reply still pending | {deferred} |\n"
+        f"| actionable threads remaining | {len(threads)} |\n"
+        f"| severity breakdown (actionable) | {sev_line} |\n"
+        f"\n_Generated by `scripts/fetch_gemini_threads.py --post-receipt`._\n"
+    )
 
 
 def thread_fingerprint(threads: list[dict[str, Any]]) -> str:
@@ -444,6 +553,9 @@ def render_markdown(pr: dict[str, Any], threads: list[dict[str, Any]], author: s
         path = thread.get("path") or first_value(thread, "path") or "(unknown path)"
         line = thread.get("line") or first_value(thread, "line") or thread.get("originalLine") or ""
         status = []
+        severity = thread_severity(thread)
+        if severity != "unknown":
+            status.append(severity)
         if thread.get("isResolved"):
             status.append("resolved")
         if thread.get("isOutdated"):
@@ -500,9 +612,39 @@ def main() -> int:
         help=f"Warn when prior Gemini re-review requests reach this limit. Default: {DEFAULT_REREVIEW_LIMIT}.",
     )
     parser.add_argument(
-        "--ignore-loop-limit",
+        "--resolve-past-cap",
+        dest="ignore_loop_limit",
         action="store_true",
-        help="Allow --resolve-outdated even when the re-review request cap has already been reached.",
+        help="Allow --resolve-outdated / --resolve-addressed-by-reply even after the re-review cap is reached.",
+    )
+    # Deprecated alias for --resolve-past-cap. Kept for backward compat; hidden from --help.
+    parser.add_argument(
+        "--ignore-loop-limit",
+        dest="ignore_loop_limit",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--agent-login",
+        default=None,
+        help=(
+            "GitHub login of the agent posting re-review requests. If omitted, the script "
+            "auto-detects via `gh api user`. Used to count only the agent's own re-reviews "
+            "toward the cap (humans pinging Gemini do not consume cycles)."
+        ),
+    )
+    parser.add_argument(
+        "--no-agent-filter",
+        action="store_true",
+        help="Disable agent-login filtering; count ANY '@gemini-code-assist ... review' comment.",
+    )
+    parser.add_argument(
+        "--post-receipt",
+        action="store_true",
+        help=(
+            "Post a summary 'loop receipt' comment to the PR after fetch/filter. "
+            "Includes cycles used, threads resolved, severity breakdown, and remaining actionable count."
+        ),
     )
     parser.add_argument(
         "--resolve-addressed-by-reply",
@@ -546,7 +688,19 @@ def main() -> int:
             pull_request = fetch_threads(pr)
         resolved_outdated = 0
         resolved_addressed_by_reply = 0
-        rereviews = rereview_requests(pull_request)
+        if args.no_agent_filter:
+            agent_login: str | None = None
+        else:
+            agent_login = args.agent_login or gh_authenticated_login()
+            if agent_login:
+                print(f"Counting only re-reviews posted by '{agent_login}' toward the cap.", file=sys.stderr)
+            else:
+                print(
+                    "warning: could not detect agent login via `gh api user`; "
+                    "falling back to counting all re-review pings.",
+                    file=sys.stderr,
+                )
+        rereviews = rereview_requests(pull_request, agent_login)
         limit_reached = len(rereviews) >= args.max_rereview_requests
         cap_blocks_writes = limit_reached and not args.ignore_loop_limit
         if args.resolve_outdated and cap_blocks_writes:
@@ -590,16 +744,27 @@ def main() -> int:
             include_outdated=args.include_outdated,
             include_addressed_by_reply=args.include_addressed_by_reply,
         )
+        threads = sort_by_severity(threads)
         page_warnings = pagination_warnings(pull_request)
         for warning in page_warnings:
             print(f"warning: {warning}", file=sys.stderr)
-        rereviews = rereview_requests(pull_request)
+        rereviews = rereview_requests(pull_request, agent_login)
         if len(rereviews) >= args.max_rereview_requests:
             print(
                 f"warning: {len(rereviews)} Gemini re-review request(s) already exist; "
                 f"the configured loop cap is {args.max_rereview_requests}.",
                 file=sys.stderr,
             )
+        if args.post_receipt:
+            receipt = render_receipt(
+                pr, pull_request, threads,
+                author=args.author,
+                resolved_outdated=resolved_outdated,
+                resolved_addressed_by_reply=resolved_addressed_by_reply,
+                rereview_count=len(rereviews),
+                rereview_limit=args.max_rereview_requests,
+            )
+            post_pr_comment(pr, receipt, dry_run=args.dry_run)
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -611,13 +776,15 @@ def main() -> int:
                     "pullRequest": pull_request,
                     "threads": threads,
                     "loopStatus": {
-                        "reReviewRequests": len(rereview_requests(pull_request)),
+                        "reReviewRequests": len(rereviews),
                         "reReviewLimit": args.max_rereview_requests,
-                        "limitReached": len(rereview_requests(pull_request)) >= args.max_rereview_requests,
+                        "limitReached": len(rereviews) >= args.max_rereview_requests,
+                        "agentLogin": agent_login,
                         "unresolvedOutdatedThreads": len(outdated_unresolved_threads(pull_request, args.author)),
                         "addressedByReplyThreads": len(addressed_by_reply_threads(pull_request, args.author)),
                         "resolvedOutdatedThreads": resolved_outdated,
                         "resolvedAddressedByReplyThreads": resolved_addressed_by_reply,
+                        "severityCounts": severity_counts(threads),
                         "pageLimitWarnings": page_warnings,
                         "dryRun": args.dry_run,
                         "actionableThreadFingerprint": thread_fingerprint(threads),
