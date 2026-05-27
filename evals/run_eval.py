@@ -45,6 +45,11 @@ class EvaluatedFinding:
 
     @property
     def majority_judge_label(self) -> str:
+        # Defensive: main() already validates --samples >= 1, but this property
+        # is also called from tests + downstream consumers. Empty labels =
+        # "unknown" rather than IndexError on Counter.most_common(1)[0].
+        if not self.judge_labels:
+            return "unknown"
         counts = collections.Counter(self.judge_labels)
         return counts.most_common(1)[0][0]
 
@@ -110,8 +115,24 @@ def evaluate_fixture(
             continue
 
         judge_results: list[JudgeResult] = []
+        sample_error: JudgeError | None = None
         for _ in range(samples):
-            judge_results.append(client.judge(finding))
+            try:
+                judge_results.append(client.judge(finding))
+            except JudgeError as exc:
+                # Per-finding tolerance: don't abort the whole run on one
+                # transient API/parsing failure. Log and skip the finding so
+                # the rest of the corpus still produces metrics. main() still
+                # catches non-per-finding JudgeError (e.g. config-time) and
+                # exits 2.
+                sample_error = exc
+                break
+        if sample_error is not None:
+            print(
+                f"warning: PR #{pr} finding {cid} skipped — judge raised: {sample_error}",
+                file=sys.stderr,
+            )
+            continue
 
         out.append(
             EvaluatedFinding(

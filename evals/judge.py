@@ -108,11 +108,13 @@ class JudgeClient:
         api_key: str | None = None,
         call_fn: t.Callable[..., dict] | None = None,
         temperature: float = 0.0,
+        request_timeout: float = 30.0,
     ) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self._call_fn = call_fn
         self.temperature = temperature
+        self.request_timeout = request_timeout
 
     def _openai_call(self, messages: list[dict]) -> dict:
         """Default OpenAI Python SDK call. Imported lazily so tests don't need it installed."""
@@ -131,12 +133,16 @@ class JudgeClient:
         # network) raise JudgeError instead of bubbling up raw OpenAI SDK
         # exceptions that the runner can't categorize. The runner catches
         # JudgeError in main() and exits cleanly with a stderr message.
+        # Explicit timeout prevents a single hung request from blocking the
+        # whole CLI eval run indefinitely (the runner makes many sequential
+        # calls; 30s/call is generous for a json-mode chat completion).
         try:
             resp = client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 response_format={"type": "json_object"},
                 temperature=self.temperature,
+                timeout=self.request_timeout,
             )
         except Exception as exc:  # noqa: BLE001 — OpenAI SDK raises many concrete types
             raise JudgeError(f"OpenAI API call failed: {exc}") from exc

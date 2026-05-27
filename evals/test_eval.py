@@ -328,3 +328,42 @@ class TestJudgeErrorCaughtInMain:
         err = capsys.readouterr().err
         assert "judge failed on fixture pr-8" in err
         assert "simulated API failure" in err
+
+
+# ---------------------------------------------------------------------------
+# Cycle-2 hardening: empty-labels safety + per-finding JudgeError tolerance
+# ---------------------------------------------------------------------------
+
+
+class TestMajorityLabelEmptyIsSafe:
+    def test_returns_unknown_on_empty_labels(self):
+        # Defensive: pre-#13 cycle-2, empty judge_labels would IndexError on
+        # Counter.most_common(1)[0]. Now returns "unknown".
+        row = EvaluatedFinding(
+            pr=1, comment_id="x", severity="medium", path="x.py", line=1,
+            human_label="useful", judge_labels=[], judge_confidences=[],
+            judge_reasons=[], body_excerpt="",
+        )
+        assert row.majority_judge_label == "unknown"
+
+
+class TestPerFindingJudgeErrorTolerance:
+    def test_one_failing_finding_does_not_abort_fixture(self, capsys):
+        """If client.judge() raises JudgeError, skip THAT finding, keep going."""
+        call_count = {"n": 0}
+
+        def raising_then_ok(_messages):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise JudgeError("simulated first-call failure")
+            return {"content": json.dumps(
+                {"label": "false-positive", "confidence": 0.9, "reason": "ok"}
+            )}
+
+        client = JudgeClient(call_fn=raising_then_ok)
+        rows = evaluate_fixture("pr-8", client, samples=1)
+        # PR #8 has 1 finding. The first (only) judge call raises -> finding
+        # skipped. rows ends up empty but no exception bubbles up.
+        assert rows == []
+        err = capsys.readouterr().err
+        assert "skipped" in err and "simulated first-call failure" in err
