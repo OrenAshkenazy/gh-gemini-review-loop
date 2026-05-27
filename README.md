@@ -94,7 +94,7 @@ Claude Code skills don't have a settings UI. Configure via three layers, in orde
 
 ## Manual script invocation
 
-You'll rarely need this — the skill drives the script for you — but it works.
+You'll rarely need this, the skill drives the script for you, but it works for debugging.
 
 `$CLAUDE_PLUGIN_ROOT` is set **only inside Claude Code's plugin runtime** — it isn't exported to your interactive shell, so the variable-form below only works from a Claude session (e.g., a Bash tool call). To run from a plain terminal, locate the cached script path yourself:
 
