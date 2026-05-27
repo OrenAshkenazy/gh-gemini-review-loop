@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
+- **Listing readiness pass for claudemarketplaces.com.** Added per-plugin `author` field (with email) to `.claude-plugin/marketplace.json` and the plugin's own `plugin.json`. README rewritten in the devon-claude-skills marketplace listing style: clear 2-step install at the top (Step 1 add marketplace, Step 2 install plugin), CI/Release/MIT badges, an "Available plugins" subsection with a Quick-usage prompt table mapping natural-language phrasings to flag combinations, an explicit Prerequisites section, and a one-paragraph "How it works" technical summary. Removed stale top-of-repo `SKILL.md` and `scripts/` artifacts left over from the P2 plugin restructure — they were local-only (never tracked in git) but could confuse a fresh `git clone`.
 - **Sharpened `.claude-plugin/marketplace.json` metadata for claudemarketplaces.com indexing.** Marketplace-level `description` now leads with the differentiator phrasing (`"Fast-track ... thread-state-aware, severity-filtered, capped at 3 cycles, no CI coupling."`) instead of a meta description. Plugin-level `description` leads with the opinionated single-bot positioning and lists the four hard-to-replicate features (severity filter, 3-cycle cap, auto-resolve, sticky receipt). `tags` expanded to 7 (added `sticky-receipt`, `severity-aware`). `keywords` expanded to 9 (added `sticky-receipt`, `severity-aware`, `addressed-by-reply`, `auto-resolve`, `dry-run`) to improve hit-rate against search queries.
 
 ### Added

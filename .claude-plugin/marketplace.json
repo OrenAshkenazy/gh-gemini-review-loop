@@ -10,6 +10,10 @@
       "name": "gh-gemini-review-loop",
       "source": "./plugins/gh-gemini-review-loop",
       "description": "Opinionated Gemini Code Assist PR loop. Filters by severity (only fix high+ by default), never spams (hard 3-cycle cap), auto-resolves outdated and addressed-by-reply threads, posts a live sticky-receipt comment for background visibility.",
+      "author": {
+        "name": "Oren Ashkenazy",
+        "email": "oren.as@gmail.com"
+      },
       "category": "code-review",
       "tags": ["gemini", "code-review", "pr", "github", "gh-cli", "sticky-receipt", "severity-aware"],
       "license": "MIT",
