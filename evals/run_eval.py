@@ -198,11 +198,15 @@ def render_summary(rows: list[EvaluatedFinding], m: dict[str, Any]) -> str:
     # metrics() maps None severities to "unknown", so we only iterate over the
     # four known severity keys plus "unknown". Including None here would be dead
     # code — the lookup against m["by_severity"] always uses the "unknown" key.
-    for sev in ("critical", "high", "medium", "low", "unknown"):
+    known_sevs = ("critical", "high", "medium", "low", "unknown")
+    for sev in known_sevs:
         stats = m["by_severity"].get(sev)
-        if not stats:
-            continue
-        lines.append(f"| {sev} | {stats['n']} | {stats['agreement_rate']:.1%} |")
+        if stats:
+            lines.append(f"| {sev} | {stats['n']} | {stats['agreement_rate']:.1%} |")
+    for sev in sorted(m["by_severity"].keys()):
+        if sev not in known_sevs:
+            stats = m["by_severity"][sev]
+            lines.append(f"| {sev} | {stats['n']} | {stats['agreement_rate']:.1%} |")
     lines.extend(["", "## Distribution", ""])
     lines.append(f"- Human labels:  {m['by_human_label']}")
     lines.append(f"- Judge labels:  {m['by_judge_label']}")
