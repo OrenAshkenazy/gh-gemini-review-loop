@@ -101,7 +101,7 @@ You'll rarely need this — the skill drives the script for you — but it works
 ```bash
 # From a plain terminal — find the installed path (handles version bumps):
 SCRIPT=$(find ~/.claude/plugins/cache/gh-gemini-review-loop -name fetch_gemini_threads.py 2>/dev/null | sort | tail -1)
-python3 "$SCRIPT" --wait
+[ -n "$SCRIPT" ] && python3 "$SCRIPT" --wait || echo "Error: fetch_gemini_threads.py not found — install the plugin first." >&2
 
 # From inside a Claude Code session (the env var IS populated there):
 python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --wait
