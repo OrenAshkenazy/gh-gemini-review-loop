@@ -30,10 +30,10 @@ In your Claude Code prompt:
 
 That's it. The skill auto-triggers when you say things like *"handle Gemini feedback"*, *"run the Gemini loop"*, *"fix the review comments"*, or right after `gh pr create`.
 
-To upgrade later:
+To upgrade later (Claude Code uses `/plugin update` for installed plugins, distinct from `/plugin marketplace add` which only manages catalogs):
 
 ```
-/plugin marketplace update gh-gemini-review-loop
+/plugin update gh-gemini-review-loop
 ```
 
 ---
@@ -94,10 +94,16 @@ Claude Code skills don't have a settings UI. Configure via three layers, in orde
 
 ## Manual script invocation
 
-You'll rarely need this — the skill drives the script for you — but it works:
+You'll rarely need this — the skill drives the script for you — but it works.
+
+`$CLAUDE_PLUGIN_ROOT` is set **only inside Claude Code's plugin runtime** — it isn't exported to your interactive shell, so the variable-form below only works from a Claude session (e.g., a Bash tool call). To run from a plain terminal, locate the cached script path yourself:
 
 ```bash
-# After /plugin install, the script lives under $CLAUDE_PLUGIN_ROOT
+# From a plain terminal — find the installed path (handles version bumps):
+SCRIPT=$(find ~/.claude/plugins/cache/gh-gemini-review-loop -name fetch_gemini_threads.py | sort | tail -1)
+python3 "$SCRIPT" --wait
+
+# From inside a Claude Code session (the env var IS populated there):
 python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --wait
 
 # Notable flags:
