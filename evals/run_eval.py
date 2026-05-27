@@ -124,7 +124,10 @@ def evaluate_fixture(
                 judge_labels=[r.label for r in judge_results],
                 judge_confidences=[r.confidence for r in judge_results],
                 judge_reasons=[r.reason for r in judge_results],
-                body_excerpt=(finding.get("body") or "")[:120].replace("\n", " "),
+                # Strip backticks: the excerpt is rendered inside backticks in
+                # render_summary's disagreement block, and an unescaped backtick
+                # would prematurely close the markdown code span.
+                body_excerpt=(finding.get("body") or "")[:120].replace("\n", " ").replace("`", "'"),
             )
         )
     return out
@@ -228,7 +231,7 @@ def render_summary(rows: list[EvaluatedFinding], m: dict[str, Any]) -> str:
             lines.append(
                 f"- PR #{r.pr} {r.path}:{r.line} [{r.severity}]: "
                 f"human=`{r.human_label}` vs judge=`{r.majority_judge_label}` "
-                f"({r.judge_labels})"
+                f"({', '.join(r.judge_labels)})"
             )
             lines.append(f"  - Finding excerpt: `{r.body_excerpt}`")
             lines.append(f"  - Judge reason (sample 1): {r.judge_reasons[0]}")
@@ -342,7 +345,9 @@ def main(argv: list[str] | None = None) -> int:
         report_path = pathlib.Path(args.report)
         # Create parent dirs so users can pass nested paths like /tmp/eval/report.json.
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        # ensure_ascii=False lets non-ASCII characters in findings/reasons
+        # write through as utf-8 instead of \uXXXX escapes. Cheaper to read.
+        report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"\nReport written to {args.report}", file=sys.stderr)
 
     if args.exit_nonzero_on_disagreement and m.get("agreement_rate", 1.0) < 0.80:
