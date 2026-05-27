@@ -107,19 +107,19 @@ python3 "$SCRIPT" --wait
 python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --wait
 
 # Notable flags:
-python3 ... --dry-run                     # log writes without executing
-python3 ... --post-receipt                # one-shot audit comment
-python3 ... --sticky-receipt              # live, edited-in-place comment
-python3 ... --min-severity high           # ignore Gemini's low/medium nits
-python3 ... --drop-unknown-severity       # also ignore unmarked findings
-python3 ... --no-resolve-outdated         # read-only inspection mode
-python3 ... --include-resolved --include-outdated --include-addressed-by-reply   # full history
-python3 ... --max-rereview-requests 4     # raise the 3-cycle cap
-python3 ... --agent-login NAME            # override gh-detected agent login
-python3 ... --author google-gemini-code-assist   # alternate bot login
+python3 "$SCRIPT" --dry-run                     # log writes without executing
+python3 "$SCRIPT" --post-receipt                # one-shot audit comment
+python3 "$SCRIPT" --sticky-receipt              # live, edited-in-place comment
+python3 "$SCRIPT" --min-severity high           # ignore Gemini's low/medium nits
+python3 "$SCRIPT" --drop-unknown-severity       # also ignore unmarked findings
+python3 "$SCRIPT" --no-resolve-outdated         # read-only inspection mode
+python3 "$SCRIPT" --include-resolved --include-outdated --include-addressed-by-reply   # full history
+python3 "$SCRIPT" --max-rereview-requests 4     # raise the 3-cycle cap
+python3 "$SCRIPT" --agent-login NAME            # override gh-detected agent login
+python3 "$SCRIPT" --author google-gemini-code-assist   # alternate bot login
 ```
 
-Run `python3 .../fetch_gemini_threads.py --help` for the complete list.
+Run `python3 "$SCRIPT" --help` for the complete list.
 
 ---
 
