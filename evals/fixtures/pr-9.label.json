@@ -1,0 +1,15 @@
+{
+  "pr": 9,
+  "human_labels": [
+    {
+      "comment_id": "PRRC_kwDOShyq-M7FDIDA",
+      "label": "useful",
+      "reason": "Excellent UX improvement: instead of forcing forks without a ruleset to manually edit release.yml, use ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }} so the PAT becomes optional. Real value-add, applied."
+    },
+    {
+      "comment_id": "PRRC_kwDOShyq-M7FDNwQ",
+      "label": "useful",
+      "reason": "Caught a duplicate ### Changed section in CHANGELOG.md under [Unreleased]. Real diff-quality issue."
+    }
+  ]
+}
