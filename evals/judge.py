@@ -193,7 +193,10 @@ class JudgeClient:
 
         # Coerce to str defensively: a misbehaving model could return a non-string
         # for `reason` (int, bool, list); strip() would then AttributeError.
-        reason = str(payload.get("reason") or "").strip()
+        # Check for None explicitly so falsy-but-valid values (0, False) round-trip
+        # as their string form instead of being silently replaced with "".
+        reason_val = payload.get("reason")
+        reason = str(reason_val).strip() if reason_val is not None else ""
         return JudgeResult(label=label, confidence=confidence, reason=reason, raw_response=content)
 
 

@@ -81,16 +81,28 @@ def load_fixture_pair(pr_id: str) -> tuple[dict, dict]:
     )
 
 
+def _pr_sort_key(stem: str) -> int:
+    """Numeric sort key for fixture stems like 'pr-6'. Falls back to 0 for unparseable stems."""
+    try:
+        return int(stem.split("-", 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
+
 def discover_fixtures() -> list[str]:
-    """Return sorted fixture stems (pr-6, pr-7, ...) with both data + labels present."""
+    """Return PR-number-sorted fixture stems (pr-6, pr-7, ...) with both data + labels present.
+
+    Sort numerically (not alphabetically) so cross-digit-boundary PRs land in
+    intuitive order (pr-2 before pr-10 before pr-100).
+    """
     out: list[str] = []
-    for findings_path in sorted(FIXTURES_DIR.glob("pr-*.json")):
+    for findings_path in FIXTURES_DIR.glob("pr-*.json"):
         if findings_path.name.endswith(".label.json"):
             continue
         stem = findings_path.stem
         if (FIXTURES_DIR / f"{stem}.label.json").exists():
             out.append(stem)
-    return out
+    return sorted(out, key=_pr_sort_key)
 
 
 def evaluate_fixture(
@@ -255,7 +267,11 @@ def render_summary(rows: list[EvaluatedFinding], m: dict[str, Any]) -> str:
                 f"({', '.join(r.judge_labels)})"
             )
             lines.append(f"  - Finding excerpt: `{r.body_excerpt}`")
-            lines.append(f"  - Judge reason (sample 1): {r.judge_reasons[0]}")
+            # Defensive: judge_reasons can be empty if all samples raised
+            # JudgeError (per-finding tolerance path). Don't IndexError on
+            # disagreement rendering.
+            reason = r.judge_reasons[0] if r.judge_reasons else "(no judge reason recorded)"
+            lines.append(f"  - Judge reason (sample 1): {reason}")
     return "\n".join(lines) + "\n"
 
 
