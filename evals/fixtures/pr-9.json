@@ -1,0 +1,29 @@
+{
+  "pr": 9,
+  "findings": [
+    {
+      "thread_id": "PRRT_kwDOShyq-M6E4tDt",
+      "comment_id": "PRRC_kwDOShyq-M7FDIDA",
+      "path": "CONTRIBUTING.md",
+      "line": 39,
+      "severity": "medium",
+      "is_resolved": false,
+      "is_outdated": true,
+      "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nInstead of requiring fork authors to manually edit `release.yml` to switch back to `GITHUB_TOKEN`, you can make the workflow automatically fall back to `GITHUB_TOKEN` if `RELEASE_TOKEN` is not defined.\n\nIn `release.yml`, you can use the `||` operator in the expressions:\n- `token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}`\n- `GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}`\n\nThis makes the PAT completely optional for forks without requiring any manual code changes. We can update this paragraph to document this automatic fallback.\n\n```suggestion\nIf your repo has no branch ruleset (or `github-actions[bot]` is bypass-eligible because the repo is owned by an org rather than a user), the workflow automatically falls back to `GITHUB_TOKEN` if `RELEASE_TOKEN` is not set, allowing you to skip the PAT setup entirely.\n```",
+      "diff_hunk": "@@ -17,6 +17,27 @@ The **bump level** is controlled by a label on the PR:\n \n If no `release:*` label is present, the workflow defaults to `release:patch`. To bootstrap the labels in a fresh fork, run the **Setup release labels** workflow once (Actions tab \u2192 run workflow). Precedence when multiple are set: `skip > major > minor > patch`.\n \n+### Required secret: `RELEASE_TOKEN`\n+\n+The release workflow pushes a `chore(release): vX.Y.Z [skip ci]` commit directly to `main`. The repo's branch ruleset blocks direct pushes (requires a PR), and on personal repos the GitHub UI does NOT let you add `github-actions[bot]` to the ruleset bypass list (it's not exposed as a selectable actor for non-org repos).\n+\n+Workaround: the workflow authenticates with a fine-grained PAT stored in the repo secret `RELEASE_TOKEN`. The PAT acts as the repo admin, who IS in the bypass list, so the push succeeds.\n+\n+To set this up in a fresh fork:\n+\n+1. Create a fine-grained PAT at <https://github.com/settings/personal-access-tokens/new>:\n+   - Resource owner: your account/org owning the fork\n+   - Repository access: only this repo\n+   - Repository permissions: `Contents: Read and write`, `Pull requests: Read`\n+   - Expiration: pick a date you'll remember to rotate (1 year max)\n+2. Copy the token (`github_pat_...`).\n+3. In repo Settings \u2192 Secrets and variables \u2192 Actions \u2192 New repository secret:\n+   - Name: `RELEASE_TOKEN` (underscore, not hyphen \u2014 GitHub secret names disallow hyphens)\n+   - Value: paste the PAT\n+4. `release.yml`'s `actions/checkout` and `gh release create` steps both reference `secrets.RELEASE_TOKEN`.\n+\n+If your repo has no branch ruleset (or `github-actions[bot]` is bypass-eligible because the repo is owned by an org rather than a user), you can change both `${{ secrets.RELEASE_TOKEN }}` references back to `${{ secrets.GITHUB_TOKEN }}` and skip the PAT entirely.",
+      "url": "https://github.com/OrenAshkenazy/gh-gemini-review-loop/pull/9#discussion_r3305930944"
+    },
+    {
+      "thread_id": "PRRT_kwDOShyq-M6E4xRO",
+      "comment_id": "PRRC_kwDOShyq-M7FDNwQ",
+      "path": "CHANGELOG.md",
+      "line": 9,
+      "severity": "medium",
+      "is_resolved": false,
+      "is_outdated": false,
+      "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nThere is already an existing `### Changed` section under `## [Unreleased]` at line 22. To adhere to the \"Keep a Changelog\" format and avoid duplicate section headers, please merge this new entry into the existing `### Changed` section.\n\n<details>\n<summary>References</summary>\n\n1. Before suggesting that a file (such as `CHANGELOG.md`) lacks a specific heading or section, verify its full content to ensure the section is not already present outside of the active diff hunks.\n</details>",
+      "diff_hunk": "@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format\n \n ## [Unreleased]\n \n+### Changed\n+\n+- **Release workflow uses `RELEASE_TOKEN` PAT** instead of the built-in `GITHUB_TOKEN`. The repo ruleset blocks direct pushes to `main`, and personal repos can't add `github-actions[bot]` to the bypass actor list (the UI picker doesn't expose it for non-org repos). A fine-grained PAT acting as the repo admin (already in the bypass list) is the cleanest workaround. CONTRIBUTING.md documents the one-time PAT setup. Fixes the failure mode observed on the first auto-release attempt (PR #7's merge: workflow ran but push was rejected with `GH013: Repository rule violations`).",
+      "url": "https://github.com/OrenAshkenazy/gh-gemini-review-loop/pull/9#discussion_r3305954320"
+    }
+  ]
+}

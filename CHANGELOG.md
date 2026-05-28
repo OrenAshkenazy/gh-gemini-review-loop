@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- **Layer B finding-quality eval + end-user-facing surfacing.** Cross-vendor LLM-as-judge (OpenAI `gpt-4o-mini` by default) rates each Gemini Code Assist finding as `useful` / `false-positive` / `borderline` / `dup` and compares against a hand-labeled corpus. Initial corpus: 11 findings from this repo's own PRs (#6–#9), ~91% useful by hand-label.
+  - Maintainer side: `evals/` directory (judge, runner, fixtures, 32 hermetic tests, README).
+  - Surfacing: weekly CI workflow (`.github/workflows/eval-weekly.yml`) commits a rendered report to `evals/results/latest.md` + `evals/results/YYYY-QQ.md` (per-quarter history). Also updates a rolling per-quarter tracking Issue for maintainer notifications.
+  - End-user visibility: new **"Skill calibration"** section at the top of the README distills the eval's output into actionable defaults — recommended `--min-severity medium`, cycle-economy guidance (1 cycle resolves ~60% of PRs), and concrete per-cycle cost ranges by Claude model. The OpenAI judge runs on this repo only; end-user installs never ship the eval or call OpenAI.
+  - All cycle-3 hardening from the original PR #13 stack already baked in: API try/except → JudgeError, `--samples` validation, `request_timeout` (30s default), per-finding JudgeError tolerance, `majority_judge_label` empty-safe, explicit utf-8 I/O, `--report` parent dir, structured skip when key/SDK missing.
+
 ### Changed
 
 - **Listing readiness pass for claudemarketplaces.com.** Added per-plugin `author` field (with email) to `.claude-plugin/marketplace.json` and the plugin's own `plugin.json`. README restructured for the marketplace listing format: clear 2-step install at the top (Step 1 add marketplace, Step 2 install plugin), CI / Release / MIT badges, an "Available plugins" subsection with a Quick-usage table mapping natural-language phrasings to flag combinations, an explicit Prerequisites section, and a one-paragraph "How it works" technical summary linking back to SKILL.md. Removed stale top-of-repo `SKILL.md` and `scripts/` artifacts left over from the P2 plugin restructure — they were local-only (never tracked in git) but could confuse a fresh `git clone`.

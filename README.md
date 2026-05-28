@@ -10,6 +10,17 @@
 
 ---
 
+## Skill calibration (is this loop worth your money?)
+
+Empirical answers, refreshed weekly by a cross-vendor LLM-as-judge eval on this repo's calibration corpus. See [`evals/results/latest.md`](evals/results/latest.md) for the current numbers and the full disagreement list.
+
+- **Hand-labeled useful-rate on this repo's corpus:** ~91% (10 useful / 11 findings across PRs #6–#9). One false positive (CHANGELOG-context misread).
+- **Severity recommendation:** the corpus suggests defaulting to `--min-severity medium`. The single false positive in the corpus was `medium`; no `low` findings have appeared yet, so `low` is unproven. Drop unmarked findings with `--drop-unknown-severity` if you only trust explicitly-graded ones.
+- **Cycle economy** (observed across 13 PRs in this repo's own dogfooding): about 60% converged in 1 cycle, 30% in 2 cycles, 10% needed all 3. Defaulting `--max-rereview-requests 1` is the cheapest setting; bump to 3 if Gemini's findings tend to expose adjacent issues on your codebase.
+- **Cost per loop** (Claude tokens dominate; Gemini and the GitHub API are free): on Sonnet ≈ $0.15–0.40 per cycle, ≈ $0.45–1.20 for a full 3-cycle loop. On Opus ≈ 5× that. On Haiku ≈ 1/3 of Sonnet.
+
+The eval that produces these numbers is the maintainer's calibration tool — it does not ship to your install. End-users get the **distilled policy guidance above**; the OpenAI judge runs on this repo only.
+
 ## Installation
 
 This repo is a single-plugin Claude Code marketplace. Install in **two slash-commands**.
