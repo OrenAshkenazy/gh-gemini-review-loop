@@ -367,3 +367,59 @@ class TestPerFindingJudgeErrorTolerance:
         assert rows == []
         err = capsys.readouterr().err
         assert "skipped" in err and "simulated first-call failure" in err
+
+
+# ---------------------------------------------------------------------------
+# PR #14 cycle-2 hardening: hand-edited fixture defenses
+# ---------------------------------------------------------------------------
+
+
+class TestHumanLabelValidation:
+    """Hand-labeled fixtures can typo the label — runner must skip + warn, not crash."""
+
+    def test_invalid_label_skipped_with_warning(self, tmp_path, monkeypatch, capsys):
+        # Mirror real fixture shape with one valid + one typo'd label.
+        (tmp_path / "pr-99.json").write_text(json.dumps({
+            "pr": 99,
+            "findings": [
+                {"comment_id": "good", "path": "x.py", "line": 1, "severity": "high", "body": "real bug"},
+                {"comment_id": "typo", "path": "x.py", "line": 2, "severity": "low", "body": "nit"},
+            ],
+        }))
+        (tmp_path / "pr-99.label.json").write_text(json.dumps({
+            "pr": 99,
+            "human_labels": [
+                {"comment_id": "good", "label": "useful", "reason": "..."},
+                {"comment_id": "typo", "label": "usefull", "reason": "intentional typo"},
+            ],
+        }))
+        monkeypatch.setattr("evals.run_eval.FIXTURES_DIR", tmp_path)
+
+        from evals.run_eval import evaluate_fixture
+        client = JudgeClient(call_fn=fake_constant("useful"))
+        rows = evaluate_fixture("pr-99", client, samples=1)
+        # Only the validly-labeled finding should make it through.
+        assert len(rows) == 1
+        assert rows[0].comment_id == "good"
+        err = capsys.readouterr().err
+        assert "invalid human label" in err and "'usefull'" in err
+        assert "typo" in err  # comment id surfaced for diagnosis
+
+
+class TestFixtureJsonDecodeError:
+    """Malformed fixture JSON should produce a clean error, not a raw traceback."""
+
+    def test_main_returns_1_with_clean_message_on_bad_json(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "pr-99.json").write_text("{ not valid json")
+        (tmp_path / "pr-99.label.json").write_text(json.dumps({
+            "pr": 99,
+            "human_labels": [],
+        }))
+        monkeypatch.setattr("evals.run_eval.FIXTURES_DIR", tmp_path)
+
+        from evals.run_eval import main
+        rc = main(["--judge", "fake", "--fixture", "pr-99"])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "failed to parse JSON" in err
+        assert "pr-99" in err

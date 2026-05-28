@@ -125,6 +125,16 @@ def evaluate_fixture(
                 file=sys.stderr,
             )
             continue
+        # Validate label up-front: fixtures are hand-edited so typos
+        # ('usefull', 'false-postiive', …) are likely. An unknown label
+        # would KeyError in confusion_matrix later; skip + warn instead.
+        if human.get("label") not in VALID_LABELS:
+            print(
+                f"warning: PR #{pr} finding {cid} has invalid human label "
+                f"{human.get('label')!r}; expected one of {VALID_LABELS}. Skipping.",
+                file=sys.stderr,
+            )
+            continue
 
         judge_results: list[JudgeResult] = []
         sample_error: JudgeError | None = None
@@ -359,6 +369,14 @@ def main(argv: list[str] | None = None) -> int:
             available = ", ".join(discover_fixtures()) or "(none)"
             print(
                 f"error: {exc}\nAvailable fixtures: {available}",
+                file=sys.stderr,
+            )
+            return 1
+        except json.JSONDecodeError as exc:
+            # Hand-edited fixture/label files commonly have stray-comma errors.
+            # A clean message points the maintainer at the broken file.
+            print(
+                f"error: failed to parse JSON in fixture {stem!r}: {exc}",
                 file=sys.stderr,
             )
             return 1
