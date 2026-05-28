@@ -134,6 +134,20 @@ Run `python3 "$SCRIPT" --help` for the complete list.
 
 ---
 
+## Optional: per-finding OpenAI judge (`--judge-mode`)
+
+End-users can opt into an OpenAI-powered judge that labels each Gemini finding as `valid_actionable` / `false_positive` / `needs_human` / `explanation_only` / `duplicate` / `already_addressed`, plus a `severity_override` and `recommended_action`. The label appears next to each finding in the loop output.
+
+- **Default: off.** Nothing is sent to OpenAI until you opt in.
+- **Privacy boundary:** when enabled, finding bodies + diff hunks are sent to the OpenAI API. The judge is read-only — it never resolves threads, posts comments, or pushes.
+- **Cost:** `gpt-4o-mini` ≈ $0.001 per finding. Typical `on_complete` run ≈ $0.005 per PR.
+- **Discoverability:** on your first loop with findings, the agent shows a one-time tip: `[loop] Tip: judge eval can give a second opinion on these findings.`
+- **Natural language:** say "run the Gemini loop with judge eval at completion" or "with judge eval on every cycle". Preference is saved automatically.
+- **Explicit setup:** say "enable judge eval" to get a mode prompt with all options.
+- **Requires:** `OPENAI_API_KEY` env var + `pip install openai`. Missing either → judge skips gracefully; loop continues unchanged.
+
+See [SKILL.md → Optional Judge Eval](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md) for the full flow and verdict schema.
+
 ## How it works (BTS)
 
 The script queries GitHub's `pullRequest.reviewThreads` via GraphQL, filters to threads authored by `gemini-code-assist`, partitions them into four states (`RESOLVED` / `OUTDATED` / `ADDRESSED_BY_REPLY` / `UNRESOLVED`), and surfaces only the actionable subset. The agent fixes those, commits, pushes, then posts `@gemini-code-assist please review the latest changes.` once per cycle — counted strictly against the agent's own GitHub login so humans can ping Gemini freely. After 3 such cycles, hard stop. See the [Stopping Conditions](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md#stopping-conditions) section in SKILL.md for the full state machine.
