@@ -122,21 +122,15 @@ class JudgeClient:
             raise JudgeError(
                 "OPENAI_API_KEY is not set. Export it or pass api_key=... to JudgeClient."
             )
+        # Single try/except wraps import + client construction + API call
+        # so all classes of failure (stale SDK / auth errors during init /
+        # transient network) surface uniformly as JudgeError to the runner.
         try:
             from openai import OpenAI  # noqa: PLC0415
-        except ImportError as exc:
-            raise JudgeError(
-                "openai SDK not installed. `pip install openai` or use a mock call_fn."
-            ) from exc
-        client = OpenAI(api_key=self.api_key)
-        # Wrap the network call so transient API errors (rate limit, auth,
-        # network) raise JudgeError instead of bubbling up raw OpenAI SDK
-        # exceptions that the runner can't categorize. The runner catches
-        # JudgeError in main() and exits cleanly with a stderr message.
-        # Explicit timeout prevents a single hung request from blocking the
-        # whole CLI eval run indefinitely (the runner makes many sequential
-        # calls; 30s/call is generous for a json-mode chat completion).
-        try:
+            client = OpenAI(api_key=self.api_key)
+            # Explicit timeout prevents a single hung request from blocking
+            # the whole CLI eval run (the runner makes many sequential
+            # calls; 30s/call is generous for a json-mode chat completion).
             resp = client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -144,6 +138,11 @@ class JudgeClient:
                 temperature=self.temperature,
                 timeout=self.request_timeout,
             )
+        except ImportError as exc:
+            raise JudgeError(
+                "openai SDK not installed or too old (need v1.0.0+: "
+                "pip install -U openai), or use a mock call_fn."
+            ) from exc
         except Exception as exc:  # noqa: BLE001 — OpenAI SDK raises many concrete types
             raise JudgeError(f"OpenAI API call failed: {exc}") from exc
         # Defensive: content filtering or upstream API anomalies can return

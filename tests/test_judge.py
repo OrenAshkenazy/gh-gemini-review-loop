@@ -328,7 +328,10 @@ class TestJudgeInvariant:
     def test_judge_module_does_not_import_gh_or_graphql(self):
         """The judge module must NOT import anything that could mutate GitHub state."""
         judge_module_path = PLUGIN_SCRIPTS / "judge.py"
-        src = judge_module_path.read_text()
+        # Explicit utf-8: judge.py has em-dashes / arrows / non-ASCII
+        # characters in docstrings and would UnicodeDecodeError on Windows
+        # CP1252 or older CI locales without this.
+        src = judge_module_path.read_text(encoding="utf-8")
         for forbidden in ("subprocess", "gh api", "resolveReviewThread", "addPullRequestReview"):
             assert forbidden not in src, (
                 f"judge.py imports/uses {forbidden!r} — judge must be read-only."

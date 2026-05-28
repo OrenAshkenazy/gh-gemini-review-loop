@@ -273,15 +273,23 @@ class JudgeClient:
         if not self.api_key:
             return False, "OPENAI_API_KEY not set"
         try:
-            import openai  # noqa: F401, PLC0415
+            # Older `openai` packages (< 1.0) don't expose the `OpenAI`
+            # client class. Probe for it specifically so is_ready() returns
+            # False (with a clear reason) instead of letting _openai_call
+            # ImportError later on `from openai import OpenAI`.
+            from openai import OpenAI  # noqa: F401, PLC0415
         except ImportError:
-            return False, "openai SDK not installed (pip install openai)"
+            return False, "openai SDK not installed or too old (need v1.0.0+: pip install -U openai)"
         return True, None
 
     def _openai_call(self, messages: list[dict]) -> dict:
-        from openai import OpenAI  # noqa: PLC0415
-        client = OpenAI(api_key=self.api_key)
+        # Wrap import + client init + API call in a single try/except so
+        # ANY failure (import error on stale SDK, auth failure during
+        # client construction, transient network) raises JudgeError. The
+        # runner catches that uniformly.
         try:
+            from openai import OpenAI  # noqa: PLC0415
+            client = OpenAI(api_key=self.api_key)
             resp = client.chat.completions.create(
                 model=self.model,
                 messages=messages,
