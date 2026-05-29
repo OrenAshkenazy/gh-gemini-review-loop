@@ -1,0 +1,30 @@
+{
+  "pr": 6,
+  "human_labels": [
+    {
+      "comment_id": "PRRC_kwDOShyq-M7E9664",
+      "label": "useful",
+      "reason": "Real feature gap: filter_by_min_severity didn't accept None, making --drop-unknown-severity a silent no-op when used alone."
+    },
+    {
+      "comment_id": "PRRC_kwDOShyq-M7E9674",
+      "label": "useful",
+      "reason": "Direct consequence of #1: main()'s guard `if args.min_severity:` skipped the filtering block entirely when only --drop-unknown-severity was passed."
+    },
+    {
+      "comment_id": "PRRC_kwDOShyq-M7E968c",
+      "label": "useful",
+      "reason": "Asked for a regression test covering the new path. Legitimate test-coverage ask."
+    },
+    {
+      "comment_id": "PRRC_kwDOShyq-M7FBJL_",
+      "label": "useful",
+      "reason": "Doc/code mismatch: --drop-unknown-severity help text said 'when --min-severity is set' but implementation/tests support standalone use."
+    },
+    {
+      "comment_id": "PRRC_kwDOShyq-M7FBJMO",
+      "label": "useful",
+      "reason": "Subtle metric correctness: dropped count conflates below-severity and unknown-severity when both flags are active."
+    }
+  ]
+}

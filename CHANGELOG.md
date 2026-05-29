@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- **Layer B finding-quality eval** under `evals/`. LLM-as-judge (OpenAI `gpt-4o-mini` by default, overridable via `OPENAI_JUDGE_MODEL`) rates each Gemini Code Assist finding as `useful` / `false-positive` / `borderline` / `dup`, then compares against hand-labeled human ground-truth fixtures. Cross-vendor on purpose: judging Gemini's output with a non-Google model reduces self-eval bias. Initial corpus: 11 findings from PRs #6–#9 of this repo (10 useful + 1 false-positive). Runner: `python3 -m evals.run_eval [--samples N] [--temperature T] [--fixture pr-X] [--report out.json] [--exit-nonzero-on-disagreement]`. 32 hermetic pytest cases cover the runner with a mocked judge (no network).
+- **Weekly eval CI** at `.github/workflows/eval-weekly.yml`. Sundays 00:00 UTC + `workflow_dispatch`. Posts the eval summary to a rolling per-quarter GitHub Issue and fails the run if judge↔human agreement drops below 80% (calibration gate). Catches drift in Gemini's output format and regressions in the judge model. Needs `OPENAI_API_KEY` repo secret.
+- **`evals/README.md`** documents the cross-vendor rationale, fixture format, calibration workflow, cost (~$0.02 per run with `gpt-4o-mini`), and how to add new fixtures.
+- **Defensive hardening included from day one** (folded in from the now-closed P8 PR #11's 3-cycle review): all OpenAI SDK calls wrapped in try/except that re-raises as `JudgeError` so transient API/auth/network failures get a clean stderr message instead of a raw traceback; `--samples` validated up-front (rejects `< 1`); `main()` catches `JudgeError` and exits with code 2; defensive `isinstance(payload, dict)` check after `json.loads`; defensive `resp.choices` non-empty check; `str()` coercion before `.strip()` on the model's `reason` field; UTF-8 explicit on every `read_text` / `write_text`; `--report` path's parent directory is created if missing.
+
 ### Changed
 
 - **Listing readiness pass for claudemarketplaces.com.** Added per-plugin `author` field (with email) to `.claude-plugin/marketplace.json` and the plugin's own `plugin.json`. README restructured for the marketplace listing format: clear 2-step install at the top (Step 1 add marketplace, Step 2 install plugin), CI / Release / MIT badges, an "Available plugins" subsection with a Quick-usage table mapping natural-language phrasings to flag combinations, an explicit Prerequisites section, and a one-paragraph "How it works" technical summary linking back to SKILL.md. Removed stale top-of-repo `SKILL.md` and `scripts/` artifacts left over from the P2 plugin restructure — they were local-only (never tracked in git) but could confuse a fresh `git clone`.

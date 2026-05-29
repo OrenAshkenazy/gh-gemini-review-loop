@@ -1,0 +1,20 @@
+{
+  "pr": 7,
+  "human_labels": [
+    {
+      "comment_id": "PRRC_kwDOShyq-M7FCThn",
+      "label": "useful",
+      "reason": "Real high-severity bug: gh api --paginate runs --jq per page, so [...] | last returns per-page last not global. Multi-page output broke result.strip().isdigit()."
+    },
+    {
+      "comment_id": "PRRC_kwDOShyq-M7FCYxP",
+      "label": "useful",
+      "reason": "Real edge case: PATCH against a deleted sticky comment returns 404, crashes the script. Caught and recovered via try/except + POST fallback."
+    },
+    {
+      "comment_id": "PRRC_kwDOShyq-M7FCirr",
+      "label": "useful",
+      "reason": "Defensive null-safety: comments with null body could break the jq .body | contains(...) filter. Reasonable hardening flagged on cycle-2 follow-up."
+    }
+  ]
+}

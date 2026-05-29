@@ -1,0 +1,10 @@
+{
+  "pr": 8,
+  "human_labels": [
+    {
+      "comment_id": "PRRC_kwDOShyq-M7FCeJK",
+      "label": "false-positive",
+      "reason": "Gemini claimed CHANGELOG.md lacks a `## [Unreleased]` heading, but the heading exists at line 5 of the file. The PR's diff only added bullets WITHIN that section; Gemini misread the diff context as the full file."
+    }
+  ]
+}
