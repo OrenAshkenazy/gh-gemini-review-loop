@@ -26,6 +26,7 @@ from judge import (  # noqa: E402
     JudgeError,
     build_user_prompt,
     load_preferences,
+    mark_tip_shown,
     prefs_path,
     save_preferences,
     should_judge_run,
@@ -84,10 +85,35 @@ class TestPreferences:
         saved = save_preferences("on_cycle", judge_model="gpt-4o")
         assert saved["judge_mode"] == "on_cycle"
         assert saved["judge_model"] == "gpt-4o"
+        assert saved["judge_tip_shown"] is False
         loaded = load_preferences()
         assert loaded["judge_mode"] == "on_cycle"
         assert loaded["judge_model"] == "gpt-4o"
         assert loaded["set_at"]  # non-empty timestamp
+        assert loaded["judge_tip_shown"] is False
+
+    def test_save_preserves_tip_shown(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_preferences("off")
+        mark_tip_shown()
+        # Saving a new mode must not clobber judge_tip_shown=True.
+        save_preferences("on_complete")
+        assert load_preferences()["judge_tip_shown"] is True
+
+    def test_mark_tip_shown(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_preferences("off")
+        assert load_preferences()["judge_tip_shown"] is False
+        mark_tip_shown()
+        assert load_preferences()["judge_tip_shown"] is True
+        # Calling again is idempotent.
+        mark_tip_shown()
+        assert load_preferences()["judge_tip_shown"] is True
+
+    def test_default_prefs_tip_shown_false(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        prefs = load_preferences()  # no file → defaults
+        assert prefs["judge_tip_shown"] is False
 
     def test_save_rejects_invalid_mode(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))

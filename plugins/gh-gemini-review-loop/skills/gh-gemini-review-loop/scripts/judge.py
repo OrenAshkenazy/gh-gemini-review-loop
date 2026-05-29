@@ -153,6 +153,7 @@ def load_preferences() -> dict[str, t.Any]:
         "schema_version": data.get("schema_version", PREFS_SCHEMA_VERSION),
         "judge_mode": mode,
         "judge_model": data.get("judge_model") or DEFAULT_MODEL,
+        "judge_tip_shown": bool(data.get("judge_tip_shown", False)),
         "set_at": data.get("set_at") or "",
     }
 
@@ -161,10 +162,12 @@ def save_preferences(judge_mode: str, *, judge_model: str | None = None) -> dict
     """Persist the user's judge preference. Returns the saved dict."""
     if judge_mode not in VALID_JUDGE_MODES:
         raise ValueError(f"judge_mode must be one of {VALID_JUDGE_MODES}; got {judge_mode!r}.")
+    existing = load_preferences()
     prefs = {
         "schema_version": PREFS_SCHEMA_VERSION,
         "judge_mode": judge_mode,
         "judge_model": judge_model or DEFAULT_MODEL,
+        "judge_tip_shown": existing.get("judge_tip_shown", False),
         "set_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     path = prefs_path()
@@ -173,11 +176,21 @@ def save_preferences(judge_mode: str, *, judge_model: str | None = None) -> dict
     return prefs
 
 
+def mark_tip_shown() -> None:
+    """Persist judge_tip_shown=true without changing other prefs."""
+    existing = load_preferences()
+    existing["judge_tip_shown"] = True
+    path = prefs_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(existing, indent=2, sort_keys=True), encoding="utf-8")
+
+
 def _default_prefs() -> dict[str, t.Any]:
     return {
         "schema_version": PREFS_SCHEMA_VERSION,
         "judge_mode": "off",
         "judge_model": DEFAULT_MODEL,
+        "judge_tip_shown": False,
         "set_at": "",
     }
 
