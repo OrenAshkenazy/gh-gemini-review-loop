@@ -68,11 +68,15 @@ The script (`fetch_gemini_threads.py`) is the single source of truth. It reads `
 
 Do **not** prompt for judge eval during a normal loop run. Do **not** prompt at session start.
 
-After the **first successful loop completion**, if `judge_tip_shown` is not `true` in the prefs file, emit this one-time passive tip then persist `judge_tip_shown: true`:
+**One-time tip — after fetch, before fixes.** On the first cycle where actionable findings are present, if `judge_tip_shown` is not `true` in the prefs file, emit this tip immediately after the findings narration line, then call `mark_tip_shown()` to persist `judge_tip_shown: true`:
 
 ```
-[loop] Tip: optional judge eval is available. Try: "run the Gemini loop with judge eval at completion".
+[loop] cycle 1/3 — 4 actionable thread(s) (high: 1, medium: 3). Fixing.
+[loop] Tip: judge eval can give a second opinion on these findings.
+         Try: "run the Gemini loop with judge eval at completion"
 ```
+
+The tip fires at the moment the user is looking at real findings — before any fixes are applied. It appears exactly once across all future sessions.
 
 Use README examples, `--help` output, and marketplace description for broader discoverability.
 
@@ -127,7 +131,7 @@ Required narration points:
 | Phase | Narration line |
 |---|---|
 | Before script fetch | `[loop] cycle N/3 — fetching threads from PR #<num>...` |
-| After fetch, before fixes | `[loop] cycle N/3 — <K> actionable thread(s) (severity: <breakdown>). Fixing.` |
+| After fetch, before fixes | `[loop] cycle N/3 — <K> actionable thread(s) (severity: <breakdown>). Fixing.` + judge eval tip if first time (see [Discoverability](#discoverability)) |
 | After fix attempt, before verify | `[loop] cycle N/3 — fixes applied. Verifying.` |
 | After verify | `[loop] cycle N/3 — verified (<test summary>).` |
 | Before push | `[loop] cycle N/3 — committing and pushing <commit-sha>...` |
