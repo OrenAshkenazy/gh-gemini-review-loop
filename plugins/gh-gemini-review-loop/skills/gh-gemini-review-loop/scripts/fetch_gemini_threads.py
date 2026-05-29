@@ -930,7 +930,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--judge-mode",
-        choices=["off", "on-cycle", "on-complete", "once"],
+        choices=["off", "on_cycle", "on_complete", "once"],
         default=None,
         help=(
             "Override the saved OpenAI-judge preference for this invocation. "

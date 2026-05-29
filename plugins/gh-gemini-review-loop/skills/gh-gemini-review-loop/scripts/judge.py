@@ -57,7 +57,7 @@ VALID_SEVERITY_OVERRIDES = ("critical", "high", "medium", "low", "none")
 
 VALID_RECOMMENDED_ACTIONS = ("fix", "reply", "ignore", "escalate")
 
-VALID_JUDGE_MODES = ("off", "on-cycle", "on-complete", "once")
+VALID_JUDGE_MODES = ("off", "on_cycle", "on_complete", "once")
 
 VALID_JUDGE_PHASES = ("cycle", "complete")
 
@@ -188,19 +188,19 @@ def should_judge_run(*, mode: str, phase: str | None) -> bool:
     The script is the single source of truth: this function captures the
     full logic so the agent doesn't have to replicate it.
 
-    - ``mode == "off"``       → never.
-    - ``mode == "once"``      → always run (caller's responsibility to gate
-                                 on user intent for a one-shot run).
-    - ``mode == "on-cycle"``  → run only when phase == "cycle".
-    - ``mode == "on-complete"`` → run only when phase == "complete".
+    - ``mode == "off"``        → never.
+    - ``mode == "once"``       → always run (caller's responsibility to gate
+                                  on user intent for a one-shot run).
+    - ``mode == "on_cycle"``   → run only when phase == "cycle".
+    - ``mode == "on_complete"`` → run only when phase == "complete".
     """
     if mode == "off":
         return False
     if mode == "once":
         return True
-    if mode == "on-cycle":
+    if mode == "on_cycle":
         return phase == "cycle"
-    if mode == "on-complete":
+    if mode == "on_complete":
         return phase == "complete"
     return False
 

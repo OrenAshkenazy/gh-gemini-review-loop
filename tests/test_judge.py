@@ -81,11 +81,11 @@ class TestPreferences:
 
     def test_save_then_load_roundtrip(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
-        saved = save_preferences("on-cycle", judge_model="gpt-4o")
-        assert saved["judge_mode"] == "on-cycle"
+        saved = save_preferences("on_cycle", judge_model="gpt-4o")
+        assert saved["judge_mode"] == "on_cycle"
         assert saved["judge_model"] == "gpt-4o"
         loaded = load_preferences()
-        assert loaded["judge_mode"] == "on-cycle"
+        assert loaded["judge_mode"] == "on_cycle"
         assert loaded["judge_model"] == "gpt-4o"
         assert loaded["set_at"]  # non-empty timestamp
 
@@ -97,7 +97,7 @@ class TestPreferences:
     def test_save_creates_parent_dir(self, tmp_path, monkeypatch):
         nested = tmp_path / "deep" / "nested"
         monkeypatch.setenv("GGRL_STATE_DIR", str(nested))
-        save_preferences("on-complete")
+        save_preferences("on_complete")
         assert (nested / "preferences.json").exists()
 
     def test_unknown_schema_version_keeps_valid_mode(self, tmp_path, monkeypatch):
@@ -106,7 +106,7 @@ class TestPreferences:
             json.dumps(
                 {
                     "schema_version": 999,
-                    "judge_mode": "on-cycle",
+                    "judge_mode": "on_cycle",
                     "judge_model": "gpt-x",
                     "set_at": "x",
                 }
@@ -114,7 +114,7 @@ class TestPreferences:
         )
         prefs = load_preferences()
         # Forward-compat: unknown schema_version doesn't drop a valid mode.
-        assert prefs["judge_mode"] == "on-cycle"
+        assert prefs["judge_mode"] == "on_cycle"
 
 
 # ---------------------------------------------------------------------------
@@ -132,14 +132,14 @@ class TestShouldJudgeRun:
         assert should_judge_run(mode="once", phase=phase) is True
 
     def test_on_cycle_only_runs_on_cycle_phase(self):
-        assert should_judge_run(mode="on-cycle", phase="cycle") is True
-        assert should_judge_run(mode="on-cycle", phase="complete") is False
-        assert should_judge_run(mode="on-cycle", phase=None) is False
+        assert should_judge_run(mode="on_cycle", phase="cycle") is True
+        assert should_judge_run(mode="on_cycle", phase="complete") is False
+        assert should_judge_run(mode="on_cycle", phase=None) is False
 
     def test_on_complete_only_runs_on_complete_phase(self):
-        assert should_judge_run(mode="on-complete", phase="complete") is True
-        assert should_judge_run(mode="on-complete", phase="cycle") is False
-        assert should_judge_run(mode="on-complete", phase=None) is False
+        assert should_judge_run(mode="on_complete", phase="complete") is True
+        assert should_judge_run(mode="on_complete", phase="cycle") is False
+        assert should_judge_run(mode="on_complete", phase=None) is False
 
     def test_unknown_mode_never_runs(self):
         # Defense in depth: shouldn't happen (load_preferences filters), but

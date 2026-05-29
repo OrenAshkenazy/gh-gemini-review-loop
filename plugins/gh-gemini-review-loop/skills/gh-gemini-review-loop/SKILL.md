@@ -68,17 +68,23 @@ End-users can optionally have an OpenAI model rate each Gemini finding with one 
 
 On the first invocation of the loop on a given machine, **before posting any re-review pings**, the agent MUST check `~/.config/gh-gemini-review-loop/preferences.json`. If it does not exist OR `judge_mode` is missing, ask the user once via `AskUserQuestion`:
 
-> **Enable the optional OpenAI judge?**
+> **Judge eval sends Gemini findings and related PR context to OpenAI.**
 >
-> The judge sends Gemini's finding bodies and surrounding diff hunks to OpenAI's API to label them (`valid_actionable` / `false_positive` / etc.). The label appears next to each finding in the loop's output. This is OFF by default.
+> Choose eval mode:
+> 1. **Every cycle** — judge runs before fixes each cycle. Sharpest signal. Persists as `judge_mode: on_cycle`.
+> 2. **At completion only** — judge runs only on residual findings after the loop stops. Lowest cost (~$0.001 × residual findings per loop). Persists as `judge_mode: on_complete`.
+> 3. **Just this once** — run for this PR only; do NOT persist. Equivalent to `--judge-mode once`.
+> 4. **Off** (default) — nothing sent to OpenAI ever. Persists as `judge_mode: off`.
 >
-> 1. `on-cycle` — judge runs before fixes each cycle. Sharpest signal for "what should I bother fixing".
-> 2. `on-complete` — judge runs only on residual findings after the loop stops. Lowest cost: ~$0.001 × residual findings per loop.
-> 3. `off` (default) — nothing sent to OpenAI ever. You can change later by saying "change my eval preference".
->
-> Requires `OPENAI_API_KEY` environment variable. Pick [1/2/3]:
+> Requires `OPENAI_API_KEY` environment variable. Pick [1/2/3/4]:
 
-Persist the user's choice via the script's `save_preferences()` helper. Never re-ask unless they explicitly say "change my eval preference" or "reset judge".
+Persist via the script's `save_preferences()` helper. Mapping:
+- 1 → `save_preferences("on_cycle")`
+- 2 → `save_preferences("on_complete")`
+- 3 → **do NOT call `save_preferences`** — just pass `--judge-mode once --judge-phase ...` to the script for this loop. Next invocation will ask again (file still missing).
+- 4 → `save_preferences("off")`
+
+Never re-ask unless the user explicitly says "change my eval preference" or "reset judge".
 
 If `OPENAI_API_KEY` is not set in the environment, still let the user pick mode (the script will gracefully skip until they set the key) — do not silently coerce to `off`.
 
@@ -89,12 +95,12 @@ If `OPENAI_API_KEY` is not set in the environment, still let the user pick mode 
 | "run the judge just this once" | `--judge-mode once --judge-phase cycle` (or `complete` if loop already done) |
 | "skip the judge this time" | `--judge-mode off` |
 | "change my eval preference" | Re-run the first-run flow + overwrite the prefs file |
-| (saved mode = on-cycle, agent invokes cycle fetch) | `--judge-phase cycle` only; script reads saved mode and runs |
-| (saved mode = on-complete, agent invokes final fetch) | `--judge-phase complete` only |
+| (saved mode = on_cycle, agent invokes cycle fetch) | `--judge-phase cycle` only; script reads saved mode and runs |
+| (saved mode = on_complete, agent invokes final fetch) | `--judge-phase complete` only |
 
 ### Cost framing
 
-`gpt-4o-mini` ≈ $0.001 per finding judged. Typical PR has 0–5 residual findings after a loop completes, so `on-complete` mode runs ~$0.005 max per PR. `on-cycle` mode multiplies by cycle count + finding count (≤ 3 × ~5 = 15 calls × $0.001 = $0.015 worst case).
+`gpt-4o-mini` ≈ $0.001 per finding judged. Typical PR has 0–5 residual findings after a loop completes, so `on_complete` mode runs ~$0.005 max per PR. `on_cycle` mode multiplies by cycle count + finding count (≤ 3 × ~5 = 15 calls × $0.001 = $0.015 worst case).
 
 ## Progress Narration
 
