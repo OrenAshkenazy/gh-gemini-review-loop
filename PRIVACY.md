@@ -1,32 +1,143 @@
-# Privacy Policy
+# Privacy and Data Handling
 
 **Last updated: 2026-05-29**
 
-## What this plugin is
+## Summary
 
-gh-gemini-review-loop is a Claude Code plugin that runs locally on your machine. It has no backend, no telemetry, and no data collection of any kind.
+`gh-gemini-review-loop` is a Claude Code plugin that runs locally on your machine.
 
-## Data flows
+The plugin author does not operate a backend service, does not receive your PR data, and does not collect telemetry, analytics, crash reports, prompts, repository names, usernames, or usage data.
 
-### GitHub API (always active)
-The plugin calls the GitHub GraphQL and REST APIs using your existing `gh` CLI authentication token. Review thread content and PR metadata are fetched from GitHub and displayed in your Claude Code session. Nothing is stored beyond your local session.
+The plugin interacts with GitHub through your existing `gh` CLI authentication. Optional OpenAI judge eval is off by default and only runs when explicitly enabled by the user.
 
-### OpenAI judge eval (opt-in, off by default)
-If you explicitly enable judge eval, Gemini finding bodies and associated diff hunks from your PR are sent to the OpenAI API for classification. This feature is:
+## Data the plugin may read
 
-- **Off by default.** Nothing is sent to OpenAI until you opt in.
-- **Read-only.** The judge never posts comments, resolves threads, or pushes code.
-- **Disclosed at opt-in.** The privacy boundary is stated before you enable it.
+When running the Gemini review loop, the plugin may read:
 
-Data sent to OpenAI is subject to [OpenAI's privacy policy](https://openai.com/policies/privacy-policy). You use your own OpenAI API key; the plugin author has no access to it or to any data sent through it.
+1. GitHub pull request metadata
+2. GitHub review threads
+3. Gemini Code Assist review comments
+4. Review thread state such as resolved or outdated
+5. File paths and line numbers
+6. Diff hunks attached to review comments
+7. Local repository files needed by Claude Code to fix findings
+8. Local Git metadata
+9. Test and command output produced during verification
 
-### Preferences file
-If you use judge eval, your chosen mode (`on_cycle` / `on_complete` / `off`) is saved to `~/.config/gh-gemini-review-loop/preferences.json` on your local machine. No preference data leaves your machine.
+## GitHub API usage
 
-## No analytics or tracking
+The plugin calls GitHub GraphQL and REST APIs through the local `gh` CLI and your existing GitHub authentication.
 
-The plugin collects no usage data, crash reports, or analytics. No information is sent to the plugin author.
+The plugin may use GitHub APIs to:
+
+1. Fetch pull request metadata
+2. Fetch review threads and comments
+3. Resolve outdated review threads
+4. Resolve threads that were addressed by a substantive maintainer reply
+5. Post pull request comments
+6. Update sticky receipt comments
+7. Request Gemini Code Assist re review
+
+The plugin may also push commits when Claude Code applies fixes and the user allows the loop to continue.
+
+The plugin does not merge pull requests, approve reviews, submit GitHub reviews, change repository settings, or grant repository access.
+
+## Optional OpenAI judge eval
+
+Judge eval is off by default.
+
+When explicitly enabled by the user, the plugin may send Gemini Code Assist findings and related PR context to the OpenAI API for classification.
+
+This context may include:
+
+1. Review comment text
+2. File paths
+3. Line numbers
+4. Gemini severity labels
+5. Diff hunks
+6. Limited surrounding code context needed to classify the finding
+
+The judge classifies findings as valid, false positive, duplicate, already addressed, explanation only, or requiring human decision.
+
+Judge eval is read only. The judge never posts comments, resolves threads, pushes code, or mutates GitHub state.
+
+Normal loop runs do not send PR context to OpenAI. Judge eval is never enabled silently.
+
+Data sent to OpenAI is subject to OpenAI's privacy policy and the terms of the OpenAI account used by the user.
+
+## OpenAI API key handling
+
+Judge eval uses the user's own OpenAI API key.
+
+The plugin reads `OPENAI_API_KEY` from the process environment when judge eval is enabled.
+
+The plugin does not store the OpenAI API key.
+
+The plugin does not write the OpenAI API key to preferences, logs, PR comments, sticky receipts, repository files, or GitHub.
+
+The plugin author has no access to the user's OpenAI API key and no access to data sent from the user's machine to OpenAI.
+
+## Local files written
+
+The plugin may write local state under:
+
+```text
+~/.config/gh-gemini-review-loop/
+```
+
+Known files:
+
+```text
+~/.config/gh-gemini-review-loop/preferences.json
+~/.config/gh-gemini-review-loop/state.json
+```
+
+`preferences.json` stores user preferences such as judge mode, judge model, and whether the one time judge eval tip was shown.
+
+`state.json` stores local sticky receipt state, such as pull request identifiers and GitHub comment IDs used to update an existing receipt comment instead of posting duplicate comments.
+
+These files should not contain API keys, full source code, full PR diffs, or OpenAI responses.
+
+## Telemetry and analytics
+
+This plugin does not include telemetry.
+
+It does not send analytics, usage events, crash reports, repository names, usernames, prompts, PR content, or command output to the plugin author.
+
+If workflow metrics are added in the future, they should be generated locally by default. Any remote export should require explicit user configuration.
+
+## User controls
+
+To disable judge eval, set judge mode to off or remove the preferences file:
+
+```bash
+rm ~/.config/gh-gemini-review-loop/preferences.json
+```
+
+To remove local sticky receipt state:
+
+```bash
+rm ~/.config/gh-gemini-review-loop/state.json
+```
+
+To remove all local plugin state:
+
+```bash
+rm -rf ~/.config/gh-gemini-review-loop
+```
+
+To disable or uninstall the plugin, use Claude Code's plugin manager:
+
+```text
+/plugin
+```
+
+Then use the Installed tab to disable or uninstall `gh-gemini-review-loop`.
 
 ## Contact
 
-Privacy questions: oren.as@gmail.com
+Privacy questions:
+
+```text
+oren.as@gmail.com
+```
