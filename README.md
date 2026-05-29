@@ -47,6 +47,13 @@ To upgrade later (Claude Code uses `/plugin update` for installed plugins, disti
 
 ---
 
+## See It Before You Install
+
+![Terminal demo of gh-gemini-review-loop handling Gemini Code Assist feedback](docs/gh-gemini-review-loop-demo.gif)
+
+The demo shows the whole happy path: `gh pr create`, Gemini comments appearing, Claude running the loop, the thread-aware fetcher surfacing actionable feedback, fixes, tests, push, and a re-review request.
+
+
 ## Use It
 
 From a repo with an open GitHub PR, say this to Claude:
@@ -178,6 +185,16 @@ The script queries GitHub's `pullRequest.reviewThreads` via GraphQL, filters to 
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+---
+
+## What I Want Feedback On
+
+- **Install friction:** where the Claude Code marketplace flow, `gh` auth, or Python dependency expectations feel unclear.
+- **False positives:** whether Gemini findings that survive filtering are usually worth acting on.
+- **Thread state handling:** whether `RESOLVED`, `OUTDATED`, `ADDRESSED_BY_REPLY`, and `UNRESOLVED` match how maintainers think about review comments.
+- **Safety around resolving outdated threads:** whether auto-resolving stale Gemini threads is acceptable by default, or should be more conservative.
+- **Whether judge eval is worth adding:** whether the optional OpenAI judge helps enough to justify the setup, privacy boundary, and small API cost.
 
 ---
 
