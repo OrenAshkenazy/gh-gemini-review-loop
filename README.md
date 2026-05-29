@@ -81,7 +81,11 @@ The skill also triggers naturally when Claude opens a PR and you ask it to keep 
 
 ## See It Before You Install
 
-GitHub README files cannot execute terminal recordings inline, but the cast is checked into the repo and can be played directly from the README with one copy-paste command:
+![Terminal demo of gh-gemini-review-loop handling Gemini Code Assist feedback](docs/gh-gemini-review-loop-demo.gif)
+
+The demo shows the whole happy path: `gh pr create`, Gemini comments appearing, Claude running the loop, the thread-aware fetcher surfacing actionable feedback, fixes, tests, push, and a re-review request.
+
+Want to replay it in your terminal instead of watching the GIF? The asciinema cast is checked into the repo:
 
 ```bash
 asciinema play https://raw.githubusercontent.com/OrenAshkenazy/gh-gemini-review-loop/main/docs/gh-gemini-review-loop-demo.cast
@@ -92,8 +96,6 @@ From a cloned checkout, play the same 60-second terminal demo locally:
 ```bash
 asciinema play docs/gh-gemini-review-loop-demo.cast
 ```
-
-The demo shows the whole happy path: `gh pr create`, Gemini comments appearing, Claude running the loop, the thread-aware fetcher surfacing actionable feedback, fixes, tests, push, and a re-review request.
 
 ### Real Example Transcript
 
