@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "gh-gemini-review-loop",
-  "description": "Fast-track Gemini Code Assist PR review loop for Claude Code. Thread-state-aware, severity-filtered, capped at 3 cycles, no CI coupling.",
+  "description": "Gemini Code Assist PR review loop for solo builders and small teams using Claude Code. Thread-state-aware, severity-filtered, capped at 3 cycles.",
   "owner": {
     "name": "Oren Ashkenazy"
   },
@@ -9,7 +9,7 @@
     {
       "name": "gh-gemini-review-loop",
       "source": "./plugins/gh-gemini-review-loop",
-      "description": "Opinionated Gemini Code Assist PR loop. Filters by severity (only fix high+ by default), never spams (hard 3-cycle cap), auto-resolves outdated and addressed-by-reply threads, posts a live sticky-receipt comment for background visibility.",
+      "description": "Opinionated Gemini Code Assist PR loop for solo builders and small teams using Claude Code. Reads real review-thread state, supports severity filtering, stops at a hard 3-cycle cap, auto-resolves stale and addressed-by-reply threads, and can post a live sticky-receipt comment for background visibility.",
       "author": {
         "name": "Oren Ashkenazy",
         "email": "oren.as@gmail.com"
