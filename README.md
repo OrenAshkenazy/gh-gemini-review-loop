@@ -81,7 +81,13 @@ The skill also triggers naturally when Claude opens a PR and you ask it to keep 
 
 ## See It Before You Install
 
-Watch the 60-second terminal demo as an asciinema cast:
+GitHub README files cannot execute terminal recordings inline, but the cast is checked into the repo and can be played directly from the README with one copy-paste command:
+
+```bash
+asciinema play <(curl -fsSL https://raw.githubusercontent.com/OrenAshkenazy/gh-gemini-review-loop/main/docs/gh-gemini-review-loop-demo.cast)
+```
+
+From a cloned checkout, play the same 60-second terminal demo locally:
 
 ```bash
 asciinema play docs/gh-gemini-review-loop-demo.cast
@@ -94,18 +100,18 @@ The demo shows the whole happy path: `gh pr create`, Gemini comments appearing, 
 This is a shortened transcript from PR [#14](https://github.com/OrenAshkenazy/gh-gemini-review-loop/pull/14) in this repo. It shows the flow people should expect before they install the plugin.
 
 ```text
-$ gh pr create --title "P11+P12: eval + surfacing + optional end-user OpenAI judge"
+$ gh pr create --fill
 https://github.com/OrenAshkenazy/gh-gemini-review-loop/pull/14
 
-gemini-code-assist reviewed commit 01e9ce6:
-  - sort PR fixtures numerically instead of alphabetically
-  - avoid an IndexError when judge reasons are empty
-  - keep valid falsy judge reasons instead of dropping them
+gemini-code-assist: 3 review comments
+  - evals/run_eval.py: sort PR fixtures numerically
+  - evals/run_eval.py: guard empty judge reasons
+  - evals/judge.py: preserve valid falsy reason values
 
 Claude Code:
   Run the Gemini loop
 
-[loop] cycle 1/3 - fetching threads from PR #14...
+[loop] cycle 1/3 — fetching threads from PR #14...
 $ python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --wait
 # Gemini Code Assist Threads for PR #14
 Re-review requests: 0
@@ -120,30 +126,28 @@ Guard empty judge reasons before rendering the disagreement summary.
 ## 3. evals/judge.py [medium]
 Do not discard valid falsy reason values when parsing the judge response.
 
-[loop] cycle 1/3 - 3 actionable thread(s) (medium: 3). Fixing.
-[loop] cycle 1/3 - fixes applied. Verifying.
+[loop] cycle 1/3 — 3 actionable thread(s) (medium: 3). Fixing.
+[loop] cycle 1/3 — fixes applied. Verifying.
 $ uv run pytest tests/test_judge.py evals/test_eval.py
 44 passed
 
-[loop] cycle 1/3 - committing and pushing 56a9443...
+[loop] cycle 1/3 — committing and pushing 56a9443...
 $ git push
-[loop] cycle 1/3 - pushed. Requesting Gemini re-review (cycle 1 consumed).
+[loop] cycle 1/3 — pushed. Requesting Gemini re-review (cycle 1 consumed).
 $ gh pr comment 14 --body "@gemini-code-assist please review the latest changes."
 
-gemini-code-assist reviewed the new commit:
-  - requested two hardening fixes around JSON errors and label validation
+gemini-code-assist reviewed the new commit: 2 medium hardening comments
 
-[loop] cycle 2/3 - fetching threads from PR #14...
-[loop] cycle 2/3 - 2 actionable thread(s) (medium: 2). Fixing.
+[loop] cycle 2/3 — fetching threads from PR #14...
+[loop] cycle 2/3 — 2 actionable thread(s) (medium: 2). Fixing.
 $ uv run pytest tests/test_judge.py evals/test_eval.py
 47 passed
-$ git push
-$ gh pr comment 14 --body "@gemini-code-assist please review the latest changes."
+$ git push && gh pr comment 14 --body "@gemini-code-assist please review the latest changes."
 
 gemini-code-assist reviewed the latest commit:
   There are no review comments to assess, and I have no additional feedback.
 
-[loop] DONE - 0 actionable threads remaining. Cycles used: 2/3.
+[loop] DONE — 0 actionable threads remaining. Cycles used: 2/3.
 ```
 
 ---
