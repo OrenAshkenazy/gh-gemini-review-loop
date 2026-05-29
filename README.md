@@ -146,6 +146,15 @@ End-users can opt into an OpenAI-powered judge that labels each Gemini finding a
 - **Explicit setup:** say "enable judge eval" to get a mode prompt with all options.
 - **Requires:** `OPENAI_API_KEY` env var + `pip install openai`. Missing either → judge skips gracefully; loop continues unchanged.
 
+**Setting `OPENAI_API_KEY` permanently (macOS — recommended):**
+```bash
+# Store once in Keychain (never sits in a plaintext file):
+security add-generic-password -a "$USER" -s "openai-api-key" -w "sk-..."
+
+# Add to ~/.zshrc so it's available to all apps including Claude Code:
+echo 'export OPENAI_API_KEY=$(security find-generic-password -a "$USER" -s "openai-api-key" -w 2>/dev/null)' >> ~/.zshrc
+```
+
 See [SKILL.md → Optional Judge Eval](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md) for the full flow and verdict schema.
 
 ## How it works (BTS)

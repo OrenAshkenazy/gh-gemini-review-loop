@@ -62,6 +62,13 @@ Judge eval is **off by default**. Nothing is sent to OpenAI unless the user expl
 
 Requires `OPENAI_API_KEY` in env and the `openai` SDK installed. Missing either → judge gracefully skips with a structured `skipped` result + one stderr hint. The loop continues unchanged.
 
+If the user asks how to set `OPENAI_API_KEY` permanently, recommend the macOS Keychain approach:
+```bash
+security add-generic-password -a "$USER" -s "openai-api-key" -w "sk-..."
+echo 'export OPENAI_API_KEY=$(security find-generic-password -a "$USER" -s "openai-api-key" -w 2>/dev/null)' >> ~/.zshrc
+```
+This keeps the key out of plaintext dotfiles. On Linux, suggest `~/.config/environment.d/` or a secrets manager.
+
 The script (`fetch_gemini_threads.py`) is the single source of truth. It reads `~/.config/gh-gemini-review-loop/preferences.json` on every invocation and combines the saved mode with the `--judge-phase` the agent supplies.
 
 ### Discoverability
