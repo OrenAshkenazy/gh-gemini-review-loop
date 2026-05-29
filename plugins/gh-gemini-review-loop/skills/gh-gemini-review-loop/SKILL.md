@@ -54,6 +54,81 @@ When `--sticky-receipt` is appropriate: long-running interactive loops where the
 
 When the one-shot `--post-receipt` is appropriate: scripted/batch contexts where each invocation is independent and you want a fresh audit comment per run.
 
+## Optional Judge Eval (`--judge-mode`)
+
+The Gemini review loop supports an optional OpenAI-based judge eval. It classifies each Gemini finding as one of `valid_actionable / false_positive / duplicate / already_addressed / explanation_only / needs_human`, plus a `severity_override` and `recommended_action`. The judge is **read-only** — it never resolves threads, posts comments, or pushes.
+
+Judge eval is **off by default**. Nothing is sent to OpenAI unless the user explicitly opts in.
+
+Requires `OPENAI_API_KEY` in env and the `openai` SDK installed. Missing either → judge gracefully skips with a structured `skipped` result + one stderr hint. The loop continues unchanged.
+
+If the user asks how to set `OPENAI_API_KEY` permanently, recommend the macOS Keychain approach:
+```bash
+security add-generic-password -a "$USER" -s "openai-api-key" -w "sk-..."
+echo 'export OPENAI_API_KEY=$(security find-generic-password -a "$USER" -s "openai-api-key" -w 2>/dev/null)' >> ~/.zshrc
+```
+This keeps the key out of plaintext dotfiles. On Linux, suggest `~/.config/environment.d/` or a secrets manager.
+
+The script (`fetch_gemini_threads.py`) is the single source of truth. It reads `~/.config/gh-gemini-review-loop/preferences.json` on every invocation and combines the saved mode with the `--judge-phase` the agent supplies.
+
+### Discoverability
+
+Do **not** prompt for judge eval during a normal loop run. Do **not** prompt at session start.
+
+**One-time tip — after fetch, before fixes.** On the first cycle where actionable findings are present, if `judge_tip_shown` is not `true` in the prefs file, emit this tip immediately after the findings narration line, then call `mark_tip_shown()` to persist `judge_tip_shown: true`:
+
+```
+[loop] cycle 1/3 — 4 actionable thread(s) (high: 1, medium: 3). Fixing.
+[loop] Tip: judge eval can give a second opinion on these findings.
+         Try: "run the Gemini loop with judge eval at completion"
+```
+
+The tip fires at the moment the user is looking at real findings — before any fixes are applied. It appears exactly once across all future sessions.
+
+Use README examples, `--help` output, and marketplace description for broader discoverability.
+
+### When to prompt
+
+Prompt with `AskUserQuestion` **only** when the user explicitly requests judge eval without specifying a mode:
+
+> **"enable judge eval" / "use judge eval" / "turn on eval"**
+
+Prompt text:
+
+> Judge eval sends Gemini findings and related PR context to OpenAI.
+>
+> Choose eval mode:
+> 1. Every cycle
+> 2. At completion only
+> 3. Just this once
+> 4. Off
+
+Persist via `save_preferences()`. Mapping:
+- 1 → `save_preferences("on_cycle")`
+- 2 → `save_preferences("on_complete")`
+- 3 → **do NOT save** — pass `--judge-mode once --judge-phase complete` for this run only
+- 4 → `save_preferences("off")`
+
+### Preference file
+
+```
+~/.config/gh-gemini-review-loop/preferences.json
+```
+
+```json
+{
+  "schema_version": 1,
+  "judge_mode": "off",
+  "judge_tip_shown": true
+}
+```
+
+Valid `judge_mode` values: `off`, `on_complete`, `on_cycle`. For one-time eval, do not modify the saved preference.
+
+### Cost framing
+
+`gpt-4o-mini` ≈ $0.001 per finding. `on_complete` ≈ $0.005 max per PR. `on_cycle` worst case ≈ $0.015 (3 cycles × 5 findings).
+
 ## Progress Narration
 
 While the loop is running, the agent MUST emit one-line status updates to the user-facing chat at each phase transition. The format is `[loop] cycle N/3 — <phase>`. This is the cheapest user visibility — no code path, just instructions to the agent.
@@ -63,7 +138,7 @@ Required narration points:
 | Phase | Narration line |
 |---|---|
 | Before script fetch | `[loop] cycle N/3 — fetching threads from PR #<num>...` |
-| After fetch, before fixes | `[loop] cycle N/3 — <K> actionable thread(s) (severity: <breakdown>). Fixing.` |
+| After fetch, before fixes | `[loop] cycle N/3 — <K> actionable thread(s) (severity: <breakdown>). Fixing.` + judge eval tip if first time (see [Discoverability](#discoverability)) |
 | After fix attempt, before verify | `[loop] cycle N/3 — fixes applied. Verifying.` |
 | After verify | `[loop] cycle N/3 — verified (<test summary>).` |
 | Before push | `[loop] cycle N/3 — committing and pushing <commit-sha>...` |
@@ -95,6 +170,14 @@ When the user phrases the request differently, dispatch to the right flag combin
 | **Different bot login** | "handle review comments from google-gemini-code-assist" | `--author google-gemini-code-assist` |
 | **Post status without acting** | "leave a status comment without touching anything" | `--post-receipt --no-resolve-outdated --no-resolve-addressed-by-reply` |
 | **Live status comment** | "show me a live status comment on the PR" / "I want background visibility" | `--sticky-receipt --receipt-status running` per cycle; `--sticky-receipt --receipt-status done` at the final invocation |
+| **Loop + judge at completion** | "run the Gemini loop with judge eval at completion" / "with judge eval at completion" | `save_preferences("on_complete")` + `--judge-phase complete` at final invocation. No prompt. |
+| **Loop + judge every cycle** | "run the Gemini loop with judge eval on every cycle" / "with judge eval on every cycle" | `save_preferences("on_cycle")` + `--judge-phase cycle` each cycle. No prompt. |
+| **Judge just this once** | "run judge eval just this once" / "with judge eval just this once" | `--judge-mode once --judge-phase complete`. No save. No prompt. |
+| **Enable judge eval (no mode)** | "enable judge eval" / "use judge eval" / "turn on eval" | Show `AskUserQuestion` prompt; act on answer. |
+| **Explain judge eval** | "what is judge eval?" / "how does judge eval work?" | Explain it. Do not enable it. |
+| **Disable judge for this run** | "skip the judge this time" | `--judge-mode off` |
+| **Change saved preference** | "change my eval preference" / "reset judge mode" | Show `AskUserQuestion` prompt; overwrite prefs file. |
+| **Default loop with saved judge mode** | (no special phrasing — agent reads saved prefs) | `--judge-phase cycle` per cycle; `--judge-phase complete` at final invocation. Script obeys saved mode. |
 | **History investigation** | "show me all Gemini threads ever, including resolved" | `--include-resolved --include-outdated --include-addressed-by-reply --no-resolve-outdated --no-resolve-addressed-by-reply` |
 
 If the user explicitly opts out of any default behavior (e.g. "don't auto-resolve anything"), respect it for the rest of the session via `--no-resolve-outdated --no-resolve-addressed-by-reply`.

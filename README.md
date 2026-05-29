@@ -1,14 +1,23 @@
 # gh-gemini-review-loop
 
-**A fast-track Gemini Code Assist PR review loop for Claude Code. Thread-state-aware, severity-filtered, hard-capped at 3 cycles. No CI coupling.**
+**Move faster through Gemini Code Assist PR feedback from Claude Code.**
 
 [![CI](https://github.com/OrenAshkenazy/gh-gemini-review-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/OrenAshkenazy/gh-gemini-review-loop/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/OrenAshkenazy/gh-gemini-review-loop?sort=semver)](https://github.com/OrenAshkenazy/gh-gemini-review-loop/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> Different from [Gemini Code Assist's official GitHub Action](https://github.com/marketplace/gemini-code-assist) which runs in CI on push. This plugin runs **interactively from your dev environment**: Claude opens a PR, this skill closes the comments before you get up for coffee. No CI minutes spent. No org-wide rollout. Just install, work.
+Built for solo builders and small teams who want review feedback handled while they stay in flow. Claude waits for Gemini, reads real GitHub review-thread state, fixes actionable comments, verifies, pushes, and asks Gemini to re-review. It stops after 3 cycles so it cannot spam your PR.
+
+[Gemini Code Assist](https://github.com/apps/gemini-code-assist) gives you review comments. This plugin turns those comments into an interactive fix loop inside Claude Code: no dashboard hopping, no manual comment triage, no heavy process to adopt.
 
 ---
+
+## Prerequisites
+
+- **Claude Code** with plugin support enabled.
+- **`gh` CLI** authenticated against the repos you'll run the loop on.
+- **Python 3.10+**.
+- **A repo where `gemini-code-assist` is configured as a reviewer.** This plugin is opinionated for Gemini Code Assist and does not aggregate other review bots.
 
 ## Installation
 
@@ -28,7 +37,7 @@ In your Claude Code prompt:
 /plugin install gh-gemini-review-loop@gh-gemini-review-loop
 ```
 
-That's it. The skill auto-triggers when you say things like *"handle Gemini feedback"*, *"run the Gemini loop"*, *"fix the review comments"*, or right after `gh pr create`.
+That's it. The skill is now available to Claude Code.
 
 To upgrade later (Claude Code uses `/plugin update` for installed plugins, distinct from `/plugin marketplace add` which only manages catalogs):
 
@@ -38,13 +47,43 @@ To upgrade later (Claude Code uses `/plugin update` for installed plugins, disti
 
 ---
 
-## Available plugins
+## Use It
 
-### `gh-gemini-review-loop`
+From a repo with an open GitHub PR, say this to Claude:
+
+> Run the Gemini loop
+
+Claude will:
+
+1. Wait for Gemini Code Assist to finish reviewing.
+2. Fetch unresolved, actionable Gemini review threads.
+3. Ignore stale, resolved, duplicate, or already-addressed threads.
+4. Fix clear issues.
+5. Run relevant checks.
+6. Commit and push to the PR branch.
+7. Ask Gemini to re-review.
+8. Stop once the PR is clean, a human decision is needed, or 3 re-review cycles have been used.
+
+You can also use more specific prompts:
+
+| Say this to Claude | What happens |
+|---|---|
+| *"Run the Gemini loop"* | Full loop with defaults |
+| *"Only fix high-severity Gemini findings"* | Skips lower-severity findings |
+| *"Just audit Gemini comments, don't touch anything"* | Read-only inspection |
+| *"One cycle only"* | Fixes once, then stops |
+| *"Show a live status comment on the PR"* | Maintains one edited status comment on the PR |
+| *"Run the Gemini loop with judge eval at completion"* | After the loop stops, OpenAI classifies any remaining Gemini findings as fix / reply / ignore / escalate, so you know whether to keep working or stop |
+
+The skill also triggers naturally when Claude opens a PR and you ask it to keep going, handle review feedback, fix Gemini comments, or request Gemini re-review.
+
+---
+
+## Why This Plugin
 
 Run the full GitHub PR feedback loop with [Gemini Code Assist](https://github.com/apps/gemini-code-assist): wait for Gemini's review, fetch unresolved actionable threads, classify, fix, verify, commit, push, request re-review. Repeat up to a 3-cycle cap.
 
-**Why it's different from the ~10 other Gemini-handling skills on GitHub:**
+**Why this is safer than a naive Gemini comment scraper:**
 
 - **Thread-state-aware.** Uses GitHub's `reviewThreads` GraphQL (with `isResolved` / `isOutdated`) instead of the flat REST endpoint, so it actually knows what's actionable vs already-handled.
 - **`ADDRESSED_BY_REPLY` detection.** Maintainer replied *"wontfix because X"*? The loop honors that — never re-tries the fix and auto-resolves the thread so it stops re-appearing every cycle.
@@ -53,26 +92,33 @@ Run the full GitHub PR feedback loop with [Gemini Code Assist](https://github.co
 - **`--dry-run` for every write.** All GraphQL mutations route through one choke point that can log intended writes without executing.
 - **Sticky receipt for background visibility.** `--sticky-receipt` posts one comment per PR that gets edited in place as the loop progresses, so PR watchers see live phase status (`RUNNING` → `DONE`) without comment spam.
 
-**Quick usage examples** (Claude will pick the right flags from natural-language prompts):
-
-| Say this to Claude | What runs |
-|---|---|
-| *"Run the Gemini loop"* | Full loop with defaults |
-| *"Only fix high-severity Gemini findings"* | `--min-severity high` |
-| *"Just audit Gemini comments, don't touch anything"* | `--dry-run --post-receipt --no-resolve-outdated --no-resolve-addressed-by-reply` |
-| *"Be persistent, allow 4 cycles"* | `--max-rereview-requests 4` |
-| *"Show a live status comment on the PR"* | `--sticky-receipt --receipt-status running` |
-
 See [`SKILL.md`](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md) for the full workflow definition, stop conditions, and all variation phrasings.
 
 ---
 
-## Prerequisites
+## Optional: Per-Finding OpenAI Judge
 
-- **Claude Code** (CLI / desktop / IDE) with plugin support enabled.
-- **`gh` CLI** authenticated against the repos you'll run the loop on.
-- **Python 3.10+** (uses PEP 604 `str | None` union syntax).
-- **A repo where `gemini-code-assist` is configured as a reviewer** (the loop is opinionated for Gemini; doesn't aggregate other bots).
+End users can opt into an OpenAI-powered judge that labels each Gemini finding as `valid_actionable` / `false_positive` / `needs_human` / `explanation_only` / `duplicate` / `already_addressed`, plus a `severity_override` and `recommended_action`. The label appears next to each finding in the loop output.
+
+- **Default: off.** Nothing is sent to OpenAI until you opt in.
+- **Privacy boundary:** when enabled, finding bodies and diff hunks are sent to the OpenAI API. The judge is read-only. It never resolves threads, posts comments, or pushes.
+- **Cost:** `gpt-4o-mini` is about $0.001 per finding. A typical `on_complete` run is about $0.005 per PR.
+- **Discoverability:** on your first loop with findings, the agent shows a one-time tip: `[loop] Tip: judge eval can give a second opinion on these findings.`
+- **Natural language:** say "run the Gemini loop with judge eval at completion" or "with judge eval on every cycle". Preference is saved automatically.
+- **Explicit setup:** say "enable judge eval" to get a mode prompt with all options.
+- **Requires:** `OPENAI_API_KEY` env var + `pip install openai`. Missing either means the judge skips gracefully and the loop continues unchanged.
+
+**Setting `OPENAI_API_KEY` permanently on macOS:**
+
+```bash
+# Store once in Keychain (never sits in a plaintext file):
+security add-generic-password -a "$USER" -s "openai-api-key" -w "sk-..."
+
+# Add to ~/.zshrc so it's available to all apps including Claude Code:
+echo 'export OPENAI_API_KEY=$(security find-generic-password -a "$USER" -s "openai-api-key" -w 2>/dev/null)' >> ~/.zshrc
+```
+
+See [SKILL.md -> Optional Judge Eval](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md) for the full flow and verdict schema.
 
 ---
 
@@ -92,7 +138,7 @@ Claude Code skills don't have a settings UI. Configure via three layers, in orde
 
 ---
 
-## Manual script invocation
+## Advanced: Manual Script Invocation
 
 You'll rarely need this, the skill drives the script for you, but it works for debugging.
 
@@ -123,7 +169,7 @@ Run `python3 "$SCRIPT" --help` for the complete list.
 
 ---
 
-## How it works (BTS)
+## How It Works
 
 The script queries GitHub's `pullRequest.reviewThreads` via GraphQL, filters to threads authored by `gemini-code-assist`, partitions them into four states (`RESOLVED` / `OUTDATED` / `ADDRESSED_BY_REPLY` / `UNRESOLVED`), and surfaces only the actionable subset. The agent fixes those, commits, pushes, then posts `@gemini-code-assist please review the latest changes.` once per cycle — counted strictly against the agent's own GitHub login so humans can ping Gemini freely. After 3 such cycles, hard stop. See the [Stopping Conditions](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md#stopping-conditions) section in SKILL.md for the full state machine.
 

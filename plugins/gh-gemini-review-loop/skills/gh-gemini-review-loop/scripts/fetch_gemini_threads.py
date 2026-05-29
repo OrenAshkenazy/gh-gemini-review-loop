@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime as _dt
 import hashlib
 import json
@@ -15,6 +16,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+# Make the script's own directory importable so `from judge import ...` works
+# when this script is invoked directly (e.g. `python3 .../fetch_gemini_threads.py`).
+# Under `/plugin install` both files live in the same scripts/ directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 DEFAULT_AUTHOR = "gemini-code-assist"
@@ -721,7 +727,13 @@ def wait_for_stable_review(
         time.sleep(min(interval_seconds, max(0.0, deadline - now)))
 
 
-def render_markdown(pr: dict[str, Any], threads: list[dict[str, Any]], author: str) -> str:
+def render_markdown(
+    pr: dict[str, Any],
+    threads: list[dict[str, Any]],
+    author: str,
+    *,
+    judge_results: dict[str, dict[str, Any]] | None = None,
+) -> str:
     reviews = filter_reviews(pr, author)
     rereviews = rereview_requests(pr)
     outdated = outdated_unresolved_threads(pr, author)
@@ -758,7 +770,20 @@ def render_markdown(pr: dict[str, Any], threads: list[dict[str, Any]], author: s
         if thread.get("isOutdated"):
             status.append("outdated")
         status_text = f" [{' '.join(status)}]" if status else ""
-        lines.append(f"## {index}. {path}:{line}{status_text}")
+        # Optional judge annotation — only present when the user opted in via
+        # --judge-mode (or saved preference) AND --judge-phase matched.
+        judge_line = ""
+        if judge_results:
+            jr = judge_results.get(thread.get("id"))
+            if jr and jr.get("status") == "ok":
+                judge_line = (
+                    f"  \n  > **Judge:** `{jr['verdict']}` (conf {jr['confidence']:.2f}, "
+                    f"severity_override={jr['severity_override']}, "
+                    f"action={jr['recommended_action']}). {jr.get('reason', '')}"
+                )
+            elif jr and jr.get("status") == "skipped":
+                judge_line = f"  \n  > **Judge:** skipped — {jr.get('skip_reason', '')}"
+        lines.append(f"## {index}. {path}:{line}{status_text}{judge_line}")
         for comment in thread["comments"]:
             body = (comment.get("body") or "").strip()
             url = comment.get("url") or ""
@@ -903,6 +928,31 @@ def main() -> int:
         action="store_true",
         help="Do not call any GraphQL mutations; log intended writes to stderr instead.",
     )
+    parser.add_argument(
+        "--judge-mode",
+        choices=["off", "on_cycle", "on_complete", "once"],
+        default=None,
+        help=(
+            "Override the saved OpenAI-judge preference for this invocation. "
+            "Without this flag the script reads ~/.config/gh-gemini-review-loop/preferences.json "
+            "(default: 'off'). Requires OPENAI_API_KEY + the openai SDK; gracefully skips otherwise."
+        ),
+    )
+    parser.add_argument(
+        "--judge-phase",
+        choices=["cycle", "complete"],
+        default=None,
+        help=(
+            "Which loop phase this invocation represents (the agent supplies this). "
+            "'cycle' = before fixes each cycle; 'complete' = after the loop stops. "
+            "Together with --judge-mode, controls whether the judge actually runs."
+        ),
+    )
+    parser.add_argument(
+        "--judge-model",
+        default=None,
+        help="Override the OpenAI model used by the judge for this invocation.",
+    )
     args = parser.parse_args()
 
     try:
@@ -992,6 +1042,85 @@ def main() -> int:
         page_warnings = pagination_warnings(pull_request)
         for warning in page_warnings:
             print(f"warning: {warning}", file=sys.stderr)
+
+        # ---- Judge (optional, opt-in via prefs file or --judge-mode) -------
+        # The script is the single source of truth for whether the judge
+        # runs. The agent supplies --judge-phase; we read the saved mode
+        # from ~/.config/gh-gemini-review-loop/preferences.json (or
+        # --judge-mode override) and decide.
+        try:
+            from judge import (  # noqa: PLC0415
+                JudgeClient, JudgeError, load_preferences, should_judge_run,
+                skipped_result,
+            )
+            judge_available = True
+        except ImportError:
+            judge_available = False
+            judge_results: dict[str, dict[str, Any]] = {}
+            judge_status = {
+                "ran": False,
+                "skip_reason": "judge.py not importable (plugin install path issue)",
+            }
+        if judge_available:
+            prefs = load_preferences()
+            effective_mode = args.judge_mode or prefs["judge_mode"]
+            judge_results = {}
+            if should_judge_run(mode=effective_mode, phase=args.judge_phase):
+                client = JudgeClient(model=args.judge_model or prefs["judge_model"])
+                ready, skip_reason = client.is_ready()
+                if not ready:
+                    judge_status = {
+                        "ran": False,
+                        "mode": effective_mode,
+                        "phase": args.judge_phase,
+                        "skip_reason": skip_reason,
+                    }
+                    print(
+                        f"info: judge skipped — {skip_reason}. "
+                        "Loop continues unchanged.",
+                        file=sys.stderr,
+                    )
+                else:
+                    judge_status = {
+                        "ran": True,
+                        "mode": effective_mode,
+                        "phase": args.judge_phase,
+                        "model": client.model,
+                        "judged_count": 0,
+                        "errors": 0,
+                    }
+                    for thread in threads:
+                        # Build a single judge input from the first matching
+                        # bot comment in this filtered thread.
+                        body = (thread.get("comments") or [{}])[0].get("body") or ""
+                        finding_payload = {
+                            "severity": thread_severity(thread),
+                            "path": thread.get("path"),
+                            "line": thread.get("line") or thread.get("originalLine"),
+                            "body": body,
+                            "diff_hunk": (thread.get("comments") or [{}])[0].get("diffHunk") or "",
+                        }
+                        try:
+                            jr = client.judge(finding_payload)
+                            judge_results[thread["id"]] = dataclasses.asdict(jr)
+                            if jr.status == "ok":
+                                judge_status["judged_count"] += 1
+                        except JudgeError as exc:
+                            judge_results[thread["id"]] = dataclasses.asdict(
+                                skipped_result(f"judge error: {exc}")
+                            )
+                            judge_status["errors"] += 1
+            else:
+                judge_status = {
+                    "ran": False,
+                    "mode": effective_mode,
+                    "phase": args.judge_phase,
+                    "skip_reason": (
+                        f"mode={effective_mode!r} + phase={args.judge_phase!r} → no-op"
+                    ),
+                }
+        # --------------------------------------------------------------------
+
         rereviews = rereview_requests(pull_request, agent_login)
         if len(rereviews) >= args.max_rereview_requests:
             print(
@@ -1041,14 +1170,21 @@ def main() -> int:
                         "pageLimitWarnings": page_warnings,
                         "dryRun": args.dry_run,
                         "actionableThreadFingerprint": thread_fingerprint(threads),
+                        "judge": judge_status,
                     },
+                    "judgeResults": judge_results,
                 },
                 indent=2,
                 sort_keys=True,
             )
         )
     else:
-        print(render_markdown(pull_request, threads, args.author), end="")
+        print(
+            render_markdown(
+                pull_request, threads, args.author, judge_results=judge_results
+            ),
+            end="",
+        )
     return 0
 
 
