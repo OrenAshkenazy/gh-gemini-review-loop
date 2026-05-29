@@ -73,7 +73,7 @@ You can also use more specific prompts:
 | *"Just audit Gemini comments, don't touch anything"* | Read-only inspection |
 | *"One cycle only"* | Fixes once, then stops |
 | *"Show a live status comment on the PR"* | Maintains one edited status comment on the PR |
-| *"Run the Gemini loop with judge eval at completion"* | Adds an optional OpenAI second opinion at the end |
+| *"Run the Gemini loop with judge eval at completion"* | After the loop stops, OpenAI classifies any remaining Gemini findings as fix / reply / ignore / escalate, so you know whether to keep working or stop |
 
 The skill also triggers naturally when Claude opens a PR and you ask it to keep going, handle review feedback, fix Gemini comments, or request Gemini re-review.
 
