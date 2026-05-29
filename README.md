@@ -47,38 +47,6 @@ To upgrade later (Claude Code uses `/plugin update` for installed plugins, disti
 
 ---
 
-## Use It
-
-From a repo with an open GitHub PR, say this to Claude:
-
-> Run the Gemini loop
-
-Claude will:
-
-1. Wait for Gemini Code Assist to finish reviewing.
-2. Fetch unresolved, actionable Gemini review threads.
-3. Ignore stale, resolved, duplicate, or already-addressed threads.
-4. Fix clear issues.
-5. Run relevant checks.
-6. Commit and push to the PR branch.
-7. Ask Gemini to re-review.
-8. Stop once the PR is clean, a human decision is needed, or 3 re-review cycles have been used.
-
-You can also use more specific prompts:
-
-| Say this to Claude | What happens |
-|---|---|
-| *"Run the Gemini loop"* | Full loop with defaults |
-| *"Only fix high-severity Gemini findings"* | Skips lower-severity findings |
-| *"Just audit Gemini comments, don't touch anything"* | Read-only inspection |
-| *"One cycle only"* | Fixes once, then stops |
-| *"Show a live status comment on the PR"* | Maintains one edited status comment on the PR |
-| *"Run the Gemini loop with judge eval at completion"* | After the loop stops, OpenAI classifies any remaining Gemini findings as fix / reply / ignore / escalate, so you know whether to keep working or stop |
-
-The skill also triggers naturally when Claude opens a PR and you ask it to keep going, handle review feedback, fix Gemini comments, or request Gemini re-review.
-
----
-
 ## See It Before You Install
 
 ![Terminal demo of gh-gemini-review-loop handling Gemini Code Assist feedback](docs/gh-gemini-review-loop-demo.gif)
@@ -151,6 +119,38 @@ gemini-code-assist reviewed the latest commit:
 
 [loop] DONE — 0 actionable threads remaining. Cycles used: 2/3.
 ```
+
+---
+
+## Use It
+
+From a repo with an open GitHub PR, say this to Claude:
+
+> Run the Gemini loop
+
+Claude will:
+
+1. Wait for Gemini Code Assist to finish reviewing.
+2. Fetch unresolved, actionable Gemini review threads.
+3. Ignore stale, resolved, duplicate, or already-addressed threads.
+4. Fix clear issues.
+5. Run relevant checks.
+6. Commit and push to the PR branch.
+7. Ask Gemini to re-review.
+8. Stop once the PR is clean, a human decision is needed, or 3 re-review cycles have been used.
+
+You can also use more specific prompts:
+
+| Say this to Claude | What happens |
+|---|---|
+| *"Run the Gemini loop"* | Full loop with defaults |
+| *"Only fix high-severity Gemini findings"* | Skips lower-severity findings |
+| *"Just audit Gemini comments, don't touch anything"* | Read-only inspection |
+| *"One cycle only"* | Fixes once, then stops |
+| *"Show a live status comment on the PR"* | Maintains one edited status comment on the PR |
+| *"Run the Gemini loop with judge eval at completion"* | After the loop stops, OpenAI classifies any remaining Gemini findings as fix / reply / ignore / escalate, so you know whether to keep working or stop |
+
+The skill also triggers naturally when Claude opens a PR and you ask it to keep going, handle review feedback, fix Gemini comments, or request Gemini re-review.
 
 ---
 
