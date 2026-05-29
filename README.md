@@ -84,7 +84,7 @@ The skill also triggers naturally when Claude opens a PR and you ask it to keep 
 GitHub README files cannot execute terminal recordings inline, but the cast is checked into the repo and can be played directly from the README with one copy-paste command:
 
 ```bash
-asciinema play <(curl -fsSL https://raw.githubusercontent.com/OrenAshkenazy/gh-gemini-review-loop/main/docs/gh-gemini-review-loop-demo.cast)
+asciinema play https://raw.githubusercontent.com/OrenAshkenazy/gh-gemini-review-loop/main/docs/gh-gemini-review-loop-demo.cast
 ```
 
 From a cloned checkout, play the same 60-second terminal demo locally:
