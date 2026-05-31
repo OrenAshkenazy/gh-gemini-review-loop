@@ -177,11 +177,11 @@ See [SKILL.md -> Optional Judge Eval](plugins/gh-gemini-review-loop/skills/gh-ge
 
 ## Configuring the skill
 
-Claude Code skills don't have a settings UI. The simplest persistent setting is the loop cap:
+Claude Code skills don't have a settings UI. Persistent script settings live in `~/.config/gh-gemini-review-loop/preferences.json`.
 
 ### Set the loop cap
 
-The default cap is `3` re-review requests per PR. To make the loop stop after 4 re-review requests by default, create or edit:
+The default cap is `3` re-review requests per PR. The script reads `max_rereview_requests` from `~/.config/gh-gemini-review-loop/preferences.json` on every invocation. To make the loop stop after 4 re-review requests by default, create or edit that file:
 
 ```bash
 mkdir -p ~/.config/gh-gemini-review-loop
@@ -214,7 +214,7 @@ For one run only, use the CLI flag instead:
 python3 "$SCRIPT" --max-rereview-requests 4
 ```
 
-Precedence, highest first:
+Override precedence, highest first:
 
 1. **Direct CLI flags** when invoking the script manually. See `--help` for the full list. CLI flags override the preferences file.
 2. **Natural-language prompts.** Say what you want; the agent picks the right script flags from [SKILL.md's Variations table](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md). This is the idiomatic path.
@@ -225,7 +225,7 @@ Precedence, highest first:
    - Always pass --post-receipt so we get an audit trail on every PR.
    - Use --max-rereview-requests 4 for the API repo (we want one extra cycle).
    ```
-4. **Preferences file** for persistent script-level defaults:
+4. **Preferences file** for persistent script-level defaults. This is the recommended place for the cap:
    ```json
    {
      "max_rereview_requests": 4

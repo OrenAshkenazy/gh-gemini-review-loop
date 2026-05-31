@@ -456,6 +456,10 @@ def effective_rereview_limit(cli_value: int | None, prefs: dict[str, Any]) -> in
         return DEFAULT_REREVIEW_LIMIT
     if isinstance(value, int) and value >= 0:
         return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return int(stripped)
     return DEFAULT_REREVIEW_LIMIT
 
 

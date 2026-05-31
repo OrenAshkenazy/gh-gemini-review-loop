@@ -257,7 +257,11 @@ class TestRereviewLimit:
     def test_invalid_preference_falls_back_to_default(self):
         assert effective_rereview_limit(None, {"max_rereview_requests": -1}) == 3
         assert effective_rereview_limit(None, {"max_rereview_requests": True}) == 3
-        assert effective_rereview_limit(None, {"max_rereview_requests": "5"}) == 3
+        assert effective_rereview_limit(None, {"max_rereview_requests": "five"}) == 3
+
+    def test_string_preference_is_coerced(self):
+        assert effective_rereview_limit(None, {"max_rereview_requests": "5"}) == 5
+        assert effective_rereview_limit(None, {"max_rereview_requests": " 6 "}) == 6
 
 
 # ---------------------------------------------------------------------------

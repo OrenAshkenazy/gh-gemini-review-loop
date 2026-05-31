@@ -126,7 +126,7 @@ Persist via `save_preferences()`. Mapping:
 
 Valid `judge_mode` values: `off`, `on_complete`, `on_cycle`. For one-time eval, do not modify the saved preference.
 
-`max_rereview_requests` sets the persistent loop cap. The CLI flag `--max-rereview-requests N` overrides it for a single invocation.
+`max_rereview_requests` sets the persistent loop cap. The script reads it from `~/.config/gh-gemini-review-loop/preferences.json` on every invocation. The CLI flag `--max-rereview-requests N` overrides it for a single invocation.
 
 To configure the persistent cap, create or edit:
 

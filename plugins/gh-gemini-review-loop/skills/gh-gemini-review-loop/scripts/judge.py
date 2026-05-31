@@ -230,8 +230,10 @@ def _coerce_max_rereview_requests(value: t.Any) -> int:
         return DEFAULT_MAX_REREVIEW_REQUESTS
     if isinstance(value, int) and value >= 0:
         return value
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return int(stripped)
     return DEFAULT_MAX_REREVIEW_REQUESTS
 
 

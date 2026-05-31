@@ -164,7 +164,7 @@ class TestPreferences:
     def test_string_max_rereview_requests_is_accepted(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         (tmp_path / "preferences.json").write_text(
-            json.dumps({"schema_version": 1, "max_rereview_requests": "6"})
+            json.dumps({"schema_version": 1, "max_rereview_requests": " 6 "})
         )
         assert load_preferences()["max_rereview_requests"] == 6
 
