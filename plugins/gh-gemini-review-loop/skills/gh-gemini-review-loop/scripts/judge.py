@@ -40,6 +40,7 @@ import dataclasses
 import datetime as _dt
 import json
 import os
+import shlex
 import sys
 import typing as t
 from pathlib import Path
@@ -303,7 +304,10 @@ def _install_hint_for_current_python() -> str:
     installed on a different Python than the one running the script) and
     blindly retrying ``pip install openai`` against the wrong environment.
     """
-    py = sys.executable or "python3"
+    # shlex.quote handles spaces in interpreter paths (common on macOS venvs
+    # like '/Users/me/My Project/.venv/bin/python') so the suggested command
+    # is actually copy-pasteable.
+    py = shlex.quote(sys.executable or "python3")
     return f"{py} -m pip install -U openai"
 
 

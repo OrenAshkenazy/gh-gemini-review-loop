@@ -114,3 +114,45 @@ class TestColorOutput:
         judge_doctor.main([])
         out = capsys.readouterr().out
         assert "\033[" not in out
+
+    def test_color_survives_missing_isatty(self, monkeypatch):
+        # Some environments replace sys.stdout with a stream that has no
+        # isatty method (custom test runners, GUI consoles, daemons). The
+        # color helper must not crash there.
+        class StreamWithoutIsatty:
+            pass
+
+        monkeypatch.setattr("sys.stdout", StreamWithoutIsatty())
+        # Should return plain text, no AttributeError.
+        result = judge_doctor._color("hello", judge_doctor.GREEN)
+        assert result == "hello"
+
+
+class TestSettingsJsonTypeCheck:
+    def test_non_string_injected_key_caught(self, monkeypatch, tmp_path, capsys):
+        # If settings.json injects a boolean or integer as OPENAI_API_KEY,
+        # the doctor must flag it instead of letting it slip through as
+        # "non-placeholder" via the defensive isinstance guard in
+        # looks_like_placeholder_key.
+        settings = tmp_path / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text('{"env": {"OPENAI_API_KEY": true}}')
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-" + "a" * 48)
+        rc = judge_doctor.main([])
+        out = capsys.readouterr().out
+        assert "non-string" in out
+        assert "type=bool" in out
+        assert rc == 1
+
+
+class TestShlexQuoting:
+    def test_install_hint_quotes_path_with_spaces(self, monkeypatch):
+        # Regression guard: if sys.executable has spaces, the suggested
+        # install command must be shell-safe so copy-paste actually works.
+        from judge import _install_hint_for_current_python  # noqa: PLC0415
+
+        monkeypatch.setattr("sys.executable", "/Users/me/My Project/.venv/bin/python")
+        hint = _install_hint_for_current_python()
+        # shlex.quote wraps in single quotes when spaces present.
+        assert "'/Users/me/My Project/.venv/bin/python'" in hint

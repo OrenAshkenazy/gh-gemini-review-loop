@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -44,8 +45,15 @@ RESET = "\033[0m"
 
 
 def _color(text: str, code: str) -> str:
-    """Apply ANSI color only when stdout is a TTY (keeps log files clean)."""
-    if not sys.stdout.isatty():
+    """Apply ANSI color only when stdout is a TTY (keeps log files clean).
+
+    Uses ``getattr`` because some environments (GUI IDE consoles, custom
+    test runners, background daemons) replace ``sys.stdout`` with a stream
+    that has no ``isatty`` method — directly calling it would raise
+    ``AttributeError`` and crash the doctor before it could report anything.
+    """
+    isatty = getattr(sys.stdout, "isatty", None)
+    if not isatty or not isatty():
         return text
     return f"{code}{text}{RESET}"
 
@@ -89,7 +97,9 @@ def check_python() -> bool:
 def check_openai_sdk() -> bool:
     """Verify the openai SDK (v1.0.0+) is importable from THIS Python."""
     print(_color("\n[2/5] openai SDK", BOLD))
-    py = sys.executable or "python3"
+    # shlex.quote so the printed command survives spaces in the interpreter
+    # path (common on macOS: '/Users/me/My Project/.venv/bin/python').
+    py = shlex.quote(sys.executable or "python3")
     try:
         import openai  # noqa: PLC0415
     except ImportError:
@@ -175,9 +185,21 @@ def check_settings_json() -> bool:
         _ok("no 'env' block in settings.json")
         return True
     injected = env.get("OPENAI_API_KEY")
-    if not injected:
+    if injected is None or injected == "":
         _ok("settings.json does not inject OPENAI_API_KEY")
         return True
+    # Explicit type check: looks_like_placeholder_key returns False for
+    # non-strings (defensively), which would let an obviously-broken
+    # settings.json (boolean true, integer 0) slip through here as
+    # "non-placeholder". Catch it before the placeholder heuristic runs.
+    if not isinstance(injected, str):
+        _fail(
+            f"settings.json injects non-string OPENAI_API_KEY "
+            f"(type={type(injected).__name__})",
+            "OPENAI_API_KEY must be a string. Edit ~/.claude/settings.json "
+            "and either delete the line or quote the value as a string.",
+        )
+        return False
     if looks_like_placeholder_key(injected):
         preview = injected[:12] + "..." if len(injected) > 12 else injected
         _fail(
