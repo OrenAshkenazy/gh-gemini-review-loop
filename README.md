@@ -149,6 +149,31 @@ EOF
 python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/judge_doctor.py" --probe
 ```
 
+### Judge eval configuration
+
+Three surfaces, each with a different scope. **Flags override env vars; env vars override the prefs file; the prefs file overrides the hardcoded default (`off`).**
+
+| Surface | Setting | Values | Effect |
+|---|---|---|---|
+| **Prefs file** `~/.config/gh-gemini-review-loop/preferences.json` | `judge_mode` | `off` (default) / `on_complete` / `on_cycle` | When the judge runs. `on_complete` = once after the loop stops; `on_cycle` = every cycle |
+| | `judge_model` | OpenAI model name | Defaults to `gpt-4o-mini` |
+| | `judge_tip_shown` | `true` / `false` | Suppresses the one-time discoverability tip once shown |
+| **Env vars** | `OPENAI_API_KEY` | `sk-...` | Required. Use `~/.zshenv` so subprocesses inherit it |
+| | `OPENAI_BASE_URL` | URL | Point SDK at Ollama / LiteLLM / LM Studio / enterprise gateway. When set, key-shape checks are bypassed |
+| | `OPENAI_JUDGE_MODEL` | model name | Override `judge_model` globally without editing prefs |
+| | `GGRL_STATE_DIR` | path | Override the config dir (useful for multi-account or tests) |
+| **CLI flags** | `--judge-mode` | `off` / `on_complete` / `on_cycle` / `once` | Per-run override of saved mode. `once` ignores prefs and runs this invocation only |
+| | `--judge-phase` | `cycle` / `complete` | Which phase the agent is in; the script combines this with the mode to decide whether to run |
+| | `--judge-model` | model name | Per-run model override |
+| **Natural language** (idiomatic) | *"run the Gemini loop with judge eval at completion"* | — | Sets `judge_mode=on_complete` and runs |
+| | *"with judge eval on every cycle"* | — | Sets `judge_mode=on_cycle` and runs |
+| | *"run judge eval just this once"* | — | One-shot, doesn't touch prefs |
+| | *"skip the judge this time"* | — | Disables for current run only |
+| | *"enable judge eval"* | — | Prompts you to pick a mode |
+| | *"change my eval preference"* | — | Re-prompts and overwrites prefs |
+
+**To reset to defaults:** delete `~/.config/gh-gemini-review-loop/preferences.json` (or its containing dir). Next invocation re-creates with `judge_mode=off`.
+
 See [SKILL.md -> Optional Judge Eval](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md) for the full flow and verdict schema.
 
 ---
@@ -166,6 +191,8 @@ Claude Code skills don't have a settings UI. Configure via three layers, in orde
    - Use --max-rereview-requests 4 for the API repo (we want one extra cycle).
    ```
 3. **Direct CLI flags** when invoking the script manually. See `--help` for the full list.
+
+For the optional OpenAI judge, see [Judge eval configuration](#judge-eval-configuration) — it has its own prefs file, env vars, and flags.
 
 ---
 
