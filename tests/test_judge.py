@@ -262,6 +262,26 @@ class TestLooksLikePlaceholderKey:
     def test_detects(self, key, expected):
         assert looks_like_placeholder_key(key) is expected
 
+    def test_openai_base_url_bypasses_shape_checks(self, monkeypatch):
+        # Users pointing at Ollama / LiteLLM / LM Studio / enterprise gateways
+        # legitimately use short or non-sk- keys. OPENAI_BASE_URL is the
+        # signal that the SDK is talking to a non-OpenAI endpoint, so shape
+        # checks must not fire there. The explicit placeholder-marker check
+        # still does — a literal REPLACE_WITH_YOUR_KEY is wrong everywhere.
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
+        assert looks_like_placeholder_key("ollama") is False
+        assert looks_like_placeholder_key("not-an-sk-key") is False
+        assert looks_like_placeholder_key("any-short") is False
+        # But explicit placeholders still rejected
+        assert looks_like_placeholder_key("REPLACE_WITH_YOUR_KEY") is True
+
+    def test_no_openai_base_url_keeps_shape_checks(self, monkeypatch):
+        # Regression guard for the inverse: when OPENAI_BASE_URL is NOT set,
+        # the bypass must NOT trigger and short/non-sk keys are still caught.
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        assert looks_like_placeholder_key("short") is True
+        assert looks_like_placeholder_key("not-an-sk-key-but-padded-out-aaaaaaaaaaaa") is True
+
 
 class TestJudgeClientParse:
     def test_happy_path(self):

@@ -268,6 +268,13 @@ def looks_like_placeholder_key(key: str | None) -> bool:
 
     Returns False for None / empty so callers can distinguish "missing"
     from "placeholder" with separate error messages.
+
+    When ``OPENAI_BASE_URL`` is set, the user is pointing the SDK at a
+    non-OpenAI endpoint (Ollama, LiteLLM, LM Studio, an enterprise gateway,
+    etc.) where keys legitimately don't follow the ``sk-...`` shape or
+    minimum length. Skip the shape checks in that case so the doctor
+    doesn't fight self-hosted setups. The explicit placeholder-marker
+    check still runs — a literal ``REPLACE_WITH_YOUR_KEY`` is always wrong.
     """
     if not key:
         return False
@@ -275,6 +282,8 @@ def looks_like_placeholder_key(key: str | None) -> bool:
     for marker in _PLACEHOLDER_MARKERS:
         if marker.upper() in upper:
             return True
+    if os.environ.get("OPENAI_BASE_URL"):
+        return False
     if len(key) < _MIN_REAL_KEY_LEN:
         return True
     if not key.startswith("sk-"):
