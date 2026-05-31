@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/OrenAshkenazy/gh-gemini-review-loop?sort=semver)](https://github.com/OrenAshkenazy/gh-gemini-review-loop/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Built for solo builders and small teams who want review feedback handled while they stay in flow. Claude waits for Gemini, reads real GitHub review-thread state, fixes actionable comments, verifies, pushes, and asks Gemini to re-review. It stops after 3 cycles so it cannot spam your PR.
+Built for solo builders and small teams who want review feedback handled while they stay in flow. Claude waits for Gemini, reads real GitHub review-thread state, fixes actionable comments, verifies, pushes, and asks Gemini to re-review. It stops at a configurable cap (default: 3 cycles) so it cannot spam your PR.
 
 [Gemini Code Assist](https://github.com/apps/gemini-code-assist) gives you review comments. This plugin turns those comments into an interactive fix loop inside Claude Code: no dashboard hopping, no manual comment triage, no heavy process to adopt.
 
@@ -69,7 +69,7 @@ Claude will:
 5. Run relevant checks.
 6. Commit and push to the PR branch.
 7. Ask Gemini to re-review.
-8. Stop once the PR is clean, a human decision is needed, or 3 re-review cycles have been used.
+8. Stop once the PR is clean, a human decision is needed, or the configured re-review cap has been used.
 
 You can also use more specific prompts:
 
@@ -88,14 +88,14 @@ The skill also triggers naturally when Claude opens a PR and you ask it to keep 
 
 ## Why This Plugin
 
-Run the full GitHub PR feedback loop with [Gemini Code Assist](https://github.com/apps/gemini-code-assist): wait for Gemini's review, fetch unresolved actionable threads, classify, fix, verify, commit, push, request re-review. Repeat up to a 3-cycle cap.
+Run the full GitHub PR feedback loop with [Gemini Code Assist](https://github.com/apps/gemini-code-assist): wait for Gemini's review, fetch unresolved actionable threads, classify, fix, verify, commit, push, request re-review. Repeat up to the configured cap (default: 3 cycles).
 
 **Why this is safer than a naive Gemini comment scraper:**
 
 - **Thread-state-aware.** Uses GitHub's `reviewThreads` GraphQL (with `isResolved` / `isOutdated`) instead of the flat REST endpoint, so it actually knows what's actionable vs already-handled.
 - **`ADDRESSED_BY_REPLY` detection.** Maintainer replied *"wontfix because X"*? The loop honors that — never re-tries the fix and auto-resolves the thread so it stops re-appearing every cycle.
 - **Severity-aware ordering + filtering.** Parses Gemini's `critical` / `high` / `medium` / `low` priority markers. Sorts fixes by severity. Filter with `--min-severity high` to skip nits.
-- **Hard 3-cycle cap, counted by the agent.** Only the agent's own re-review pings consume cycles (humans pinging Gemini don't burn cycles). Prevents runaway PR spam — a known failure mode of naive loops.
+- **Configurable cycle cap, counted by the agent.** Only the agent's own re-review pings consume cycles (humans pinging Gemini don't burn cycles). Prevents runaway PR spam — a known failure mode of naive loops.
 - **`--dry-run` for every write.** All GraphQL mutations route through one choke point that can log intended writes without executing.
 - **Sticky receipt for background visibility.** `--sticky-receipt` posts one comment per PR that gets edited in place as the loop progresses, so PR watchers see live phase status (`RUNNING` → `DONE`) without comment spam.
 
@@ -133,7 +133,8 @@ Prefer editing a config file over talking to Claude? Edit (or create) `~/.config
 ```json
 {
   "judge_mode": "on_complete",
-  "judge_model": "gpt-4o-mini"
+  "judge_model": "gpt-4o-mini",
+  "max_rereview_requests": 3
 }
 ```
 
@@ -143,7 +144,9 @@ Prefer editing a config file over talking to Claude? Edit (or create) `~/.config
 | `on_complete` | Once, after the loop finishes — cheapest signal |
 | `on_cycle` | Every fix cycle — more frequent, ~3× the cost |
 
-**To reset:** delete the file. Next run re-creates it with `judge_mode: off`.
+Set `max_rereview_requests` to change the persistent loop cap. The CLI flag `--max-rereview-requests` still wins for a single manual invocation.
+
+**To reset:** delete the file. Next run uses `judge_mode: off` and `max_rereview_requests: 3`.
 
 ### Setting your `OPENAI_API_KEY`
 
@@ -174,7 +177,7 @@ See [SKILL.md -> Optional Judge Eval](plugins/gh-gemini-review-loop/skills/gh-ge
 
 ## Configuring the skill
 
-Claude Code skills don't have a settings UI. Configure via three layers, in order of dominance:
+Claude Code skills don't have a settings UI. Configure via four layers, in order of dominance:
 
 1. **Natural-language prompts.** Say what you want; the agent picks the right script flags from [SKILL.md's Variations table](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md). This is the idiomatic path.
 2. **`CLAUDE.md` preferences** for persistent per-user or per-repo defaults:
@@ -184,9 +187,15 @@ Claude Code skills don't have a settings UI. Configure via three layers, in orde
    - Always pass --post-receipt so we get an audit trail on every PR.
    - Use --max-rereview-requests 4 for the API repo (we want one extra cycle).
    ```
-3. **Direct CLI flags** when invoking the script manually. See `--help` for the full list.
+3. **Preferences file** for persistent script-level defaults:
+   ```json
+   {
+     "max_rereview_requests": 4
+   }
+   ```
+4. **Direct CLI flags** when invoking the script manually. See `--help` for the full list. CLI flags override the preferences file.
 
-For the optional OpenAI judge, see [Judge eval TL;DR](#judge-eval-tldr) — it has its own prefs file at `~/.config/gh-gemini-review-loop/preferences.json`.
+For the optional OpenAI judge, see [Judge eval TL;DR](#judge-eval-tldr). It shares the same prefs file at `~/.config/gh-gemini-review-loop/preferences.json`.
 
 ---
 
@@ -212,7 +221,7 @@ python3 "$SCRIPT" --min-severity high           # ignore Gemini's low/medium nit
 python3 "$SCRIPT" --drop-unknown-severity       # also ignore unmarked findings
 python3 "$SCRIPT" --no-resolve-outdated         # read-only inspection mode
 python3 "$SCRIPT" --include-resolved --include-outdated --include-addressed-by-reply   # full history
-python3 "$SCRIPT" --max-rereview-requests 4     # raise the 3-cycle cap
+python3 "$SCRIPT" --max-rereview-requests 4     # override the configured cap once
 python3 "$SCRIPT" --agent-login NAME            # override gh-detected agent login
 python3 "$SCRIPT" --author google-gemini-code-assist   # alternate bot login
 ```
@@ -223,7 +232,7 @@ Run `python3 "$SCRIPT" --help` for the complete list.
 
 ## How It Works
 
-The script queries GitHub's `pullRequest.reviewThreads` via GraphQL, filters to threads authored by `gemini-code-assist`, partitions them into four states (`RESOLVED` / `OUTDATED` / `ADDRESSED_BY_REPLY` / `UNRESOLVED`), and surfaces only the actionable subset. The agent fixes those, commits, pushes, then posts `@gemini-code-assist please review the latest changes.` once per cycle — counted strictly against the agent's own GitHub login so humans can ping Gemini freely. After 3 such cycles, hard stop. See the [Stopping Conditions](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md#stopping-conditions) section in SKILL.md for the full state machine.
+The script queries GitHub's `pullRequest.reviewThreads` via GraphQL, filters to threads authored by `gemini-code-assist`, partitions them into four states (`RESOLVED` / `OUTDATED` / `ADDRESSED_BY_REPLY` / `UNRESOLVED`), and surfaces only the actionable subset. The agent fixes those, commits, pushes, then posts `@gemini-code-assist please review the latest changes.` once per cycle — counted strictly against the agent's own GitHub login so humans can ping Gemini freely. After the configured cap is reached, hard stop. See the [Stopping Conditions](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md#stopping-conditions) section in SKILL.md for the full state machine.
 
 ---
 

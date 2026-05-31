@@ -13,6 +13,7 @@ from fetch_gemini_threads import (
     STICKY_RECEIPT_MARKER,
     PullRequest,
     addressed_by_reply_threads,
+    effective_rereview_limit,
     filter_by_min_severity,
     filter_threads,
     is_addressed_by_reply,
@@ -240,6 +241,23 @@ class TestRereviewRequests:
     def test_ignores_comment_without_review_word(self):
         pr = self._pr([{"author": {"login": "a"}, "body": "@gemini-code-assist hi"}])
         assert rereview_requests(pr) == []
+
+
+# ---------------------------------------------------------------------------
+# re-review cap preference
+# ---------------------------------------------------------------------------
+
+class TestRereviewLimit:
+    def test_cli_value_wins_over_preferences(self):
+        assert effective_rereview_limit(2, {"max_rereview_requests": 5}) == 2
+
+    def test_preferences_used_when_cli_absent(self):
+        assert effective_rereview_limit(None, {"max_rereview_requests": 5}) == 5
+
+    def test_invalid_preference_falls_back_to_default(self):
+        assert effective_rereview_limit(None, {"max_rereview_requests": -1}) == 3
+        assert effective_rereview_limit(None, {"max_rereview_requests": True}) == 3
+        assert effective_rereview_limit(None, {"max_rereview_requests": "5"}) == 3
 
 
 # ---------------------------------------------------------------------------

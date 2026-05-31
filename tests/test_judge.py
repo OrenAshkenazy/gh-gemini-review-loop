@@ -19,6 +19,7 @@ PLUGIN_SCRIPTS = (
 sys.path.insert(0, str(PLUGIN_SCRIPTS))
 
 from judge import (  # noqa: E402
+    DEFAULT_MAX_REREVIEW_REQUESTS,
     DEFAULT_MODEL,
     PREFS_SCHEMA_VERSION,
     VALID_VERDICTS,
@@ -60,6 +61,7 @@ class TestPreferences:
         prefs = load_preferences()
         assert prefs["judge_mode"] == "off"
         assert prefs["judge_model"] == DEFAULT_MODEL
+        assert prefs["max_rereview_requests"] == DEFAULT_MAX_REREVIEW_REQUESTS
         assert prefs["schema_version"] == PREFS_SCHEMA_VERSION
 
     def test_corrupt_file_falls_back_to_default(self, tmp_path, monkeypatch):
@@ -87,6 +89,7 @@ class TestPreferences:
         assert saved["judge_mode"] == "on_cycle"
         assert saved["judge_model"] == "gpt-4o"
         assert saved["judge_tip_shown"] is False
+        assert saved["max_rereview_requests"] == DEFAULT_MAX_REREVIEW_REQUESTS
         loaded = load_preferences()
         assert loaded["judge_mode"] == "on_cycle"
         assert loaded["judge_model"] == "gpt-4o"
@@ -142,6 +145,36 @@ class TestPreferences:
         prefs = load_preferences()
         # Forward-compat: unknown schema_version doesn't drop a valid mode.
         assert prefs["judge_mode"] == "on_cycle"
+
+    def test_loads_saved_max_rereview_requests(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "preferences.json").write_text(
+            json.dumps({"schema_version": 1, "max_rereview_requests": 5})
+        )
+        assert load_preferences()["max_rereview_requests"] == 5
+
+    @pytest.mark.parametrize("value", [-1, True, "five", None])
+    def test_invalid_max_rereview_requests_falls_back(self, tmp_path, monkeypatch, value):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "preferences.json").write_text(
+            json.dumps({"schema_version": 1, "max_rereview_requests": value})
+        )
+        assert load_preferences()["max_rereview_requests"] == DEFAULT_MAX_REREVIEW_REQUESTS
+
+    def test_string_max_rereview_requests_is_accepted(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "preferences.json").write_text(
+            json.dumps({"schema_version": 1, "max_rereview_requests": "6"})
+        )
+        assert load_preferences()["max_rereview_requests"] == 6
+
+    def test_save_preserves_max_rereview_requests(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "preferences.json").write_text(
+            json.dumps({"schema_version": 1, "max_rereview_requests": 4})
+        )
+        save_preferences("on_complete")
+        assert load_preferences()["max_rereview_requests"] == 4
 
 
 # ---------------------------------------------------------------------------

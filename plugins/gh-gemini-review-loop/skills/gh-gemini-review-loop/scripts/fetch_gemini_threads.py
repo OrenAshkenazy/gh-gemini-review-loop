@@ -441,6 +441,24 @@ def gh_authenticated_login() -> str | None:
     return None
 
 
+def nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return parsed
+
+
+def effective_rereview_limit(cli_value: int | None, prefs: dict[str, Any]) -> int:
+    if cli_value is not None:
+        return cli_value
+    value = prefs.get("max_rereview_requests", DEFAULT_REREVIEW_LIMIT)
+    if isinstance(value, bool):
+        return DEFAULT_REREVIEW_LIMIT
+    if isinstance(value, int) and value >= 0:
+        return value
+    return DEFAULT_REREVIEW_LIMIT
+
+
 def post_pr_comment(pr: PullRequest, body: str, *, dry_run: bool = False) -> None:
     """Post a comment on the PR via gh."""
     pr_ref = f"{pr.owner}/{pr.repo}#{pr.number}"
@@ -829,9 +847,13 @@ def main() -> int:
     )
     parser.add_argument(
         "--max-rereview-requests",
-        type=int,
-        default=DEFAULT_REREVIEW_LIMIT,
-        help=f"Warn when prior Gemini re-review requests reach this limit. Default: {DEFAULT_REREVIEW_LIMIT}.",
+        type=nonnegative_int,
+        default=None,
+        help=(
+            "Warn when prior Gemini re-review requests reach this limit. "
+            "Overrides max_rereview_requests in ~/.config/gh-gemini-review-loop/preferences.json "
+            f"(default: {DEFAULT_REREVIEW_LIMIT})."
+        ),
     )
     parser.add_argument(
         "--resolve-past-cap",
@@ -956,6 +978,15 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        try:
+            from judge import load_preferences  # noqa: PLC0415
+
+            prefs = load_preferences()
+        except ImportError:
+            prefs = {"max_rereview_requests": DEFAULT_REREVIEW_LIMIT}
+        args.max_rereview_requests = effective_rereview_limit(
+            args.max_rereview_requests, prefs
+        )
         pr = resolve_pr(args.pr)
         if args.wait:
             pull_request = wait_for_stable_review(
@@ -1050,8 +1081,7 @@ def main() -> int:
         # --judge-mode override) and decide.
         try:
             from judge import (  # noqa: PLC0415
-                JudgeClient, JudgeError, load_preferences, should_judge_run,
-                skipped_result,
+                JudgeClient, JudgeError, should_judge_run, skipped_result,
             )
             judge_available = True
         except ImportError:
@@ -1062,7 +1092,6 @@ def main() -> int:
                 "skip_reason": "judge.py not importable (plugin install path issue)",
             }
         if judge_available:
-            prefs = load_preferences()
             effective_mode = args.judge_mode or prefs["judge_mode"]
             judge_results = {}
             if should_judge_run(mode=effective_mode, phase=args.judge_phase):
