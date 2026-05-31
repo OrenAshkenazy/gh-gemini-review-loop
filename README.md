@@ -115,14 +115,57 @@ End users can opt into an OpenAI-powered judge that labels each Gemini finding a
 - **Explicit setup:** say "enable judge eval" to get a mode prompt with all options.
 - **Requires:** `OPENAI_API_KEY` env var + `pip install openai`. Missing either means the judge skips gracefully and the loop continues unchanged.
 
-**Setting `OPENAI_API_KEY` permanently on macOS:**
+### Judge eval TL;DR
+
+1. Set `OPENAI_API_KEY` once (see [Setting your API key](#setting-your-openai_api_key) below).
+2. Say one of these to Claude:
+
+   > *"Enable judge eval"* — Claude prompts you to pick a mode and saves it.
+   >
+   > *"Run the Gemini loop with judge eval at completion"* — saves and runs in one step.
+
+That's it. Claude handles the config file.
+
+### Configuring it yourself
+
+Prefer editing a config file over talking to Claude? Edit (or create) `~/.config/gh-gemini-review-loop/preferences.json`:
+
+```json
+{
+  "judge_mode": "on_complete",
+  "judge_model": "gpt-4o-mini"
+}
+```
+
+| `judge_mode` value | When the judge runs |
+|---|---|
+| `off` (default) | Never. Nothing is sent to OpenAI |
+| `on_complete` | Once, after the loop finishes — cheapest signal |
+| `on_cycle` | Every fix cycle — more frequent, ~3× the cost |
+
+**To reset:** delete the file. Next run re-creates it with `judge_mode: off`.
+
+### Setting your `OPENAI_API_KEY`
+
+The judge needs an OpenAI key. The key must be visible to subprocesses that Claude spawns — `~/.zshrc` is **not** enough, since subprocesses don't source it. Use `~/.zshenv` instead.
+
+**macOS (one-time, key stored in Keychain — never sits in a plaintext file):**
 
 ```bash
-# Store once in Keychain (never sits in a plaintext file):
 security add-generic-password -a "$USER" -s "openai-api-key" -w "sk-..."
+echo 'export OPENAI_API_KEY=$(security find-generic-password -a "$USER" -s "openai-api-key" -w 2>/dev/null)' >> ~/.zshenv
+```
 
-# Add to ~/.zshrc so it's available to all apps including Claude Code:
-echo 'export OPENAI_API_KEY=$(security find-generic-password -a "$USER" -s "openai-api-key" -w 2>/dev/null)' >> ~/.zshrc
+Restart Claude Code so the new env propagates.
+
+**Self-hosted endpoints** (Ollama / LiteLLM / LM Studio / enterprise gateway): also set `OPENAI_BASE_URL` and the SDK will use that endpoint. Key-shape validation is bypassed automatically.
+
+### Verify your setup
+
+If judge eval isn't working, run the doctor — it diagnoses every common failure (missing key, placeholder injected by `~/.claude/settings.json`, wrong Python, SDK not installed) and prints the exact fix:
+
+```bash
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/judge_doctor.py" --probe
 ```
 
 See [SKILL.md -> Optional Judge Eval](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md) for the full flow and verdict schema.
@@ -142,6 +185,8 @@ Claude Code skills don't have a settings UI. Configure via three layers, in orde
    - Use --max-rereview-requests 4 for the API repo (we want one extra cycle).
    ```
 3. **Direct CLI flags** when invoking the script manually. See `--help` for the full list.
+
+For the optional OpenAI judge, see [Judge eval TL;DR](#judge-eval-tldr) — it has its own prefs file at `~/.config/gh-gemini-review-loop/preferences.json`.
 
 ---
 

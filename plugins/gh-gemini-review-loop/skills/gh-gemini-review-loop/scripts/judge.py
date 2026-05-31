@@ -40,8 +40,29 @@ import dataclasses
 import datetime as _dt
 import json
 import os
+import shlex
+import sys
 import typing as t
 from pathlib import Path
+
+
+# Detect API keys that look like placeholders rather than real OpenAI keys.
+# Real keys begin with `sk-` (or `sk-svcacct-`, `sk-proj-`, `sk-admin-`) and
+# are at least ~40 chars. Anything shorter or matching these obvious
+# placeholder phrases is rejected before the SDK ever sees it, so users get
+# a clear error instead of a confusing 401 with the placeholder echoed back.
+_PLACEHOLDER_MARKERS = (
+    "REPLACE_",
+    "YOUR_KEY",
+    "YOUR-KEY",
+    "PASTE_",
+    "INSERT_",
+    "TODO",
+    "XXX",
+    "CHANGEME",
+    "<your",
+)
+_MIN_REAL_KEY_LEN = 40
 
 
 VALID_VERDICTS = (
@@ -238,6 +259,58 @@ def build_user_prompt(finding: dict) -> str:
     return "\n".join(parts)
 
 
+def looks_like_placeholder_key(key: str | None) -> bool:
+    """Return True if ``key`` looks like a placeholder rather than a real key.
+
+    Catches the common failure mode where ``OPENAI_API_KEY`` is set to a
+    template string (``REPLACE_WITH_YOUR_KEY``, ``sk-...``, etc.) — usually
+    via a copy-pasted ``settings.json`` ``env`` block — which produces an
+    opaque OpenAI 401 with the placeholder echoed back.
+
+    Returns False for None / empty / non-string so callers can distinguish
+    "missing" from "placeholder" with separate error messages. The
+    isinstance guard matters because ``settings.json`` (Claude Code env
+    injection) can pass a boolean or integer through unchanged — without
+    it, ``key.upper()`` would raise ``AttributeError`` and crash the
+    doctor before it could report anything useful.
+
+    When ``OPENAI_BASE_URL`` is set, the user is pointing the SDK at a
+    non-OpenAI endpoint (Ollama, LiteLLM, LM Studio, an enterprise gateway,
+    etc.) where keys legitimately don't follow the ``sk-...`` shape or
+    minimum length. Skip the shape checks in that case so the doctor
+    doesn't fight self-hosted setups. The explicit placeholder-marker
+    check still runs — a literal ``REPLACE_WITH_YOUR_KEY`` is always wrong.
+    """
+    if not isinstance(key, str) or not key:
+        return False
+    upper = key.upper()
+    for marker in _PLACEHOLDER_MARKERS:
+        if marker.upper() in upper:
+            return True
+    if os.environ.get("OPENAI_BASE_URL"):
+        return False
+    if len(key) < _MIN_REAL_KEY_LEN:
+        return True
+    if not key.startswith("sk-"):
+        return True
+    return False
+
+
+def _install_hint_for_current_python() -> str:
+    """Return a copy-pasteable install command for THIS interpreter.
+
+    Surfacing the actual ``sys.executable`` is the difference between a user
+    knowing to run ``python3.11 -m pip install openai`` (because openai is
+    installed on a different Python than the one running the script) and
+    blindly retrying ``pip install openai`` against the wrong environment.
+    """
+    # shlex.quote handles spaces in interpreter paths (common on macOS venvs
+    # like '/Users/me/My Project/.venv/bin/python') so the suggested command
+    # is actually copy-pasteable.
+    py = shlex.quote(sys.executable or "python3")
+    return f"{py} -m pip install -U openai"
+
+
 def skipped_result(reason: str) -> JudgeResult:
     """Build a structured skipped result so callers don't have to invent fields."""
     return JudgeResult(
@@ -279,12 +352,27 @@ class JudgeClient:
         """Return (ready, skip_reason).
 
         Caller uses this to short-circuit gracefully: when not ready, emit a
-        ``skipped_result(reason)`` instead of trying and crashing.
+        ``skipped_result(reason)`` instead of trying and crashing. Each
+        reason is phrased as actionable advice — exact install command or
+        explicit "placeholder detected" — so users don't have to guess.
         """
         if self._call_fn is not None:
             return True, None
         if not self.api_key:
-            return False, "OPENAI_API_KEY not set"
+            return False, (
+                "OPENAI_API_KEY not set. Run 'python3 "
+                "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/judge_doctor.py' "
+                "for setup guidance."
+            )
+        if looks_like_placeholder_key(self.api_key):
+            preview = self.api_key[:12] + "..." if len(self.api_key) > 12 else self.api_key
+            return False, (
+                f"OPENAI_API_KEY looks like a placeholder ({preview!r}). "
+                "Real OpenAI keys start with 'sk-' and are ~50+ chars. "
+                "Check ~/.claude/settings.json 'env' block for a stale "
+                "REPLACE_WITH_YOUR_KEY entry; export the real key in "
+                "~/.zshenv. Run judge_doctor.py for full setup help."
+            )
         try:
             # Older `openai` packages (< 1.0) don't expose the `OpenAI`
             # client class. Probe for it specifically so is_ready() returns
@@ -292,7 +380,14 @@ class JudgeClient:
             # ImportError later on `from openai import OpenAI`.
             from openai import OpenAI  # noqa: F401, PLC0415
         except ImportError:
-            return False, "openai SDK not installed or too old (need v1.0.0+: pip install -U openai)"
+            return False, (
+                "openai SDK not installed for this Python "
+                f"({sys.executable}). Install with: "
+                f"{_install_hint_for_current_python()} "
+                "(if pip blocks with 'externally-managed-environment', "
+                "add --break-system-packages or use pipx). "
+                "Run judge_doctor.py for full diagnostics."
+            )
         return True, None
 
     def _openai_call(self, messages: list[dict]) -> dict:
