@@ -115,64 +115,58 @@ End users can opt into an OpenAI-powered judge that labels each Gemini finding a
 - **Explicit setup:** say "enable judge eval" to get a mode prompt with all options.
 - **Requires:** `OPENAI_API_KEY` env var + `pip install openai`. Missing either means the judge skips gracefully and the loop continues unchanged.
 
-### Bulletproof judge eval setup
+### Judge eval TL;DR
 
-The judge needs three things to be in agreement: the `openai` SDK installed on the **same Python interpreter** the script runs with, a real `OPENAI_API_KEY` exported in a way **subprocesses inherit**, and no stale placeholder in `~/.claude/settings.json` overriding it. The plugin ships a doctor that checks all three (and probes a live API call) in one command:
+1. Set `OPENAI_API_KEY` once (see [Setting your API key](#setting-your-openai_api_key) below).
+2. Say one of these to Claude:
 
-```bash
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/judge_doctor.py"
-# or, to also make one live API call (~$0.0001):
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/judge_doctor.py" --probe
+   > *"Enable judge eval"* — Claude prompts you to pick a mode and saves it.
+   >
+   > *"Run the Gemini loop with judge eval at completion"* — saves and runs in one step.
+
+That's it. Claude handles the config file.
+
+### Configuring it yourself
+
+Prefer editing a config file over talking to Claude? Edit (or create) `~/.config/gh-gemini-review-loop/preferences.json`:
+
+```json
+{
+  "judge_mode": "on_complete",
+  "judge_model": "gpt-4o-mini"
+}
 ```
 
-Each failed check prints the exact fix command for **your** Python interpreter and shell — no generic advice.
+| `judge_mode` value | When the judge runs |
+|---|---|
+| `off` (default) | Never. Nothing is sent to OpenAI |
+| `on_complete` | Once, after the loop finishes — cheapest signal |
+| `on_cycle` | Every fix cycle — more frequent, ~3× the cost |
 
-**Common gotchas the doctor catches:**
+**To reset:** delete the file. Next run re-creates it with `judge_mode: off`.
 
-1. **`OPENAI_API_KEY` injected as placeholder by `~/.claude/settings.json`.** If you've ever copy-pasted a sample `settings.json` with `"env": {"OPENAI_API_KEY": "REPLACE_WITH_YOUR_KEY"}`, that placeholder silently overrides your shell-exported real key inside every Claude Code session. Delete the line.
-2. **`.zshrc` is not sourced by subprocesses.** `Bash` tool calls and other non-interactive subshells skip `~/.zshrc`. Put the export in `~/.zshenv` instead — that runs for *every* zsh invocation, interactive or not.
-3. **`pip install -U openai` fails with `externally-managed-environment`** on Homebrew Python. Either use `--break-system-packages`, install into a venv, or use `pipx install openai`. The doctor prints the exact command for your interpreter.
-4. **`python3` points to a broken or wrong-version Python.** On some macOS setups `/opt/homebrew/bin/python3` (Python 3.14) is broken against the system `libexpat`; meanwhile `openai` is installed on `python3.11`. The doctor reports `sys.executable` so you can see the mismatch.
+### Setting your `OPENAI_API_KEY`
 
-**One-time macOS setup (Keychain + `.zshenv`):**
+The judge needs an OpenAI key. The key must be visible to subprocesses that Claude spawns — `~/.zshrc` is **not** enough, since subprocesses don't source it. Use `~/.zshenv` instead.
+
+**macOS (one-time, key stored in Keychain — never sits in a plaintext file):**
 
 ```bash
-# 1. Store the key in Keychain (never sits in a plaintext file):
 security add-generic-password -a "$USER" -s "openai-api-key" -w "sk-..."
-
-# 2. Export from .zshenv so ALL subprocesses inherit it (not just .zshrc):
-cat >> ~/.zshenv <<'EOF'
-export OPENAI_API_KEY=$(security find-generic-password -a "$USER" -s "openai-api-key" -w 2>/dev/null)
-EOF
-
-# 3. Verify:
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/judge_doctor.py" --probe
+echo 'export OPENAI_API_KEY=$(security find-generic-password -a "$USER" -s "openai-api-key" -w 2>/dev/null)' >> ~/.zshenv
 ```
 
-### Judge eval configuration
+Restart Claude Code so the new env propagates.
 
-Three surfaces, each with a different scope. **Flags override env vars; env vars override the prefs file; the prefs file overrides the hardcoded default (`off`).**
+**Self-hosted endpoints** (Ollama / LiteLLM / LM Studio / enterprise gateway): also set `OPENAI_BASE_URL` and the SDK will use that endpoint. Key-shape validation is bypassed automatically.
 
-| Surface | Setting | Values | Effect |
-|---|---|---|---|
-| **Prefs file** `~/.config/gh-gemini-review-loop/preferences.json` | `judge_mode` | `off` (default) / `on_complete` / `on_cycle` | When the judge runs. `on_complete` = once after the loop stops; `on_cycle` = every cycle |
-| | `judge_model` | OpenAI model name | Defaults to `gpt-4o-mini` |
-| | `judge_tip_shown` | `true` / `false` | Suppresses the one-time discoverability tip once shown |
-| **Env vars** | `OPENAI_API_KEY` | `sk-...` | Required. Use `~/.zshenv` so subprocesses inherit it |
-| | `OPENAI_BASE_URL` | URL | Point SDK at Ollama / LiteLLM / LM Studio / enterprise gateway. When set, key-shape checks are bypassed |
-| | `OPENAI_JUDGE_MODEL` | model name | Override `judge_model` globally without editing prefs |
-| | `GGRL_STATE_DIR` | path | Override the config dir (useful for multi-account or tests) |
-| **CLI flags** | `--judge-mode` | `off` / `on_complete` / `on_cycle` / `once` | Per-run override of saved mode. `once` ignores prefs and runs this invocation only |
-| | `--judge-phase` | `cycle` / `complete` | Which phase the agent is in; the script combines this with the mode to decide whether to run |
-| | `--judge-model` | model name | Per-run model override |
-| **Natural language** (idiomatic) | *"run the Gemini loop with judge eval at completion"* | — | Sets `judge_mode=on_complete` and runs |
-| | *"with judge eval on every cycle"* | — | Sets `judge_mode=on_cycle` and runs |
-| | *"run judge eval just this once"* | — | One-shot, doesn't touch prefs |
-| | *"skip the judge this time"* | — | Disables for current run only |
-| | *"enable judge eval"* | — | Prompts you to pick a mode |
-| | *"change my eval preference"* | — | Re-prompts and overwrites prefs |
+### Verify your setup
 
-**To reset to defaults:** delete `~/.config/gh-gemini-review-loop/preferences.json` (or its containing dir). Next invocation re-creates with `judge_mode=off`.
+If judge eval isn't working, run the doctor — it diagnoses every common failure (missing key, placeholder injected by `~/.claude/settings.json`, wrong Python, SDK not installed) and prints the exact fix:
+
+```bash
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/judge_doctor.py" --probe
+```
 
 See [SKILL.md -> Optional Judge Eval](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md) for the full flow and verdict schema.
 
@@ -192,7 +186,7 @@ Claude Code skills don't have a settings UI. Configure via three layers, in orde
    ```
 3. **Direct CLI flags** when invoking the script manually. See `--help` for the full list.
 
-For the optional OpenAI judge, see [Judge eval configuration](#judge-eval-configuration) — it has its own prefs file, env vars, and flags.
+For the optional OpenAI judge, see [Judge eval TL;DR](#judge-eval-tldr) — it has its own prefs file at `~/.config/gh-gemini-review-loop/preferences.json`.
 
 ---
 
