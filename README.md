@@ -177,23 +177,60 @@ See [SKILL.md -> Optional Judge Eval](plugins/gh-gemini-review-loop/skills/gh-ge
 
 ## Configuring the skill
 
-Claude Code skills don't have a settings UI. Configure via four layers, in order of dominance:
+Claude Code skills don't have a settings UI. The simplest persistent setting is the loop cap:
 
-1. **Natural-language prompts.** Say what you want; the agent picks the right script flags from [SKILL.md's Variations table](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md). This is the idiomatic path.
-2. **`CLAUDE.md` preferences** for persistent per-user or per-repo defaults:
+### Set the loop cap
+
+The default cap is `3` re-review requests per PR. To make the loop stop after 4 re-review requests by default, create or edit:
+
+```bash
+mkdir -p ~/.config/gh-gemini-review-loop
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path.home() / ".config" / "gh-gemini-review-loop" / "preferences.json"
+prefs = json.loads(path.read_text()) if path.exists() else {}
+prefs["schema_version"] = 1
+prefs["max_rereview_requests"] = 4
+path.write_text(json.dumps(prefs, indent=2, sort_keys=True) + "\n")
+PY
+```
+
+The file should contain this key:
+
+```json
+{
+  "schema_version": 1,
+  "max_rereview_requests": 4
+}
+```
+
+You can keep judge eval settings in the same file. The script preserves `max_rereview_requests` when saving judge settings.
+
+For one run only, use the CLI flag instead:
+
+```bash
+python3 "$SCRIPT" --max-rereview-requests 4
+```
+
+Precedence, highest first:
+
+1. **Direct CLI flags** when invoking the script manually. See `--help` for the full list. CLI flags override the preferences file.
+2. **Natural-language prompts.** Say what you want; the agent picks the right script flags from [SKILL.md's Variations table](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md). This is the idiomatic path.
+3. **`CLAUDE.md` preferences** for persistent per-user or per-repo defaults:
    ```markdown
    ## gh-gemini-review-loop preferences
    - Always pass --min-severity medium (we don't care about Gemini's low nits).
    - Always pass --post-receipt so we get an audit trail on every PR.
    - Use --max-rereview-requests 4 for the API repo (we want one extra cycle).
    ```
-3. **Preferences file** for persistent script-level defaults:
+4. **Preferences file** for persistent script-level defaults:
    ```json
    {
      "max_rereview_requests": 4
    }
    ```
-4. **Direct CLI flags** when invoking the script manually. See `--help` for the full list. CLI flags override the preferences file.
 
 For the optional OpenAI judge, see [Judge eval TL;DR](#judge-eval-tldr). It shares the same prefs file at `~/.config/gh-gemini-review-loop/preferences.json`.
 

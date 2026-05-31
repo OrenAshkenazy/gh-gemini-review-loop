@@ -128,6 +128,31 @@ Valid `judge_mode` values: `off`, `on_complete`, `on_cycle`. For one-time eval, 
 
 `max_rereview_requests` sets the persistent loop cap. The CLI flag `--max-rereview-requests N` overrides it for a single invocation.
 
+To configure the persistent cap, create or edit:
+
+```bash
+mkdir -p ~/.config/gh-gemini-review-loop
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path.home() / ".config" / "gh-gemini-review-loop" / "preferences.json"
+prefs = json.loads(path.read_text()) if path.exists() else {}
+prefs["schema_version"] = 1
+prefs["max_rereview_requests"] = 4
+path.write_text(json.dumps(prefs, indent=2, sort_keys=True) + "\n")
+PY
+```
+
+Or edit the JSON directly:
+
+```json
+{
+  "schema_version": 1,
+  "max_rereview_requests": 4
+}
+```
+
 ### Cost framing
 
 `gpt-4o-mini` ≈ $0.001 per finding. `on_complete` ≈ $0.005 max per PR. `on_cycle` worst case depends on the configured cap (default: ≈ $0.015 for 3 cycles × 5 findings).
