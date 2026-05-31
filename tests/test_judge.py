@@ -26,6 +26,7 @@ from judge import (  # noqa: E402
     JudgeError,
     build_user_prompt,
     load_preferences,
+    looks_like_placeholder_key,
     mark_tip_shown,
     prefs_path,
     save_preferences,
@@ -201,6 +202,65 @@ class TestJudgeClientReadiness:
         ready, reason = client.is_ready()
         assert ready is True
         assert reason is None
+
+    def test_skip_reason_mentions_doctor_when_key_missing(self, monkeypatch):
+        # Users hit this most often; the error must surface the doctor so they
+        # don't have to guess what to install or where the key should live.
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        client = JudgeClient(api_key=None)
+        _, reason = client.is_ready()
+        assert "judge_doctor" in reason
+
+    @pytest.mark.parametrize(
+        "placeholder",
+        [
+            "REPLACE_WITH_YOUR_KEY",
+            "sk-YOUR_KEY_HERE",
+            "PASTE_KEY_HERE",
+            "<your-openai-api-key>",
+            "TODO",
+            "xxx",
+            "short",  # under 40 chars
+            "not-starting-with-sk-but-long-enough-to-pass-length-check-aaaa",
+        ],
+    )
+    def test_placeholder_keys_blocked(self, placeholder):
+        # Real keys never trip this; placeholders do. Catches the
+        # settings.json injection failure mode before the SDK ever runs.
+        client = JudgeClient(api_key=placeholder)
+        ready, reason = client.is_ready()
+        assert ready is False
+        assert "placeholder" in reason.lower()
+
+    def test_real_looking_key_not_blocked_by_placeholder_check(self):
+        # A plausible-shape key (sk- + 48 chars) must NOT match the placeholder
+        # heuristic — otherwise valid keys would be falsely rejected.
+        fake_real = "sk-" + "a" * 48
+        client = JudgeClient(api_key=fake_real)
+        # Won't fully succeed (no SDK / network), but reason must not be the
+        # placeholder one — that's the regression we're guarding against.
+        _, reason = client.is_ready()
+        if reason is not None:
+            assert "placeholder" not in reason.lower()
+
+
+class TestLooksLikePlaceholderKey:
+    @pytest.mark.parametrize(
+        "key,expected",
+        [
+            (None, False),  # missing key is "not a placeholder" — caller handles
+            ("", False),
+            ("REPLACE_WITH_YOUR_KEY", True),
+            ("replace_with_your_key", True),  # case-insensitive
+            ("sk-YOUR_KEY_HERE_PADDED_TO_BE_LONG_AAAAAAAA", True),
+            ("short", True),  # under min length
+            ("not-sk-prefix-but-long-enough-to-pass-length-aaaa", True),
+            ("sk-" + "a" * 48, False),  # plausible real key shape
+            ("sk-svcacct-" + "b" * 40, False),  # service-account key shape
+        ],
+    )
+    def test_detects(self, key, expected):
+        assert looks_like_placeholder_key(key) is expected
 
 
 class TestJudgeClientParse:

@@ -115,14 +115,38 @@ End users can opt into an OpenAI-powered judge that labels each Gemini finding a
 - **Explicit setup:** say "enable judge eval" to get a mode prompt with all options.
 - **Requires:** `OPENAI_API_KEY` env var + `pip install openai`. Missing either means the judge skips gracefully and the loop continues unchanged.
 
-**Setting `OPENAI_API_KEY` permanently on macOS:**
+### Bulletproof judge eval setup
+
+The judge needs three things to be in agreement: the `openai` SDK installed on the **same Python interpreter** the script runs with, a real `OPENAI_API_KEY` exported in a way **subprocesses inherit**, and no stale placeholder in `~/.claude/settings.json` overriding it. The plugin ships a doctor that checks all three (and probes a live API call) in one command:
 
 ```bash
-# Store once in Keychain (never sits in a plaintext file):
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/judge_doctor.py"
+# or, to also make one live API call (~$0.0001):
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/judge_doctor.py" --probe
+```
+
+Each failed check prints the exact fix command for **your** Python interpreter and shell — no generic advice.
+
+**Common gotchas the doctor catches:**
+
+1. **`OPENAI_API_KEY` injected as placeholder by `~/.claude/settings.json`.** If you've ever copy-pasted a sample `settings.json` with `"env": {"OPENAI_API_KEY": "REPLACE_WITH_YOUR_KEY"}`, that placeholder silently overrides your shell-exported real key inside every Claude Code session. Delete the line.
+2. **`.zshrc` is not sourced by subprocesses.** `Bash` tool calls and other non-interactive subshells skip `~/.zshrc`. Put the export in `~/.zshenv` instead — that runs for *every* zsh invocation, interactive or not.
+3. **`pip install -U openai` fails with `externally-managed-environment`** on Homebrew Python. Either use `--break-system-packages`, install into a venv, or use `pipx install openai`. The doctor prints the exact command for your interpreter.
+4. **`python3` points to a broken or wrong-version Python.** On some macOS setups `/opt/homebrew/bin/python3` (Python 3.14) is broken against the system `libexpat`; meanwhile `openai` is installed on `python3.11`. The doctor reports `sys.executable` so you can see the mismatch.
+
+**One-time macOS setup (Keychain + `.zshenv`):**
+
+```bash
+# 1. Store the key in Keychain (never sits in a plaintext file):
 security add-generic-password -a "$USER" -s "openai-api-key" -w "sk-..."
 
-# Add to ~/.zshrc so it's available to all apps including Claude Code:
-echo 'export OPENAI_API_KEY=$(security find-generic-password -a "$USER" -s "openai-api-key" -w 2>/dev/null)' >> ~/.zshrc
+# 2. Export from .zshenv so ALL subprocesses inherit it (not just .zshrc):
+cat >> ~/.zshenv <<'EOF'
+export OPENAI_API_KEY=$(security find-generic-password -a "$USER" -s "openai-api-key" -w 2>/dev/null)
+EOF
+
+# 3. Verify:
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/judge_doctor.py" --probe
 ```
 
 See [SKILL.md -> Optional Judge Eval](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md) for the full flow and verdict schema.
