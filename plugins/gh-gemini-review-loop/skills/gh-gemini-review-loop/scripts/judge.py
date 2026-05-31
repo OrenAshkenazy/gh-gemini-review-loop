@@ -266,8 +266,12 @@ def looks_like_placeholder_key(key: str | None) -> bool:
     via a copy-pasted ``settings.json`` ``env`` block — which produces an
     opaque OpenAI 401 with the placeholder echoed back.
 
-    Returns False for None / empty so callers can distinguish "missing"
-    from "placeholder" with separate error messages.
+    Returns False for None / empty / non-string so callers can distinguish
+    "missing" from "placeholder" with separate error messages. The
+    isinstance guard matters because ``settings.json`` (Claude Code env
+    injection) can pass a boolean or integer through unchanged — without
+    it, ``key.upper()`` would raise ``AttributeError`` and crash the
+    doctor before it could report anything useful.
 
     When ``OPENAI_BASE_URL`` is set, the user is pointing the SDK at a
     non-OpenAI endpoint (Ollama, LiteLLM, LM Studio, an enterprise gateway,
@@ -276,7 +280,7 @@ def looks_like_placeholder_key(key: str | None) -> bool:
     doesn't fight self-hosted setups. The explicit placeholder-marker
     check still runs — a literal ``REPLACE_WITH_YOUR_KEY`` is always wrong.
     """
-    if not key:
+    if not isinstance(key, str) or not key:
         return False
     upper = key.upper()
     for marker in _PLACEHOLDER_MARKERS:

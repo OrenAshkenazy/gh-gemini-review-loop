@@ -250,6 +250,9 @@ class TestLooksLikePlaceholderKey:
         [
             (None, False),  # missing key is "not a placeholder" — caller handles
             ("", False),
+            (True, False),  # non-string (bool) — settings.json could inject this
+            (12345, False),  # non-string (int) — must not crash key.upper()
+            ([], False),  # other non-string — defensive
             ("REPLACE_WITH_YOUR_KEY", True),
             ("replace_with_your_key", True),  # case-insensitive
             ("sk-YOUR_KEY_HERE_PADDED_TO_BE_LONG_AAAAAAAA", True),
