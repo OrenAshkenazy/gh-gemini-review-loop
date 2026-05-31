@@ -1092,7 +1092,11 @@ def main() -> int:
                 "skip_reason": "judge.py not importable (plugin install path issue)",
             }
         if judge_available:
-            effective_mode = args.judge_mode or prefs["judge_mode"]
+            effective_mode = (
+                args.judge_mode
+                if args.judge_mode is not None
+                else prefs.get("judge_mode", "off")
+            )
             judge_results = {}
             if should_judge_run(mode=effective_mode, phase=args.judge_phase):
                 client = JudgeClient(model=args.judge_model or prefs["judge_model"])
