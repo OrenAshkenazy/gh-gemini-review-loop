@@ -463,6 +463,63 @@ def effective_rereview_limit(cli_value: int | None, prefs: dict[str, Any]) -> in
     return DEFAULT_REREVIEW_LIMIT
 
 
+def _direct_preferences_path() -> Path:
+    """Mirror ``judge.prefs_path()`` for the fallback path when ``judge`` is unavailable."""
+    base = os.environ.get("GGRL_STATE_DIR") or os.path.expanduser(
+        "~/.config/gh-gemini-review-loop"
+    )
+    return Path(base) / "preferences.json"
+
+
+def load_preferences_with_fallback() -> dict[str, Any]:
+    """Load user preferences, falling back to a direct JSON read.
+
+    Primary path: ``judge.load_preferences()`` (canonical loader with full
+    schema validation). If the optional ``judge`` module cannot be imported
+    (minimal install, broken install, vendored layout), read
+    ``preferences.json`` directly so persistent settings like
+    ``max_rereview_requests`` still take effect. Any failure is surfaced to
+    stderr with a hint rather than silently dropped.
+    """
+    try:
+        from judge import load_preferences  # noqa: PLC0415
+    except ImportError:
+        print(
+            "warning: optional 'judge' module not importable; reading "
+            "preferences.json directly. Reinstall gh-gemini-review-loop "
+            "to restore full judge-eval support.",
+            file=sys.stderr,
+        )
+    else:
+        try:
+            return load_preferences()
+        except Exception as err:
+            print(
+                f"warning: judge.load_preferences() failed ({err!s}); "
+                "falling back to direct preferences.json load.",
+                file=sys.stderr,
+            )
+
+    path = _direct_preferences_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as err:
+        print(
+            f"warning: could not read {path} ({err!s}); ignoring saved preferences.",
+            file=sys.stderr,
+        )
+        return {}
+    if not isinstance(data, dict):
+        print(
+            f"warning: {path} did not contain a JSON object; ignoring saved preferences.",
+            file=sys.stderr,
+        )
+        return {}
+    return data
+
+
 def post_pr_comment(pr: PullRequest, body: str, *, dry_run: bool = False) -> None:
     """Post a comment on the PR via gh."""
     pr_ref = f"{pr.owner}/{pr.repo}#{pr.number}"
@@ -982,12 +1039,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        try:
-            from judge import load_preferences  # noqa: PLC0415
-
-            prefs = load_preferences()
-        except ImportError:
-            prefs = {"max_rereview_requests": DEFAULT_REREVIEW_LIMIT}
+        prefs = load_preferences_with_fallback()
         args.max_rereview_requests = effective_rereview_limit(
             args.max_rereview_requests, prefs
         )

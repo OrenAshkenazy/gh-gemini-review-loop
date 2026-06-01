@@ -4,6 +4,8 @@ These tests intentionally avoid network/gh calls — they exercise only the
 pure helpers that operate on already-fetched GraphQL payloads.
 """
 
+import sys
+
 import pytest
 
 from fetch_gemini_threads import (
@@ -17,6 +19,7 @@ from fetch_gemini_threads import (
     filter_by_min_severity,
     filter_threads,
     is_addressed_by_reply,
+    load_preferences_with_fallback,
     load_sticky_state,
     pagination_warnings,
     parse_pr_url,
@@ -262,6 +265,66 @@ class TestRereviewLimit:
     def test_string_preference_is_coerced(self):
         assert effective_rereview_limit(None, {"max_rereview_requests": "5"}) == 5
         assert effective_rereview_limit(None, {"max_rereview_requests": " 6 "}) == 6
+
+
+class TestPreferencesFallback:
+    """``load_preferences_with_fallback`` must keep working when ``judge`` is missing."""
+
+    def test_falls_back_to_direct_json_when_judge_import_fails(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "preferences.json").write_text(
+            '{"max_rereview_requests": 7}', encoding="utf-8"
+        )
+        # Force the lazy `from judge import load_preferences` to fail.
+        monkeypatch.setitem(sys.modules, "judge", None)
+
+        prefs = load_preferences_with_fallback()
+
+        assert prefs == {"max_rereview_requests": 7}
+        # User must see *why* the canonical loader was skipped.
+        assert "judge" in capsys.readouterr().err
+
+    def test_fallback_returns_empty_when_file_missing(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setitem(sys.modules, "judge", None)
+        assert load_preferences_with_fallback() == {}
+
+    def test_fallback_returns_empty_on_corrupt_json(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "preferences.json").write_text("{ not json", encoding="utf-8")
+        monkeypatch.setitem(sys.modules, "judge", None)
+
+        assert load_preferences_with_fallback() == {}
+        assert "could not read" in capsys.readouterr().err
+
+    def test_fallback_returns_empty_when_not_object(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "preferences.json").write_text("[1, 2, 3]", encoding="utf-8")
+        monkeypatch.setitem(sys.modules, "judge", None)
+
+        assert load_preferences_with_fallback() == {}
+        assert "JSON object" in capsys.readouterr().err
+
+    def test_fallback_composes_with_effective_rereview_limit(
+        self, tmp_path, monkeypatch
+    ):
+        """Persistent cap setting takes effect even without the judge module."""
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "preferences.json").write_text(
+            '{"max_rereview_requests": "5"}', encoding="utf-8"
+        )
+        monkeypatch.setitem(sys.modules, "judge", None)
+
+        prefs = load_preferences_with_fallback()
+        assert effective_rereview_limit(None, prefs) == 5
 
 
 # ---------------------------------------------------------------------------
