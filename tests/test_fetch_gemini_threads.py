@@ -21,6 +21,7 @@ from fetch_gemini_threads import (
     is_addressed_by_reply,
     load_preferences_with_fallback,
     load_sticky_state,
+    nonnegative_int,
     pagination_warnings,
     parse_pr_url,
     render_receipt,
@@ -270,6 +271,12 @@ class TestRereviewLimit:
 class TestPreferencesFallback:
     """``load_preferences_with_fallback`` must keep working when ``judge`` is missing."""
 
+    # Keys callers may read on the returned dict without guarding against KeyError.
+    _EXPECTED_KEYS = {
+        "schema_version", "judge_mode", "judge_model",
+        "judge_tip_shown", "max_rereview_requests", "set_at",
+    }
+
     def test_falls_back_to_direct_json_when_judge_import_fails(
         self, tmp_path, monkeypatch, capsys
     ):
@@ -282,35 +289,42 @@ class TestPreferencesFallback:
 
         prefs = load_preferences_with_fallback()
 
-        assert prefs == {"max_rereview_requests": 7}
+        # Loaded value wins; defaults fill the rest so downstream callers can
+        # read documented keys like `judge_model` without KeyError handling.
+        assert prefs["max_rereview_requests"] == 7
+        assert self._EXPECTED_KEYS.issubset(prefs.keys())
         # User must see *why* the canonical loader was skipped.
         assert "judge" in capsys.readouterr().err
 
-    def test_fallback_returns_empty_when_file_missing(
+    def test_fallback_returns_defaults_when_file_missing(
         self, tmp_path, monkeypatch
     ):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         monkeypatch.setitem(sys.modules, "judge", None)
-        assert load_preferences_with_fallback() == {}
+        prefs = load_preferences_with_fallback()
+        assert self._EXPECTED_KEYS.issubset(prefs.keys())
+        assert prefs["judge_mode"] == "off"
 
-    def test_fallback_returns_empty_on_corrupt_json(
+    def test_fallback_returns_defaults_on_corrupt_json(
         self, tmp_path, monkeypatch, capsys
     ):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         (tmp_path / "preferences.json").write_text("{ not json", encoding="utf-8")
         monkeypatch.setitem(sys.modules, "judge", None)
 
-        assert load_preferences_with_fallback() == {}
+        prefs = load_preferences_with_fallback()
+        assert self._EXPECTED_KEYS.issubset(prefs.keys())
         assert "could not read" in capsys.readouterr().err
 
-    def test_fallback_returns_empty_when_not_object(
+    def test_fallback_returns_defaults_when_not_object(
         self, tmp_path, monkeypatch, capsys
     ):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         (tmp_path / "preferences.json").write_text("[1, 2, 3]", encoding="utf-8")
         monkeypatch.setitem(sys.modules, "judge", None)
 
-        assert load_preferences_with_fallback() == {}
+        prefs = load_preferences_with_fallback()
+        assert self._EXPECTED_KEYS.issubset(prefs.keys())
         assert "JSON object" in capsys.readouterr().err
 
     def test_fallback_composes_with_effective_rereview_limit(
@@ -325,6 +339,24 @@ class TestPreferencesFallback:
 
         prefs = load_preferences_with_fallback()
         assert effective_rereview_limit(None, prefs) == 5
+
+
+class TestNonnegativeInt:
+    def test_valid_value(self):
+        assert nonnegative_int("4") == 4
+
+    def test_zero_is_allowed(self):
+        assert nonnegative_int("0") == 0
+
+    def test_negative_raises_argparse_error(self):
+        import argparse
+        with pytest.raises(argparse.ArgumentTypeError, match=">= 0"):
+            nonnegative_int("-1")
+
+    def test_non_integer_raises_argparse_error(self):
+        import argparse
+        with pytest.raises(argparse.ArgumentTypeError, match="invalid int value"):
+            nonnegative_int("abc")
 
 
 # ---------------------------------------------------------------------------

@@ -442,7 +442,12 @@ def gh_authenticated_login() -> str | None:
 
 
 def nonnegative_int(value: str) -> int:
-    parsed = int(value)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as err:
+        raise argparse.ArgumentTypeError(
+            f"invalid int value: {value!r}"
+        ) from err
     if parsed < 0:
         raise argparse.ArgumentTypeError("must be >= 0")
     return parsed
@@ -471,6 +476,20 @@ def _direct_preferences_path() -> Path:
     return Path(base) / "preferences.json"
 
 
+# Defaults that match the canonical ``judge.load_preferences()`` contract. The
+# fallback path layers loaded values on top of this so downstream callers can
+# read any documented key (``judge_mode``, ``judge_model``, etc.) without
+# guarding against KeyError when the optional ``judge`` module is missing.
+_FALLBACK_PREFS_DEFAULTS: dict[str, Any] = {
+    "schema_version": 1,
+    "judge_mode": "off",
+    "judge_model": "gpt-4o-mini",
+    "judge_tip_shown": False,
+    "max_rereview_requests": DEFAULT_REREVIEW_LIMIT,
+    "set_at": "",
+}
+
+
 def load_preferences_with_fallback() -> dict[str, Any]:
     """Load user preferences, falling back to a direct JSON read.
 
@@ -480,6 +499,10 @@ def load_preferences_with_fallback() -> dict[str, Any]:
     ``preferences.json`` directly so persistent settings like
     ``max_rereview_requests`` still take effect. Any failure is surfaced to
     stderr with a hint rather than silently dropped.
+
+    The returned dict is always populated with the documented preference keys
+    (defaults from ``_FALLBACK_PREFS_DEFAULTS`` overlaid by saved values), so
+    callers can read keys like ``judge_model`` without KeyError handling.
     """
     try:
         from judge import load_preferences  # noqa: PLC0415
@@ -502,7 +525,7 @@ def load_preferences_with_fallback() -> dict[str, Any]:
 
     path = _direct_preferences_path()
     if not path.exists():
-        return {}
+        return dict(_FALLBACK_PREFS_DEFAULTS)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as err:
@@ -510,14 +533,14 @@ def load_preferences_with_fallback() -> dict[str, Any]:
             f"warning: could not read {path} ({err!s}); ignoring saved preferences.",
             file=sys.stderr,
         )
-        return {}
+        return dict(_FALLBACK_PREFS_DEFAULTS)
     if not isinstance(data, dict):
         print(
             f"warning: {path} did not contain a JSON object; ignoring saved preferences.",
             file=sys.stderr,
         )
-        return {}
-    return data
+        return dict(_FALLBACK_PREFS_DEFAULTS)
+    return {**_FALLBACK_PREFS_DEFAULTS, **data}
 
 
 def post_pr_comment(pr: PullRequest, body: str, *, dry_run: bool = False) -> None:
