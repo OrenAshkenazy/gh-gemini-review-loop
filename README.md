@@ -221,7 +221,7 @@ Run `python3 "$SCRIPT" --help` for the complete list.
 
 ---
 
-## How It Works
+## How It Works (Behind The Scenes)
 
 The script queries GitHub's `pullRequest.reviewThreads` via GraphQL, filters to threads authored by `gemini-code-assist`, partitions them into four states (`RESOLVED` / `OUTDATED` / `ADDRESSED_BY_REPLY` / `UNRESOLVED`), and surfaces only the actionable subset. The agent fixes those, commits, pushes, then posts `@gemini-code-assist please review the latest changes.` once per cycle — counted strictly against the agent's own GitHub login so humans can ping Gemini freely. After 3 such cycles, hard stop. See the [Stopping Conditions](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md#stopping-conditions) section in SKILL.md for the full state machine.
 
@@ -239,7 +239,7 @@ MIT. See [LICENSE](LICENSE).
 - **False positives:** whether Gemini findings that survive filtering are usually worth acting on.
 - **Thread state handling:** whether `RESOLVED`, `OUTDATED`, `ADDRESSED_BY_REPLY`, and `UNRESOLVED` match how maintainers think about review comments.
 - **Safety around resolving outdated threads:** whether auto-resolving stale Gemini threads is acceptable by default, or should be more conservative.
-- **Whether judge eval is worth adding:** whether the optional OpenAI judge helps enough to justify the setup, privacy boundary, and small API cost.
+- **Whether judge eval is worth adding:** whether the optional OpenAI judge helps enough to justify the setup and small API cost.
 
 ---
 
