@@ -1,6 +1,6 @@
 ---
 name: gh-gemini-review-loop
-description: Use after a GitHub PR is opened, or when the user asks to handle gemini-code-assist review feedback, run the Gemini review loop, fix Gemini comments, or re-request Gemini review. Waits, fixes, pushes, re-asks. Capped at 3 cycles.
+description: Use after a GitHub PR is opened, or when the user asks to handle gemini-code-assist review feedback, run the Gemini review loop, fix Gemini comments, or re-request Gemini review. Waits, fixes, pushes, re-asks. Capped by user preference, default 3 cycles.
 ---
 
 # Gemini Code Assist PR Review Loop
@@ -27,7 +27,7 @@ A thread can transition `UNRESOLVED → ADDRESSED_BY_REPLY → RESOLVED` (reply 
 A **cycle** is one `@gemini-code-assist please review` re-review request posted by the agent after Gemini's initial review.
 
 - **Cycle 0:** Gemini's initial automatic review at PR open. Free; does not count toward the cap.
-- **Cycles 1–3:** Each subsequent re-review request the agent posts. After cycle 3, hard stop.
+- **Cycles 1–N:** Each subsequent re-review request the agent posts, where `N` is `max_rereview_requests` from `~/.config/gh-gemini-review-loop/preferences.json` or the default `3`. After cycle `N`, hard stop.
 - Replies posted via `repos/.../pulls/comments/{id}/replies` do **NOT** count as a cycle.
 - Pushes to the PR branch without a re-review request do **NOT** count as a cycle.
 - **Only re-reviews posted by the agent itself count.** A human pinging `@gemini-code-assist` does not consume a cycle. The script auto-detects the agent's GitHub login via `gh api user`; override with `--agent-login NAME` or opt out with `--no-agent-filter`.
@@ -78,7 +78,7 @@ Do **not** prompt for judge eval during a normal loop run. Do **not** prompt at 
 **One-time tip — after fetch, before fixes.** On the first cycle where actionable findings are present, if `judge_tip_shown` is not `true` in the prefs file, emit this tip immediately after the findings narration line, then call `mark_tip_shown()` to persist `judge_tip_shown: true`:
 
 ```
-[loop] cycle 1/3 — 4 actionable thread(s) (high: 1, medium: 3). Fixing.
+[loop] cycle 1/<cap> — 4 actionable thread(s) (high: 1, medium: 3). Fixing.
 [loop] Tip: judge eval can give a second opinion on these findings.
          Try: "run the Gemini loop with judge eval at completion"
 ```
@@ -119,32 +119,67 @@ Persist via `save_preferences()`. Mapping:
 {
   "schema_version": 1,
   "judge_mode": "off",
-  "judge_tip_shown": true
+  "judge_tip_shown": true,
+  "max_rereview_requests": 3
 }
 ```
 
-Valid `judge_mode` values: `off`, `on_complete`, `on_cycle`. For one-time eval, do not modify the saved preference.
+The file is created automatically on the first script invocation with safe defaults (`judge_mode: off`, `max_rereview_requests: 3`). No manual setup is required.
+
+**Key fields:**
+
+- `judge_mode` — controls when the OpenAI judge eval runs. Valid values: `off`, `on_complete`, `on_cycle`. Set via natural language ("enable judge eval") or `save_preferences()`. Default: `off`.
+- `max_rereview_requests` — persistent loop cap. Overridable per-run with `--max-rereview-requests N`. Default: `3`.
+- `judge_tip_shown` — internal flag. `true` after the one-time "judge eval is available" tip has been shown in chat. Set automatically; do not edit manually.
+- `judge_model` — OpenAI model used for eval. Default: `gpt-4o-mini`.
+
+`max_rereview_requests` sets the persistent loop cap. The script reads it from `~/.config/gh-gemini-review-loop/preferences.json` on every invocation. The CLI flag `--max-rereview-requests N` overrides it for a single invocation.
+
+To configure the persistent cap, create or edit:
+
+```bash
+mkdir -p ~/.config/gh-gemini-review-loop
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path.home() / ".config" / "gh-gemini-review-loop" / "preferences.json"
+prefs = json.loads(path.read_text()) if path.exists() else {}
+prefs["schema_version"] = 1
+prefs["max_rereview_requests"] = 4
+path.write_text(json.dumps(prefs, indent=2, sort_keys=True) + "\n")
+PY
+```
+
+Or edit the JSON directly:
+
+```json
+{
+  "schema_version": 1,
+  "max_rereview_requests": 4
+}
+```
 
 ### Cost framing
 
-`gpt-4o-mini` ≈ $0.001 per finding. `on_complete` ≈ $0.005 max per PR. `on_cycle` worst case ≈ $0.015 (3 cycles × 5 findings).
+`gpt-4o-mini` ≈ $0.001 per finding. `on_complete` ≈ $0.005 max per PR. `on_cycle` worst case depends on the configured cap (default: ≈ $0.015 for 3 cycles × 5 findings).
 
 ## Progress Narration
 
-While the loop is running, the agent MUST emit one-line status updates to the user-facing chat at each phase transition. The format is `[loop] cycle N/3 — <phase>`. This is the cheapest user visibility — no code path, just instructions to the agent.
+While the loop is running, the agent MUST emit one-line status updates to the user-facing chat at each phase transition. The format is `[loop] cycle N/<cap> — <phase>`. This is the cheapest user visibility — no code path, just instructions to the agent.
 
 Required narration points:
 
 | Phase | Narration line |
 |---|---|
-| Before script fetch | `[loop] cycle N/3 — fetching threads from PR #<num>...` |
-| After fetch, before fixes | `[loop] cycle N/3 — <K> actionable thread(s) (severity: <breakdown>). Fixing.` + judge eval tip if first time (see [Discoverability](#discoverability)) |
-| After fix attempt, before verify | `[loop] cycle N/3 — fixes applied. Verifying.` |
-| After verify | `[loop] cycle N/3 — verified (<test summary>).` |
-| Before push | `[loop] cycle N/3 — committing and pushing <commit-sha>...` |
-| After push, before re-review | `[loop] cycle N/3 — pushed. Requesting Gemini re-review (cycle N consumed).` |
+| Before script fetch | `[loop] cycle N/<cap> — fetching threads from PR #<num>...` |
+| After fetch, before fixes | `[loop] cycle N/<cap> — <K> actionable thread(s) (severity: <breakdown>). Fixing.` + judge eval tip if first time (see [Discoverability](#discoverability)) |
+| After fix attempt, before verify | `[loop] cycle N/<cap> — fixes applied. Verifying.` |
+| After verify | `[loop] cycle N/<cap> — verified (<test summary>).` |
+| Before push | `[loop] cycle N/<cap> — committing and pushing <commit-sha>...` |
+| After push, before re-review | `[loop] cycle N/<cap> — pushed. Requesting Gemini re-review (cycle N consumed).` |
 | Stop condition triggered | `[loop] STOP — <stop-condition>: <one-line explanation>.` |
-| Loop complete (all clean) | `[loop] DONE — 0 actionable threads remaining. Cycles used: N/3.` |
+| Loop complete (all clean) | `[loop] DONE — 0 actionable threads remaining. Cycles used: N/<cap>.` |
 
 Skip narration only when running in pure non-interactive batch mode (e.g. `gh pr create` chained into a script that captures output for later — but in Claude Code interactive sessions, never skip).
 
@@ -164,8 +199,9 @@ When the user phrases the request differently, dispatch to the right flag combin
 | **Critical only** | "just the critical findings" | `--min-severity critical` |
 | **Strict severity filter** | "only what Gemini flagged as high — ignore unmarked" | `--min-severity high --drop-unknown-severity` |
 | **Audit-only** | "summarize Gemini comments" / "read-only review" / "show me what's pending" | `--dry-run --post-receipt --no-resolve-outdated --no-resolve-addressed-by-reply` |
-| **More cycles** | "be persistent" / "do 4 cycles" | `--max-rereview-requests 4` |
-| **Fewer cycles** | "one cycle only" / "don't loop, just fix once" | `--max-rereview-requests 1` |
+| **More cycles once** | "be persistent" / "do 4 cycles" | `--max-rereview-requests 4` |
+| **Fewer cycles once** | "one cycle only" / "don't loop, just fix once" | `--max-rereview-requests 1` |
+| **Persistent cap** | "always use 4 cycles" / "configure the cap max to 4" | Set `max_rereview_requests` in `~/.config/gh-gemini-review-loop/preferences.json` |
 | **Specific PR** | "handle PR https://github.com/..." | `--pr <URL>` |
 | **Different bot login** | "handle review comments from google-gemini-code-assist" | `--author google-gemini-code-assist` |
 | **Post status without acting** | "leave a status comment without touching anything" | `--post-receipt --no-resolve-outdated --no-resolve-addressed-by-reply` |
@@ -188,7 +224,7 @@ This skill does NOT support multi-bot loops (CodeRabbit, Copilot, etc.). It is o
 
 Stop the loop and report status instead of pushing or asking Gemini again when any condition is true:
 
-1. **Cap reached** — Gemini has already been asked to re-review the PR 3 times (cycle 3 used).
+1. **Cap reached** — Gemini has already been asked to re-review the PR up to the configured cap.
 2. **All clean** — There are no `UNRESOLVED` actionable Gemini threads after stale-thread cleanup.
 3. **Human decision required** — All remaining `UNRESOLVED` threads are informational, duplicate, contradictory, or require a human product/design/security decision.
 4. **Test regression** — Tests fail after a fix attempt and the failure is not clearly caused by the latest Gemini-addressing change.
@@ -196,7 +232,7 @@ Stop the loop and report status instead of pushing or asking Gemini again when a
 
 If a thread was deliberately deferred via a substantive reply (state `ADDRESSED_BY_REPLY`), treat it as condition 3 (human decision), not condition 5 (no progress). The loop must not re-try the same fix on the same thread cycle after cycle.
 
-Do not run more than 3 fix/re-review cycles per PR. If the loop stops because the cap is reached, summarize the latest unresolved actionable comments and leave the PR for a human decision.
+Do not run more than the configured fix/re-review cap per PR. If the loop stops because the cap is reached, summarize the latest unresolved actionable comments and leave the PR for a human decision.
 
 ## Recovery: Missed Initial Trigger
 
@@ -210,7 +246,7 @@ The skill is meant to auto-trigger after `gh pr create`. If the agent forgets �
 
 If the agent pushes new commits to a PR branch after the loop has already stopped:
 
-- If any of those commits touch files where Gemini left `UNRESOLVED` or `ADDRESSED_BY_REPLY` threads, automatically resume the loop (subject to the 3-cycle cap).
+- If any of those commits touch files where Gemini left `UNRESOLVED` or `ADDRESSED_BY_REPLY` threads, automatically resume the loop (subject to the configured cap).
 - Otherwise stay stopped — Gemini's own automatic re-review on the new commit will run unattended, and the agent need not coordinate.
 
 Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their own.
@@ -236,8 +272,8 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
 
 4. Check loop status and clean stale threads.
    - Count prior PR comments that ask `@gemini-code-assist` to review again.
-   - If the count is already 3 or more, stop before making changes, pushing, posting comments, or resolving threads.
-   - If the count is below 3, unresolved outdated Gemini review threads are resolved automatically; outdated threads are stale and should not drive new fixes.
+   - If the count is already at or above the configured cap, stop before making changes, pushing, posting comments, or resolving threads.
+   - If the count is below the configured cap, unresolved outdated Gemini review threads are resolved automatically; outdated threads are stale and should not drive new fixes.
    - For read-only inspection, pass `--no-resolve-outdated`.
 
 5. Fetch Gemini review threads.
@@ -270,7 +306,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
 10. Commit, push, and request re-review.
     - For this skill's full loop, commit fixes to the PR branch and push to the remote branch.
     - Use a clear commit message such as `fix: address Gemini Code Assist review`.
-    - Post the re-review request after a successful push only if this would not exceed 3 total re-review requests.
+    - Post the re-review request after a successful push only if this would not exceed the configured total re-review request cap.
     - Default comment:
       - `@gemini-code-assist please review the latest changes.`
     - If the repository uses a different Gemini trigger phrase, use the repo-specific phrase when known.
@@ -291,7 +327,7 @@ From any repository with a GitHub PR:
 python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py"
 ```
 
-By default this resolves unresolved outdated Gemini threads AND addressed-by-reply threads (unresolved threads where a non-bot maintainer posted a substantive reply, >=30 chars) before printing current feedback, unless the PR has already reached the 3 re-review request cap.
+By default this resolves unresolved outdated Gemini threads AND addressed-by-reply threads (unresolved threads where a non-bot maintainer posted a substantive reply, >=30 chars) before printing current feedback, unless the PR has already reached the configured re-review request cap.
 
 Useful options:
 
@@ -335,4 +371,4 @@ This skill's default full loop includes committing, pushing, asking Gemini for r
 
 For any uncertain run, prefer `--dry-run` first: the script logs `[dry-run] would resolve <kind> <thread-id>` to stderr without calling GraphQL. Useful when debugging the reply-detection heuristic against a real PR.
 
-Stop before publishing if the fixes are ambiguous, tests expose a regression, local unrelated changes make it unsafe to commit cleanly, or the PR has already reached the 3 re-review request cap.
+Stop before publishing if the fixes are ambiguous, tests expose a regression, local unrelated changes make it unsafe to commit cleanly, or the PR has already reached the configured re-review request cap.

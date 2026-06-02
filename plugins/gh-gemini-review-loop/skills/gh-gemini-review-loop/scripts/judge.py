@@ -84,6 +84,7 @@ VALID_JUDGE_PHASES = ("cycle", "complete")
 
 DEFAULT_MODEL = os.environ.get("OPENAI_JUDGE_MODEL", "gpt-4o-mini")
 DEFAULT_REQUEST_TIMEOUT = 30.0
+DEFAULT_MAX_REREVIEW_REQUESTS = 3
 
 PREFS_SCHEMA_VERSION = 1
 
@@ -150,15 +151,30 @@ def prefs_path() -> Path:
     return Path(base) / "preferences.json"
 
 
-def load_preferences() -> dict[str, t.Any]:
-    """Return saved preferences, or a safe default ('off') if missing/corrupt.
+def _write_prefs(path: Path, prefs: dict[str, t.Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(prefs, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    Default is OFF for privacy: do not send anything to OpenAI unless the
-    user has explicitly opted in.
+
+def load_preferences() -> dict[str, t.Any]:
+    """Return saved preferences, initialising the file on first use if absent.
+
+    Writing defaults on first load means the file is always present after the
+    first script invocation — regardless of whether the user ever interacts
+    with judge eval — so ``max_rereview_requests`` and other settings are
+    discoverable and editable without a separate setup step.
+
+    Default judge_mode is OFF for privacy: nothing is sent to OpenAI unless
+    the user has explicitly opted in.
     """
     path = prefs_path()
     if not path.exists():
-        return _default_prefs()
+        prefs = _default_prefs()
+        try:
+            _write_prefs(path, prefs)
+        except OSError:
+            pass
+        return prefs
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -170,11 +186,15 @@ def load_preferences() -> dict[str, t.Any]:
     mode = data.get("judge_mode")
     if mode not in VALID_JUDGE_MODES:
         mode = "off"
+    max_rereview_requests = _coerce_max_rereview_requests(
+        data.get("max_rereview_requests")
+    )
     return {
         "schema_version": data.get("schema_version", PREFS_SCHEMA_VERSION),
         "judge_mode": mode,
         "judge_model": data.get("judge_model") or DEFAULT_MODEL,
         "judge_tip_shown": bool(data.get("judge_tip_shown", False)),
+        "max_rereview_requests": max_rereview_requests,
         "set_at": data.get("set_at") or "",
     }
 
@@ -189,6 +209,9 @@ def save_preferences(judge_mode: str, *, judge_model: str | None = None) -> dict
         "judge_mode": judge_mode,
         "judge_model": judge_model or DEFAULT_MODEL,
         "judge_tip_shown": existing.get("judge_tip_shown", False),
+        "max_rereview_requests": existing.get(
+            "max_rereview_requests", DEFAULT_MAX_REREVIEW_REQUESTS
+        ),
         "set_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     path = prefs_path()
@@ -212,8 +235,21 @@ def _default_prefs() -> dict[str, t.Any]:
         "judge_mode": "off",
         "judge_model": DEFAULT_MODEL,
         "judge_tip_shown": False,
+        "max_rereview_requests": DEFAULT_MAX_REREVIEW_REQUESTS,
         "set_at": "",
     }
+
+
+def _coerce_max_rereview_requests(value: t.Any) -> int:
+    if isinstance(value, bool):
+        return DEFAULT_MAX_REREVIEW_REQUESTS
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return int(stripped)
+    return DEFAULT_MAX_REREVIEW_REQUESTS
 
 
 def should_judge_run(*, mode: str, phase: str | None) -> bool:

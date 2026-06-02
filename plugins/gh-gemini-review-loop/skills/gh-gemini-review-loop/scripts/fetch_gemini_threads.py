@@ -441,6 +441,116 @@ def gh_authenticated_login() -> str | None:
     return None
 
 
+def nonnegative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as err:
+        raise argparse.ArgumentTypeError(
+            f"invalid int value: {value!r}"
+        ) from err
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return parsed
+
+
+def effective_rereview_limit(cli_value: int | None, prefs: dict[str, Any]) -> int:
+    if cli_value is not None:
+        return cli_value
+    value = prefs.get("max_rereview_requests", DEFAULT_REREVIEW_LIMIT)
+    if isinstance(value, bool):
+        return DEFAULT_REREVIEW_LIMIT
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return int(stripped)
+    return DEFAULT_REREVIEW_LIMIT
+
+
+def _direct_preferences_path() -> Path:
+    """Mirror ``judge.prefs_path()`` for the fallback path when ``judge`` is unavailable."""
+    base = os.environ.get("GGRL_STATE_DIR") or os.path.expanduser(
+        "~/.config/gh-gemini-review-loop"
+    )
+    return Path(base) / "preferences.json"
+
+
+# Defaults that match the canonical ``judge.load_preferences()`` contract. The
+# fallback path layers loaded values on top of this so downstream callers can
+# read any documented key (``judge_mode``, ``judge_model``, etc.) without
+# guarding against KeyError when the optional ``judge`` module is missing.
+_FALLBACK_PREFS_DEFAULTS: dict[str, Any] = {
+    "schema_version": 1,
+    "judge_mode": "off",
+    "judge_model": "gpt-4o-mini",
+    "judge_tip_shown": False,
+    "max_rereview_requests": DEFAULT_REREVIEW_LIMIT,
+    "set_at": "",
+}
+
+
+def load_preferences_with_fallback() -> dict[str, Any]:
+    """Load user preferences, falling back to a direct JSON read.
+
+    Primary path: ``judge.load_preferences()`` (canonical loader with full
+    schema validation). If the optional ``judge`` module cannot be imported
+    (minimal install, broken install, vendored layout), read
+    ``preferences.json`` directly so persistent settings like
+    ``max_rereview_requests`` still take effect. Any failure is surfaced to
+    stderr with a hint rather than silently dropped.
+
+    The returned dict is always populated with the documented preference keys
+    (defaults from ``_FALLBACK_PREFS_DEFAULTS`` overlaid by saved values), so
+    callers can read keys like ``judge_model`` without KeyError handling.
+    """
+    try:
+        from judge import load_preferences  # noqa: PLC0415
+    except ImportError:
+        print(
+            "warning: optional 'judge' module not importable; reading "
+            "preferences.json directly. Reinstall gh-gemini-review-loop "
+            "to restore full judge-eval support.",
+            file=sys.stderr,
+        )
+    else:
+        try:
+            return load_preferences()
+        except Exception as err:
+            print(
+                f"warning: judge.load_preferences() failed ({err!s}); "
+                "falling back to direct preferences.json load.",
+                file=sys.stderr,
+            )
+
+    path = _direct_preferences_path()
+    if not path.exists():
+        prefs = dict(_FALLBACK_PREFS_DEFAULTS)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(prefs, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+        except OSError:
+            pass
+        return prefs
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as err:
+        print(
+            f"warning: could not read {path} ({err!s}); ignoring saved preferences.",
+            file=sys.stderr,
+        )
+        return dict(_FALLBACK_PREFS_DEFAULTS)
+    if not isinstance(data, dict):
+        print(
+            f"warning: {path} did not contain a JSON object; ignoring saved preferences.",
+            file=sys.stderr,
+        )
+        return dict(_FALLBACK_PREFS_DEFAULTS)
+    return {**_FALLBACK_PREFS_DEFAULTS, **data}
+
+
 def post_pr_comment(pr: PullRequest, body: str, *, dry_run: bool = False) -> None:
     """Post a comment on the PR via gh."""
     pr_ref = f"{pr.owner}/{pr.repo}#{pr.number}"
@@ -829,9 +939,13 @@ def main() -> int:
     )
     parser.add_argument(
         "--max-rereview-requests",
-        type=int,
-        default=DEFAULT_REREVIEW_LIMIT,
-        help=f"Warn when prior Gemini re-review requests reach this limit. Default: {DEFAULT_REREVIEW_LIMIT}.",
+        type=nonnegative_int,
+        default=None,
+        help=(
+            "Warn when prior Gemini re-review requests reach this limit. "
+            "Overrides max_rereview_requests in ~/.config/gh-gemini-review-loop/preferences.json "
+            f"(default: {DEFAULT_REREVIEW_LIMIT})."
+        ),
     )
     parser.add_argument(
         "--resolve-past-cap",
@@ -956,6 +1070,10 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        prefs = load_preferences_with_fallback()
+        args.max_rereview_requests = effective_rereview_limit(
+            args.max_rereview_requests, prefs
+        )
         pr = resolve_pr(args.pr)
         if args.wait:
             pull_request = wait_for_stable_review(
@@ -1050,8 +1168,7 @@ def main() -> int:
         # --judge-mode override) and decide.
         try:
             from judge import (  # noqa: PLC0415
-                JudgeClient, JudgeError, load_preferences, should_judge_run,
-                skipped_result,
+                JudgeClient, JudgeError, should_judge_run, skipped_result,
             )
             judge_available = True
         except ImportError:
@@ -1062,8 +1179,11 @@ def main() -> int:
                 "skip_reason": "judge.py not importable (plugin install path issue)",
             }
         if judge_available:
-            prefs = load_preferences()
-            effective_mode = args.judge_mode or prefs["judge_mode"]
+            effective_mode = (
+                args.judge_mode
+                if args.judge_mode is not None
+                else prefs.get("judge_mode", "off")
+            )
             judge_results = {}
             if should_judge_run(mode=effective_mode, phase=args.judge_phase):
                 client = JudgeClient(model=args.judge_model or prefs["judge_model"])

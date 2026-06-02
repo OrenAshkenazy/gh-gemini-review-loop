@@ -4,6 +4,9 @@ These tests intentionally avoid network/gh calls — they exercise only the
 pure helpers that operate on already-fetched GraphQL payloads.
 """
 
+import json
+import sys
+
 import pytest
 
 from fetch_gemini_threads import (
@@ -13,10 +16,13 @@ from fetch_gemini_threads import (
     STICKY_RECEIPT_MARKER,
     PullRequest,
     addressed_by_reply_threads,
+    effective_rereview_limit,
     filter_by_min_severity,
     filter_threads,
     is_addressed_by_reply,
+    load_preferences_with_fallback,
     load_sticky_state,
+    nonnegative_int,
     pagination_warnings,
     parse_pr_url,
     render_receipt,
@@ -240,6 +246,133 @@ class TestRereviewRequests:
     def test_ignores_comment_without_review_word(self):
         pr = self._pr([{"author": {"login": "a"}, "body": "@gemini-code-assist hi"}])
         assert rereview_requests(pr) == []
+
+
+# ---------------------------------------------------------------------------
+# re-review cap preference
+# ---------------------------------------------------------------------------
+
+class TestRereviewLimit:
+    def test_cli_value_wins_over_preferences(self):
+        assert effective_rereview_limit(2, {"max_rereview_requests": 5}) == 2
+
+    def test_preferences_used_when_cli_absent(self):
+        assert effective_rereview_limit(None, {"max_rereview_requests": 5}) == 5
+
+    def test_invalid_preference_falls_back_to_default(self):
+        assert effective_rereview_limit(None, {"max_rereview_requests": -1}) == 3
+        assert effective_rereview_limit(None, {"max_rereview_requests": True}) == 3
+        assert effective_rereview_limit(None, {"max_rereview_requests": "five"}) == 3
+
+    def test_string_preference_is_coerced(self):
+        assert effective_rereview_limit(None, {"max_rereview_requests": "5"}) == 5
+        assert effective_rereview_limit(None, {"max_rereview_requests": " 6 "}) == 6
+
+
+class TestPreferencesFallback:
+    """``load_preferences_with_fallback`` must keep working when ``judge`` is missing."""
+
+    # Keys callers may read on the returned dict without guarding against KeyError.
+    _EXPECTED_KEYS = {
+        "schema_version", "judge_mode", "judge_model",
+        "judge_tip_shown", "max_rereview_requests", "set_at",
+    }
+
+    def test_falls_back_to_direct_json_when_judge_import_fails(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "preferences.json").write_text(
+            '{"max_rereview_requests": 7}', encoding="utf-8"
+        )
+        # Force the lazy `from judge import load_preferences` to fail.
+        monkeypatch.setitem(sys.modules, "judge", None)
+
+        prefs = load_preferences_with_fallback()
+
+        # Loaded value wins; defaults fill the rest so downstream callers can
+        # read documented keys like `judge_model` without KeyError handling.
+        assert prefs["max_rereview_requests"] == 7
+        assert self._EXPECTED_KEYS.issubset(prefs.keys())
+        # User must see *why* the canonical loader was skipped.
+        assert "judge" in capsys.readouterr().err
+
+    def test_fallback_returns_defaults_when_file_missing(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setitem(sys.modules, "judge", None)
+        prefs = load_preferences_with_fallback()
+        assert self._EXPECTED_KEYS.issubset(prefs.keys())
+        assert prefs["judge_mode"] == "off"
+
+    def test_fallback_writes_defaults_on_first_run(
+        self, tmp_path, monkeypatch
+    ):
+        """File must be created on first invocation so users can discover and edit it."""
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setitem(sys.modules, "judge", None)
+        assert not (tmp_path / "preferences.json").exists()
+
+        load_preferences_with_fallback()
+
+        assert (tmp_path / "preferences.json").exists()
+        saved = json.loads((tmp_path / "preferences.json").read_text())
+        assert saved["judge_mode"] == "off"
+        assert saved["max_rereview_requests"] == 3
+
+    def test_fallback_returns_defaults_on_corrupt_json(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "preferences.json").write_text("{ not json", encoding="utf-8")
+        monkeypatch.setitem(sys.modules, "judge", None)
+
+        prefs = load_preferences_with_fallback()
+        assert self._EXPECTED_KEYS.issubset(prefs.keys())
+        assert "could not read" in capsys.readouterr().err
+
+    def test_fallback_returns_defaults_when_not_object(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "preferences.json").write_text("[1, 2, 3]", encoding="utf-8")
+        monkeypatch.setitem(sys.modules, "judge", None)
+
+        prefs = load_preferences_with_fallback()
+        assert self._EXPECTED_KEYS.issubset(prefs.keys())
+        assert "JSON object" in capsys.readouterr().err
+
+    def test_fallback_composes_with_effective_rereview_limit(
+        self, tmp_path, monkeypatch
+    ):
+        """Persistent cap setting takes effect even without the judge module."""
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "preferences.json").write_text(
+            '{"max_rereview_requests": "5"}', encoding="utf-8"
+        )
+        monkeypatch.setitem(sys.modules, "judge", None)
+
+        prefs = load_preferences_with_fallback()
+        assert effective_rereview_limit(None, prefs) == 5
+
+
+class TestNonnegativeInt:
+    def test_valid_value(self):
+        assert nonnegative_int("4") == 4
+
+    def test_zero_is_allowed(self):
+        assert nonnegative_int("0") == 0
+
+    def test_negative_raises_argparse_error(self):
+        import argparse
+        with pytest.raises(argparse.ArgumentTypeError, match=">= 0"):
+            nonnegative_int("-1")
+
+    def test_non_integer_raises_argparse_error(self):
+        import argparse
+        with pytest.raises(argparse.ArgumentTypeError, match="invalid int value"):
+            nonnegative_int("abc")
 
 
 # ---------------------------------------------------------------------------
