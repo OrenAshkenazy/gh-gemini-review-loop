@@ -64,6 +64,18 @@ class TestPreferences:
         assert prefs["max_rereview_requests"] == DEFAULT_MAX_REREVIEW_REQUESTS
         assert prefs["schema_version"] == PREFS_SCHEMA_VERSION
 
+    def test_missing_file_is_written_on_first_load(self, tmp_path, monkeypatch):
+        """preferences.json must be created on first load so users can discover it."""
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        assert not (tmp_path / "preferences.json").exists()
+
+        load_preferences()
+
+        assert (tmp_path / "preferences.json").exists()
+        saved = json.loads((tmp_path / "preferences.json").read_text())
+        assert saved["judge_mode"] == "off"
+        assert saved["max_rereview_requests"] == DEFAULT_MAX_REREVIEW_REQUESTS
+
     def test_corrupt_file_falls_back_to_default(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         (tmp_path / "preferences.json").write_text("{not json")

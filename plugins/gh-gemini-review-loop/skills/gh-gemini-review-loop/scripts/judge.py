@@ -151,15 +151,30 @@ def prefs_path() -> Path:
     return Path(base) / "preferences.json"
 
 
-def load_preferences() -> dict[str, t.Any]:
-    """Return saved preferences, or a safe default ('off') if missing/corrupt.
+def _write_prefs(path: Path, prefs: dict[str, t.Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(prefs, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    Default is OFF for privacy: do not send anything to OpenAI unless the
-    user has explicitly opted in.
+
+def load_preferences() -> dict[str, t.Any]:
+    """Return saved preferences, initialising the file on first use if absent.
+
+    Writing defaults on first load means the file is always present after the
+    first script invocation — regardless of whether the user ever interacts
+    with judge eval — so ``max_rereview_requests`` and other settings are
+    discoverable and editable without a separate setup step.
+
+    Default judge_mode is OFF for privacy: nothing is sent to OpenAI unless
+    the user has explicitly opted in.
     """
     path = prefs_path()
     if not path.exists():
-        return _default_prefs()
+        prefs = _default_prefs()
+        try:
+            _write_prefs(path, prefs)
+        except OSError:
+            pass
+        return prefs
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):

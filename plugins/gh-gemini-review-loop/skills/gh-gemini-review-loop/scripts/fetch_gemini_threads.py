@@ -525,7 +525,15 @@ def load_preferences_with_fallback() -> dict[str, Any]:
 
     path = _direct_preferences_path()
     if not path.exists():
-        return dict(_FALLBACK_PREFS_DEFAULTS)
+        prefs = dict(_FALLBACK_PREFS_DEFAULTS)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(prefs, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+        except OSError:
+            pass
+        return prefs
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as err:

@@ -4,6 +4,7 @@ These tests intentionally avoid network/gh calls — they exercise only the
 pure helpers that operate on already-fetched GraphQL payloads.
 """
 
+import json
 import sys
 
 import pytest
@@ -304,6 +305,21 @@ class TestPreferencesFallback:
         prefs = load_preferences_with_fallback()
         assert self._EXPECTED_KEYS.issubset(prefs.keys())
         assert prefs["judge_mode"] == "off"
+
+    def test_fallback_writes_defaults_on_first_run(
+        self, tmp_path, monkeypatch
+    ):
+        """File must be created on first invocation so users can discover and edit it."""
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setitem(sys.modules, "judge", None)
+        assert not (tmp_path / "preferences.json").exists()
+
+        load_preferences_with_fallback()
+
+        assert (tmp_path / "preferences.json").exists()
+        saved = json.loads((tmp_path / "preferences.json").read_text())
+        assert saved["judge_mode"] == "off"
+        assert saved["max_rereview_requests"] == 3
 
     def test_fallback_returns_defaults_on_corrupt_json(
         self, tmp_path, monkeypatch, capsys

@@ -124,7 +124,14 @@ Persist via `save_preferences()`. Mapping:
 }
 ```
 
-Valid `judge_mode` values: `off`, `on_complete`, `on_cycle`. For one-time eval, do not modify the saved preference.
+The file is created automatically on the first script invocation with safe defaults (`judge_mode: off`, `max_rereview_requests: 3`). No manual setup is required.
+
+**Key fields:**
+
+- `judge_mode` — controls when the OpenAI judge eval runs. Valid values: `off`, `on_complete`, `on_cycle`. Set via natural language ("enable judge eval") or `save_preferences()`. Default: `off`.
+- `max_rereview_requests` — persistent loop cap. Overridable per-run with `--max-rereview-requests N`. Default: `3`.
+- `judge_tip_shown` — internal flag. `true` after the one-time "judge eval is available" tip has been shown in chat. Set automatically; do not edit manually.
+- `judge_model` — OpenAI model used for eval. Default: `gpt-4o-mini`.
 
 `max_rereview_requests` sets the persistent loop cap. The script reads it from `~/.config/gh-gemini-review-loop/preferences.json` on every invocation. The CLI flag `--max-rereview-requests N` overrides it for a single invocation.
 
