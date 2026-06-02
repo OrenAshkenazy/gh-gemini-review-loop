@@ -309,7 +309,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
 **`$CLAUDE_PLUGIN_ROOT` is not set in the shell environment.** Before running any script command, resolve it:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(ls -d ~/.claude/plugins/cache/gh-gemini-review-loop/gh-gemini-review-loop/*/ 2>/dev/null | sort -rV | head -1 | sed 's|/$||')
+CLAUDE_PLUGIN_ROOT=$(find ~/.claude/plugins/cache -type d -path "*/skills/gh-gemini-review-loop" 2>/dev/null | sort -rV | head -1 | sed 's|/skills/gh-gemini-review-loop$||')
 ```
 
 This must be run as a Bash tool call first — do not inline it into the `python3` invocation. Once set, use it in subsequent calls.
