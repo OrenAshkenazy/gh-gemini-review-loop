@@ -7,6 +7,10 @@ name: Release on PR merge
 #
 # Skip the entire release with the `release:skip` label (useful for chore/doc PRs
 # you don't want to tag).
+#
+# Auto-skip also applies when the PR title starts with `docs:` (or `docs(scope):`).
+# Override the auto-skip on a docs PR by adding an explicit `release:patch` /
+# `release:minor` / `release:major` label.
 
 on:
   pull_request:
@@ -40,14 +44,24 @@ jobs:
         id: bump
         env:
           LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          # Precedence: skip > major > minor > patch (default).
+          # Precedence:
+          #   release:skip label          → skip
+          #   explicit release:* label    → bump (overrides docs: auto-skip)
+          #   title starts with "docs:"   → skip
+          #   default                     → patch
           if echo "$LABELS_JSON" | grep -q '"release:skip"'; then
             level=skip
           elif echo "$LABELS_JSON" | grep -q '"release:major"'; then
             level=major
           elif echo "$LABELS_JSON" | grep -q '"release:minor"'; then
             level=minor
+          elif echo "$LABELS_JSON" | grep -q '"release:patch"'; then
+            level=patch
+          elif docs_re='^docs([(][^)]*[)])?:' && [[ "$PR_TITLE" =~ $docs_re ]]; then
+            level=skip
+            echo "::notice ::auto-skipping release: PR title starts with 'docs:' (override with an explicit release:* label)"
           else
             level=patch
           fi
