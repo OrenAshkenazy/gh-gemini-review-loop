@@ -219,10 +219,15 @@ def _store_dotenv(key: str) -> str:
     path = dotenv_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     # Read-modify-write so we don't clobber other keys the user added.
+    # Use partition("=") + .strip() to match _read_dotenv's parsing — a
+    # plain startswith("OPENAI_API_KEY=") misses `OPENAI_API_KEY = "v"`
+    # with spaces, which would leak the old key past this filter and
+    # leave _read_dotenv returning the stale value forever.
     lines: list[str] = []
     if path.exists():
         for raw in path.read_text(encoding="utf-8").splitlines():
-            if raw.strip().startswith("OPENAI_API_KEY="):
+            k, _, _ = raw.partition("=")
+            if k.strip() == "OPENAI_API_KEY":
                 continue
             lines.append(raw)
     lines.append(f'OPENAI_API_KEY="{key}"')
@@ -254,10 +259,14 @@ def clear_api_key() -> list[str]:
             cleared.append("linux_secret_service")
     path = dotenv_path()
     if path.exists():
-        kept = [
-            line for line in path.read_text(encoding="utf-8").splitlines()
-            if not line.strip().startswith("OPENAI_API_KEY=")
-        ]
+        # Mirror _store_dotenv's partition-based filter so `KEY = "v"` with
+        # spaces is also cleared, not silently left behind.
+        kept: list[str] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            k, _, _ = line.partition("=")
+            if k.strip() == "OPENAI_API_KEY":
+                continue
+            kept.append(line)
         if kept:
             path.write_text("\n".join(kept) + "\n", encoding="utf-8")
         else:
@@ -312,6 +321,12 @@ def _main(argv: list[str] | None = None) -> int:
             written = store_api_key(key)
         except subprocess.CalledProcessError as exc:
             print(f"error: failed to store ({exc.stderr or exc})", file=sys.stderr)
+            return 3
+        except (OSError, ValueError) as exc:
+            # OSError: dotfile write blocked by perms / read-only fs.
+            # ValueError: store_api_key("") via a future code path. Catch
+            # explicitly (not bare Exception) so genuine bugs still surface.
+            print(f"error: failed to store ({exc})", file=sys.stderr)
             return 3
         print(f"stored in: {written}")
         return 0

@@ -192,3 +192,19 @@ class TestNetworkReachability:
         out = capsys.readouterr().out
         assert "cannot reach" in out
         assert "OPENAI_BASE_URL" in out  # actionable hint for self-hosted users
+
+    def test_probes_openai_base_url_when_set(self, monkeypatch, capsys):
+        # Users behind firewalls that block api.openai.com but allow their
+        # gateway (Ollama / LiteLLM / enterprise proxy) would see this
+        # check fail incorrectly if the probe ignored OPENAI_BASE_URL.
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://gateway.internal:8443/v1")
+        seen = {}
+
+        def _capture(addr, timeout):  # noqa: ARG001
+            seen["addr"] = addr
+            raise OSError("stop here — we only care about the target")
+
+        monkeypatch.setattr("socket.create_connection", _capture)
+        judge_doctor.check_network_reachability()
+        capsys.readouterr()
+        assert seen["addr"] == ("gateway.internal", 8443)

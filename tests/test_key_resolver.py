@@ -118,6 +118,19 @@ class TestDotenvIO:
         assert "sk-new" in body
         assert "old" not in body
 
+    def test_store_dotenv_replaces_spaced_assignment(self, tmp_path):
+        # Regression: a plain startswith("OPENAI_API_KEY=") would skip
+        # `OPENAI_API_KEY = "old"` (with spaces around =) and leave the
+        # stale value behind. The partition-based filter must catch it.
+        (tmp_path / ".env").write_text(
+            'OPENAI_API_KEY = "old"\n', encoding="utf-8"
+        )
+        key_resolver._store_dotenv("sk-new")
+        body = (tmp_path / ".env").read_text(encoding="utf-8")
+        assert "old" not in body
+        assert "sk-new" in body
+        assert key_resolver._read_dotenv() == "sk-new"
+
 
 class TestClear:
     def test_clear_removes_dotenv_key_only(self, tmp_path):
@@ -137,6 +150,17 @@ class TestClear:
 
     def test_clear_returns_empty_when_nothing(self):
         assert key_resolver.clear_api_key() == []
+
+    def test_clear_handles_spaced_assignment(self, tmp_path):
+        # Companion regression to test_store_dotenv_replaces_spaced_assignment:
+        # the strict startswith filter would have left this line untouched.
+        (tmp_path / ".env").write_text(
+            'OTHER=keep\nOPENAI_API_KEY = "old"\n', encoding="utf-8"
+        )
+        key_resolver.clear_api_key()
+        body = (tmp_path / ".env").read_text(encoding="utf-8")
+        assert "OTHER=keep" in body
+        assert "OPENAI_API_KEY" not in body
 
 
 class TestRedact:

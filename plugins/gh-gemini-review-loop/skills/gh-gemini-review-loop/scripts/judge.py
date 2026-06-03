@@ -463,10 +463,15 @@ class JudgeClient:
             with _urlrequest.urlopen(req, timeout=self.request_timeout) as resp:
                 raw = resp.read().decode("utf-8")
         except _urlerror.HTTPError as exc:
-            # Surface the API's error body verbatim — for 401 we want the
-            # user to see "Incorrect API key provided" not a generic message.
+            # Surface the API's error body — for 401 we want the user to
+            # see "Incorrect API key provided" not a generic message.
+            # Truncate at 300 chars: corporate proxies / Cloudflare return
+            # multi-KB HTML error pages on 502/403/523 that would otherwise
+            # flood the terminal and bury the actionable line.
             try:
                 err_body = exc.read().decode("utf-8")
+                if len(err_body) > 300:
+                    err_body = err_body[:300] + "...(truncated)"
             except Exception:  # noqa: BLE001
                 err_body = ""
             raise JudgeError(

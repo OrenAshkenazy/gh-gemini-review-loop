@@ -18,6 +18,7 @@ read-only.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import socket
 import subprocess
@@ -106,7 +107,12 @@ def check_network_reachability() -> bool:
     captive portals, and DNS issues without spending a token.
     """
     print(_color("\n[2/5] network reachability", BOLD))
-    parsed = urlparse(DEFAULT_BASE_URL)
+    # Probe whatever endpoint the judge will actually call: OPENAI_BASE_URL
+    # if set (self-hosted gateway), otherwise the default. Otherwise users
+    # behind firewalls that block api.openai.com but allow their gateway
+    # would see this check fail incorrectly.
+    base_url = os.environ.get("OPENAI_BASE_URL") or DEFAULT_BASE_URL
+    parsed = urlparse(base_url)
     host = parsed.hostname or "api.openai.com"
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     try:

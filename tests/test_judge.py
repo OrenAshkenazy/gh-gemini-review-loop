@@ -35,6 +35,19 @@ from judge import (  # noqa: E402
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_key_resolver(monkeypatch, tmp_path):
+    """Stub the OS keystore readers so JudgeClient(api_key=None) tests are
+    host-independent. Otherwise a developer Mac with a real Keychain entry
+    silently fills in the key and flips the readiness assertions.
+    """
+    import key_resolver  # noqa: PLC0415
+
+    monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+    monkeypatch.setitem(key_resolver._READERS, "macos_keychain", lambda: None)
+    monkeypatch.setitem(key_resolver._READERS, "linux_secret_service", lambda: None)
+
+
 def fake_ok(verdict="valid_actionable", **overrides):
     payload = {
         "verdict": verdict,
@@ -522,6 +535,33 @@ class TestUrllibCall:
         # not a generic message.
         assert "401" in str(excinfo.value)
         assert "Incorrect API key" in str(excinfo.value)
+
+    def test_http_error_body_truncated_when_huge(self, monkeypatch):
+        # Corporate proxies / Cloudflare can return multi-KB HTML on
+        # 502/403/523. The judge must truncate so the actionable header
+        # ("HTTP 502") isn't buried under 4 KB of `<html><head>...`.
+        import io
+        from urllib.error import HTTPError
+
+        big_html = "<html>" + ("x" * 5000) + "</html>"
+
+        def _fake_urlopen(req, timeout):  # noqa: ARG001
+            raise HTTPError(
+                req.full_url, 502, "Bad Gateway", hdrs={},
+                fp=io.BytesIO(big_html.encode("utf-8")),
+            )
+
+        from judge import JudgeClient as JC, JudgeError  # noqa: PLC0415
+
+        monkeypatch.setattr("judge._urlrequest.urlopen", _fake_urlopen)
+        client = JC(api_key="sk-" + "a" * 48)
+        with pytest.raises(JudgeError) as excinfo:
+            client.judge({"body": "x"})
+        msg = str(excinfo.value)
+        # Status code and truncation marker both present; full HTML is not.
+        assert "502" in msg
+        assert "truncated" in msg
+        assert len(msg) < 600  # i.e., not 5 KB
 
     def test_url_error_raises_judge_error(self, monkeypatch):
         from urllib.error import URLError
