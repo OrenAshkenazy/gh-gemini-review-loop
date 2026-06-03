@@ -18,22 +18,24 @@ read-only.
 from __future__ import annotations
 
 import argparse
-import os
-import shlex
 import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from judge import (  # noqa: E402
+    DEFAULT_BASE_URL,
     DEFAULT_MODEL,
     JudgeClient,
     JudgeError,
     looks_like_placeholder_key,
 )
+from key_resolver import dotenv_path, resolve_api_key  # noqa: E402
 
 
 GREEN = "\033[32m"
@@ -94,67 +96,61 @@ def check_python() -> bool:
     return True
 
 
-def check_openai_sdk() -> bool:
-    """Verify the openai SDK (v1.0.0+) is importable from THIS Python."""
-    print(_color("\n[2/5] openai SDK", BOLD))
-    # shlex.quote so the printed command survives spaces in the interpreter
-    # path (common on macOS: '/Users/me/My Project/.venv/bin/python').
-    py = shlex.quote(sys.executable or "python3")
+def check_network_reachability() -> bool:
+    """Verify we can reach the OpenAI API host via TCP.
+
+    Replaces the legacy SDK-install check: the judge now uses stdlib urllib,
+    so the failure mode that matters is "can this machine open a TLS
+    connection to api.openai.com:443", not "is the openai package importable".
+    A pure TCP probe (no API key, no request body) catches firewalls,
+    captive portals, and DNS issues without spending a token.
+    """
+    print(_color("\n[2/5] network reachability", BOLD))
+    parsed = urlparse(DEFAULT_BASE_URL)
+    host = parsed.hostname or "api.openai.com"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
     try:
-        import openai  # noqa: PLC0415
-    except ImportError:
+        with socket.create_connection((host, port), timeout=5):
+            pass
+    except OSError as exc:
         _fail(
-            "openai SDK not installed for this Python",
-            f"{py} -m pip install -U openai\n"
-            "    (if pip blocks with 'externally-managed-environment':\n"
-            f"       {py} -m pip install --break-system-packages -U openai\n"
-            "     or use pipx / a venv)",
+            f"cannot reach {host}:{port} ({exc})",
+            "Check network / VPN / corporate proxy. If you use a custom "
+            "gateway (Ollama, LiteLLM, enterprise proxy), set OPENAI_BASE_URL "
+            "to its URL.",
         )
         return False
-    try:
-        from openai import OpenAI  # noqa: F401, PLC0415
-    except ImportError:
-        _fail(
-            f"openai SDK too old (need v1.0.0+, found {getattr(openai, '__version__', 'unknown')})",
-            f"{py} -m pip install -U openai",
-        )
-        return False
-    _ok(f"openai v{getattr(openai, '__version__', 'unknown')}")
+    _ok(f"reached {host}:{port}")
     return True
 
 
 def check_api_key() -> tuple[bool, str | None]:
-    """Verify ``OPENAI_API_KEY`` is set and doesn't look like a placeholder.
+    """Verify a key is available via the tiered resolver and well-formed.
 
     Returns (ok, key) so the optional probe step can reuse the key without
-    re-reading the env.
+    re-reading the source.
     """
-    print(_color("\n[3/5] OPENAI_API_KEY", BOLD))
-    key = os.environ.get("OPENAI_API_KEY")
+    print(_color("\n[3/5] OPENAI_API_KEY (tiered lookup)", BOLD))
+    key, source = resolve_api_key()
     if not key:
-        keychain_hint = ""
-        if sys.platform == "darwin":
-            keychain_hint = (
-                "\n    If stored in macOS Keychain, add to ~/.zshenv:\n"
-                "       export OPENAI_API_KEY=$(security find-generic-password "
-                "-a \"$USER\" -s \"openai-api-key\" -w 2>/dev/null)"
-            )
         _fail(
-            "OPENAI_API_KEY is not set in this environment",
-            "Export it from your shell init (not just ~/.zshrc — "
-            "subprocesses don't source that). Use ~/.zshenv on zsh." + keychain_hint,
+            "no OpenAI key in any source",
+            "Store one with: python3 "
+            f"{SCRIPT_DIR / 'key_resolver.py'} --set\n"
+            "    Resolver checks, in order: env var OPENAI_API_KEY, dotfile "
+            f"{dotenv_path()}, macOS Keychain, Linux secret-tool.",
         )
         return False, None
     if looks_like_placeholder_key(key):
         preview = key[:12] + "..." if len(key) > 12 else key
         _fail(
-            f"OPENAI_API_KEY looks like a placeholder ({preview!r})",
-            "Check ~/.claude/settings.json for a stale "
-            '"env": {"OPENAI_API_KEY": "REPLACE_WITH_YOUR_KEY"} block '
-            "and delete it. The real key goes in ~/.zshenv (or Keychain).",
+            f"key from source={source!r} looks like a placeholder ({preview!r})",
+            "Replace it: python3 "
+            f"{SCRIPT_DIR / 'key_resolver.py'} --clear && python3 "
+            f"{SCRIPT_DIR / 'key_resolver.py'} --set",
         )
         return False, key
-    _ok(f"key present and well-formed ({key[:7]}...{key[-4:]})")
+    _ok(f"key present and well-formed ({key[:7]}...{key[-4:]})", f"source={source}")
     return True, key
 
 
@@ -301,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
 
     checks = [
         check_python(),
-        check_openai_sdk(),
+        check_network_reachability(),
     ]
     key_ok, _key = check_api_key()
     checks.append(key_ok)

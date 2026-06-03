@@ -1049,7 +1049,8 @@ def main() -> int:
         help=(
             "Override the saved OpenAI-judge preference for this invocation. "
             "Without this flag the script reads ~/.config/gh-gemini-review-loop/preferences.json "
-            "(default: 'off'). Requires OPENAI_API_KEY + the openai SDK; gracefully skips otherwise."
+            "(default: 'off'). Requires an OpenAI API key resolved by key_resolver.py "
+            "(env var / dotfile / OS keystore); gracefully skips otherwise."
         ),
     )
     parser.add_argument(

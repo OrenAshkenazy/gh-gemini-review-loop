@@ -60,14 +60,13 @@ The Gemini review loop supports an optional OpenAI-based judge eval. It classifi
 
 Judge eval is **off by default**. Nothing is sent to OpenAI unless the user explicitly opts in.
 
-Requires `OPENAI_API_KEY` in env and the `openai` SDK installed. Missing either → judge gracefully skips with a structured `skipped` result + one stderr hint. The loop continues unchanged.
+Requires an OpenAI API key resolved by `key_resolver.py` (env var → dotfile → macOS Keychain → Linux Secret Service). No SDK install needed — the judge uses stdlib `urllib`. Missing key → judge gracefully skips with a structured `skipped` result + one stderr hint. The loop continues unchanged.
 
-If the user asks how to set `OPENAI_API_KEY` permanently, recommend the macOS Keychain approach:
+If the user asks how to set their key permanently, recommend the OS-keystore path:
 ```bash
-security add-generic-password -a "$USER" -s "openai-api-key" -w "sk-..."
-echo 'export OPENAI_API_KEY=$(security find-generic-password -a "$USER" -s "openai-api-key" -w 2>/dev/null)' >> ~/.zshrc
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py" --set
 ```
-This keeps the key out of plaintext dotfiles. On Linux, suggest `~/.config/environment.d/` or a secrets manager.
+This stores in macOS Keychain (Touch ID / password-protected), Linux Secret Service, or a chmod-600 dotfile fallback. No rc-file edits, no `ps` leakage, no shell-restart dance. For diagnostics, suggest `key_resolver.py --print-source` and `judge_doctor.py`.
 
 The script (`fetch_gemini_threads.py`) is the single source of truth. It reads `~/.config/gh-gemini-review-loop/preferences.json` on every invocation and combines the saved mode with the `--judge-phase` the agent supplies.
 
