@@ -29,9 +29,14 @@ Privacy / cost / safety invariants
 - The judge NEVER mutates the GitHub state. It cannot resolve, comment,
   push, or call any GraphQL/REST write. It only reads finding text and
   emits structured verdicts.
-- When the OpenAI key or SDK is missing, this module returns a structured
+- When the OpenAI key is missing, this module returns a structured
   ``skipped`` result with a reason — not a raw exception. The caller
   surfaces the reason and continues the loop unchanged.
+- The HTTP call uses stdlib ``urllib`` only (no ``openai`` SDK). Avoids
+  the install-fragility class of failures (broken interpreters, pipx
+  breakage, externally-managed envs). Trade-off: we re-implement one
+  endpoint's request shape; we don't get streaming, retries with
+  Retry-After, or vision. Acceptable for a single-shot JSON judge call.
 """
 
 from __future__ import annotations
@@ -40,10 +45,19 @@ import dataclasses
 import datetime as _dt
 import json
 import os
-import shlex
-import sys
 import typing as t
 from pathlib import Path
+from urllib import error as _urlerror
+from urllib import request as _urlrequest
+
+# Imported as a sibling module so the test invariant (no shell-out from
+# judge.py) still holds — keychain / secret-tool reads live in
+# key_resolver.py, which judge.py only consults via a pure function call.
+try:
+    from key_resolver import resolve_api_key as _resolve_api_key  # noqa: PLC0415
+except ImportError:  # pragma: no cover — fallback when run outside the plugin tree
+    def _resolve_api_key() -> tuple[str | None, str]:
+        return os.environ.get("OPENAI_API_KEY"), "env" if os.environ.get("OPENAI_API_KEY") else "missing"
 
 
 # Detect API keys that look like placeholders rather than real OpenAI keys.
@@ -85,6 +99,12 @@ VALID_JUDGE_PHASES = ("cycle", "complete")
 DEFAULT_MODEL = os.environ.get("OPENAI_JUDGE_MODEL", "gpt-4o-mini")
 DEFAULT_REQUEST_TIMEOUT = 30.0
 DEFAULT_MAX_REREVIEW_REQUESTS = 3
+
+# Endpoint can be overridden via OPENAI_BASE_URL for self-hosted gateways
+# (Ollama, LiteLLM, LM Studio, enterprise proxies). Mirrors the SDK's
+# OPENAI_BASE_URL contract so users who set it for the SDK don't have to
+# learn a new var when we drop the SDK dep.
+DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
 PREFS_SCHEMA_VERSION = 1
 
@@ -332,21 +352,6 @@ def looks_like_placeholder_key(key: str | None) -> bool:
     return False
 
 
-def _install_hint_for_current_python() -> str:
-    """Return a copy-pasteable install command for THIS interpreter.
-
-    Surfacing the actual ``sys.executable`` is the difference between a user
-    knowing to run ``python3.11 -m pip install openai`` (because openai is
-    installed on a different Python than the one running the script) and
-    blindly retrying ``pip install openai`` against the wrong environment.
-    """
-    # shlex.quote handles spaces in interpreter paths (common on macOS venvs
-    # like '/Users/me/My Project/.venv/bin/python') so the suggested command
-    # is actually copy-pasteable.
-    py = shlex.quote(sys.executable or "python3")
-    return f"{py} -m pip install -U openai"
-
-
 def skipped_result(reason: str) -> JudgeResult:
     """Build a structured skipped result so callers don't have to invent fields."""
     return JudgeResult(
@@ -377,75 +382,127 @@ class JudgeClient:
         call_fn: t.Callable[..., dict] | None = None,
         temperature: float = 0.0,
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
+        base_url: str | None = None,
     ) -> None:
         self.model = model or DEFAULT_MODEL
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        # Tiered resolution: explicit arg > resolver (env / dotfile / OS keystore).
+        # Resolver source is exposed via api_key_source for the doctor's "which
+        # key am I using?" output.
+        if api_key:
+            self.api_key = api_key
+            self.api_key_source = "explicit"
+        else:
+            self.api_key, self.api_key_source = _resolve_api_key()
         self._call_fn = call_fn
         self.temperature = temperature
         self.request_timeout = request_timeout
+        self.base_url = (
+            base_url
+            or os.environ.get("OPENAI_BASE_URL")
+            or DEFAULT_BASE_URL
+        ).rstrip("/")
 
     def is_ready(self) -> tuple[bool, str | None]:
         """Return (ready, skip_reason).
 
         Caller uses this to short-circuit gracefully: when not ready, emit a
         ``skipped_result(reason)`` instead of trying and crashing. Each
-        reason is phrased as actionable advice — exact install command or
-        explicit "placeholder detected" — so users don't have to guess.
+        reason is phrased as actionable advice so users don't have to guess.
+
+        No SDK probe — the call uses stdlib urllib, which is always
+        available on any Python that can run this script.
         """
         if self._call_fn is not None:
             return True, None
         if not self.api_key:
             return False, (
-                "OPENAI_API_KEY not set. Run 'python3 "
-                "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/judge_doctor.py' "
-                "for setup guidance."
+                "OPENAI_API_KEY not found in any source (CLI flag, env var, "
+                "~/.config/gh-gemini-review-loop/.env, OS keystore). "
+                "Run 'python3 "
+                "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py "
+                "--set' to store one, or 'judge_doctor.py' for full setup guidance."
+            )
+        # Defensive type check: settings.json env-injection can pass a bool
+        # or int through unchanged. Without this, the next string operation
+        # downstream would AttributeError instead of producing a clear
+        # "this is not a string" message.
+        if not isinstance(self.api_key, str):
+            return False, (
+                f"OPENAI_API_KEY is not a string (type={type(self.api_key).__name__}, "
+                f"source={self.api_key_source}). Edit ~/.claude/settings.json "
+                "and quote the value, or unset and re-store via key_resolver.py --set."
             )
         if looks_like_placeholder_key(self.api_key):
             preview = self.api_key[:12] + "..." if len(self.api_key) > 12 else self.api_key
             return False, (
-                f"OPENAI_API_KEY looks like a placeholder ({preview!r}). "
+                f"OPENAI_API_KEY looks like a placeholder ({preview!r}) "
+                f"(source: {self.api_key_source}). "
                 "Real OpenAI keys start with 'sk-' and are ~50+ chars. "
-                "Check ~/.claude/settings.json 'env' block for a stale "
-                "REPLACE_WITH_YOUR_KEY entry; export the real key in "
-                "~/.zshenv. Run judge_doctor.py for full setup help."
-            )
-        try:
-            # Older `openai` packages (< 1.0) don't expose the `OpenAI`
-            # client class. Probe for it specifically so is_ready() returns
-            # False (with a clear reason) instead of letting _openai_call
-            # ImportError later on `from openai import OpenAI`.
-            from openai import OpenAI  # noqa: F401, PLC0415
-        except ImportError:
-            return False, (
-                "openai SDK not installed for this Python "
-                f"({sys.executable}). Install with: "
-                f"{_install_hint_for_current_python()} "
-                "(if pip blocks with 'externally-managed-environment', "
-                "add --break-system-packages or use pipx). "
-                "Run judge_doctor.py for full diagnostics."
+                "Run key_resolver.py --set to store a real key in the OS keystore, "
+                "or check ~/.claude/settings.json 'env' block for a stale "
+                "REPLACE_WITH_YOUR_KEY entry. Run judge_doctor.py for full setup help."
             )
         return True, None
 
     def _openai_call(self, messages: list[dict]) -> dict:
-        # Wrap import + client init + API call in a single try/except so
-        # ANY failure (import error on stale SDK, auth failure during
-        # client construction, transient network) raises JudgeError. The
-        # runner catches that uniformly.
+        """POST chat.completions via stdlib urllib. Mirrors the SDK's request shape
+        for response_format=json_object so the rest of the pipeline is unchanged.
+
+        Any HTTP / network / parse failure surfaces as JudgeError; the runner
+        catches that uniformly.
+        """
+        body = json.dumps(
+            {
+                "model": self.model,
+                "messages": messages,
+                "response_format": {"type": "json_object"},
+                "temperature": self.temperature,
+            }
+        ).encode("utf-8")
+        req = _urlrequest.Request(
+            f"{self.base_url}/chat/completions",
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "gh-gemini-review-loop/judge (urllib)",
+            },
+        )
         try:
-            from openai import OpenAI  # noqa: PLC0415
-            client = OpenAI(api_key=self.api_key)
-            resp = client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                response_format={"type": "json_object"},
-                temperature=self.temperature,
-                timeout=self.request_timeout,
-            )
-        except Exception as exc:  # noqa: BLE001 — OpenAI SDK raises many concrete types
-            raise JudgeError(f"OpenAI API call failed: {exc}") from exc
-        if not resp.choices:
+            with _urlrequest.urlopen(req, timeout=self.request_timeout) as resp:
+                # errors="replace": invalid UTF-8 from a misbehaving proxy
+                # would otherwise raise UnicodeDecodeError outside the
+                # HTTPError/URLError try arms and surface as an unhandled
+                # exception. Replacement chars degrade the JSON parse
+                # cleanly into a structured JudgeError below.
+                raw = resp.read().decode("utf-8", errors="replace")
+        except _urlerror.HTTPError as exc:
+            # Surface the API's error body — for 401 we want the user to
+            # see "Incorrect API key provided" not a generic message.
+            # Truncate at 300 chars: corporate proxies / Cloudflare return
+            # multi-KB HTML error pages on 502/403/523 that would otherwise
+            # flood the terminal and bury the actionable line.
+            try:
+                err_body = exc.read().decode("utf-8")
+                if len(err_body) > 300:
+                    err_body = err_body[:300] + "...(truncated)"
+            except Exception:  # noqa: BLE001
+                err_body = ""
+            raise JudgeError(
+                f"OpenAI API HTTP {exc.code}: {err_body or exc.reason}"
+            ) from exc
+        except _urlerror.URLError as exc:
+            raise JudgeError(f"OpenAI API network error: {exc.reason}") from exc
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise JudgeError(f"OpenAI API returned non-JSON: {raw!r}") from exc
+        choices = payload.get("choices") or []
+        if not choices:
             raise JudgeError("OpenAI response returned no choices.")
-        return {"content": resp.choices[0].message.content, "model": resp.model}
+        content = (choices[0].get("message") or {}).get("content")
+        return {"content": content, "model": payload.get("model", self.model)}
 
     def judge(self, finding: dict) -> JudgeResult:
         """Call the judge once. Returns a JudgeResult with status='ok' or status='skipped'.

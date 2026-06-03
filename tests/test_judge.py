@@ -35,6 +35,19 @@ from judge import (  # noqa: E402
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_key_resolver(monkeypatch, tmp_path):
+    """Stub the OS keystore readers so JudgeClient(api_key=None) tests are
+    host-independent. Otherwise a developer Mac with a real Keychain entry
+    silently fills in the key and flips the readiness assertions.
+    """
+    import key_resolver  # noqa: PLC0415
+
+    monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+    monkeypatch.setitem(key_resolver._READERS, "macos_keychain", lambda: None)
+    monkeypatch.setitem(key_resolver._READERS, "linux_secret_service", lambda: None)
+
+
 def fake_ok(verdict="valid_actionable", **overrides):
     payload = {
         "verdict": verdict,
@@ -277,6 +290,16 @@ class TestJudgeClientReadiness:
         assert ready is False
         assert "placeholder" in reason.lower()
 
+    def test_non_string_api_key_blocked_with_typed_reason(self):
+        # settings.json env-injection can pass a bool/int through unchanged.
+        # The readiness check must reject it with a clear "not a string"
+        # reason instead of letting a downstream string op AttributeError.
+        client = JudgeClient(api_key=True)
+        ready, reason = client.is_ready()
+        assert ready is False
+        assert "not a string" in reason
+        assert "bool" in reason
+
     def test_real_looking_key_not_blocked_by_placeholder_check(self):
         # A plausible-shape key (sk- + 48 chars) must NOT match the placeholder
         # heuristic — otherwise valid keys would be falsely rejected.
@@ -436,6 +459,189 @@ class TestJudgeClientParse:
         )
         r = client.judge({"body": "x"})
         assert r.reason == "0"
+
+
+# ---------------------------------------------------------------------------
+# _openai_call — urllib HTTP path (no SDK)
+# ---------------------------------------------------------------------------
+
+
+class TestUrllibCall:
+    """Verify the stdlib urllib path: request shape, error handling, base URL."""
+
+    def test_post_shape_matches_chat_completions(self, monkeypatch):
+        captured = {}
+
+        class _FakeResp:
+            def __init__(self, body):
+                self._body = body
+
+            def read(self):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        def _fake_urlopen(req, timeout):  # noqa: ARG001
+            captured["url"] = req.full_url
+            captured["method"] = req.get_method()
+            captured["headers"] = dict(req.headers)
+            captured["body"] = json.loads(req.data)
+            captured["timeout"] = timeout
+            return _FakeResp(
+                json.dumps(
+                    {
+                        "model": "gpt-4o-mini",
+                        "choices": [
+                            {"message": {"content": json.dumps({
+                                "verdict": "valid_actionable",
+                                "confidence": 0.8,
+                                "severity_override": "high",
+                                "recommended_action": "fix",
+                                "reason": "real",
+                            })}}
+                        ],
+                    }
+                ).encode("utf-8")
+            )
+
+        from judge import JudgeClient as JC  # noqa: PLC0415
+
+        monkeypatch.setattr(
+            "judge._urlrequest.urlopen", _fake_urlopen
+        )
+        client = JC(api_key="sk-" + "a" * 48)
+        r = client.judge({"body": "x"})
+        assert r.status == "ok"
+        assert r.verdict == "valid_actionable"
+        # Request shape — what the SDK previously did, now done by us.
+        assert captured["url"].endswith("/chat/completions")
+        assert captured["method"] == "POST"
+        assert captured["headers"]["Authorization"].lower().startswith("bearer ")
+        assert captured["body"]["model"] == "gpt-4o-mini"
+        assert captured["body"]["response_format"] == {"type": "json_object"}
+        assert captured["body"]["messages"][0]["role"] == "system"
+
+    def test_http_error_raises_judge_error_with_body(self, monkeypatch):
+        import io
+        from urllib.error import HTTPError
+
+        def _fake_urlopen(req, timeout):  # noqa: ARG001
+            raise HTTPError(
+                req.full_url, 401, "Unauthorized", hdrs={},
+                fp=io.BytesIO(b'{"error":{"message":"Incorrect API key"}}'),
+            )
+
+        from judge import JudgeClient as JC, JudgeError  # noqa: PLC0415
+
+        monkeypatch.setattr("judge._urlrequest.urlopen", _fake_urlopen)
+        client = JC(api_key="sk-" + "a" * 48)
+        with pytest.raises(JudgeError) as excinfo:
+            client.judge({"body": "x"})
+        # The API's error body should surface verbatim so users see WHY,
+        # not a generic message.
+        assert "401" in str(excinfo.value)
+        assert "Incorrect API key" in str(excinfo.value)
+
+    def test_http_error_body_truncated_when_huge(self, monkeypatch):
+        # Corporate proxies / Cloudflare can return multi-KB HTML on
+        # 502/403/523. The judge must truncate so the actionable header
+        # ("HTTP 502") isn't buried under 4 KB of `<html><head>...`.
+        import io
+        from urllib.error import HTTPError
+
+        big_html = "<html>" + ("x" * 5000) + "</html>"
+
+        def _fake_urlopen(req, timeout):  # noqa: ARG001
+            raise HTTPError(
+                req.full_url, 502, "Bad Gateway", hdrs={},
+                fp=io.BytesIO(big_html.encode("utf-8")),
+            )
+
+        from judge import JudgeClient as JC, JudgeError  # noqa: PLC0415
+
+        monkeypatch.setattr("judge._urlrequest.urlopen", _fake_urlopen)
+        client = JC(api_key="sk-" + "a" * 48)
+        with pytest.raises(JudgeError) as excinfo:
+            client.judge({"body": "x"})
+        msg = str(excinfo.value)
+        # Status code and truncation marker both present; full HTML is not.
+        assert "502" in msg
+        assert "truncated" in msg
+        assert len(msg) < 600  # i.e., not 5 KB
+
+    def test_url_error_raises_judge_error(self, monkeypatch):
+        from urllib.error import URLError
+
+        def _fake_urlopen(*_a, **_kw):
+            raise URLError("Name or service not known")
+
+        from judge import JudgeClient as JC, JudgeError  # noqa: PLC0415
+
+        monkeypatch.setattr("judge._urlrequest.urlopen", _fake_urlopen)
+        client = JC(api_key="sk-" + "a" * 48)
+        with pytest.raises(JudgeError) as excinfo:
+            client.judge({"body": "x"})
+        assert "network error" in str(excinfo.value).lower()
+
+    def test_invalid_utf8_decoded_with_replace(self, monkeypatch):
+        # A misbehaving proxy / gateway can splice in invalid UTF-8 bytes.
+        # We must not let a UnicodeDecodeError escape outside the
+        # HTTPError/URLError catches as an unhandled exception — that would
+        # crash the loop. errors="replace" degrades to a structured
+        # JudgeError via the JSON-parse path instead.
+        class _FakeResp:
+            def read(self):
+                # Invalid utf-8 byte 0x80 in the middle of the payload.
+                return b'{"choices":[{"message":{"content":"\x80not-json"}}]}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        from judge import JudgeClient as JC, JudgeError  # noqa: PLC0415
+
+        monkeypatch.setattr("judge._urlrequest.urlopen", lambda *_a, **_kw: _FakeResp())
+        client = JC(api_key="sk-" + "a" * 48)
+        # Doesn't matter how this fails — it must NOT be UnicodeDecodeError.
+        with pytest.raises(JudgeError):
+            client.judge({"body": "x"})
+
+    def test_base_url_override_respected(self, monkeypatch):
+        captured = {}
+
+        class _FakeResp:
+            def read(self):
+                return json.dumps({
+                    "model": "x",
+                    "choices": [{"message": {"content": json.dumps({
+                        "verdict": "valid_actionable", "confidence": 0.5,
+                        "severity_override": "low", "recommended_action": "reply",
+                        "reason": "ok",
+                    })}}],
+                }).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        def _fake_urlopen(req, timeout):  # noqa: ARG001
+            captured["url"] = req.full_url
+            return _FakeResp()
+
+        from judge import JudgeClient as JC  # noqa: PLC0415
+
+        monkeypatch.setattr("judge._urlrequest.urlopen", _fake_urlopen)
+        client = JC(api_key="sk-" + "a" * 48, base_url="http://localhost:11434/v1")
+        client.judge({"body": "x"})
+        assert captured["url"].startswith("http://localhost:11434/v1/")
 
 
 # ---------------------------------------------------------------------------

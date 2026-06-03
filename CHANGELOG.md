@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- **Bulletproof judge eval.** The `--judge-mode` path no longer depends on the `openai` SDK or on `OPENAI_API_KEY` being exported in a shell rc file — the two failure modes that wasted the most setup time (broken Homebrew Python, GUI-launched Claude Code not inheriting `~/.zshenv`, `pip install openai` blocked by externally-managed-environment).
+  - `judge.py` now POSTs to `chat.completions` via stdlib `urllib`. Zero install step; works on any Python 3.10+. Self-hosted gateways still work via `OPENAI_BASE_URL`. HTTP error bodies surface verbatim so 401s show "Incorrect API key" instead of a generic message.
+  - New `key_resolver.py` with tiered key lookup: env var → `~/.config/gh-gemini-review-loop/.env` (chmod 600) → macOS Keychain → Linux `secret-tool`. New CLI: `--set` (interactive or `--from-stdin`), `--print-source` (redacted), `--clear`. Storage default is the OS keystore — keys never sit in shell rc files or `ps` output.
+  - `judge_doctor.py` updated: the `[2/5] openai SDK` check is replaced by `[2/5] network reachability` (a TCP probe to `api.openai.com:443`, no key needed). The `[3/5]` key check uses the tiered resolver and reports which source produced the key.
+  - README + SKILL.md rewrite the "Setting your `OPENAI_API_KEY`" section around `key_resolver.py --set` as the recommended path. The env-var path stays documented as the escape hatch for CI / power users. Closes #23.
+
 ### Added
 
 - **Persistent configurable re-review cap.** End users can set `max_rereview_requests` in `~/.config/gh-gemini-review-loop/preferences.json`; `--max-rereview-requests` still overrides it for one manual invocation. Defaults remain 3 cycles.

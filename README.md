@@ -113,7 +113,7 @@ End users can opt into an OpenAI-powered judge that labels each Gemini finding a
 - **Discoverability:** on your first loop with findings, the agent shows a one-time tip: `[loop] Tip: judge eval can give a second opinion on these findings.`
 - **Natural language:** say "run the Gemini loop with judge eval at completion" or "with judge eval on every cycle". Preference is saved automatically.
 - **Explicit setup:** say "enable judge eval" to get a mode prompt with all options.
-- **Requires:** `OPENAI_API_KEY` env var + `pip install openai`. Missing either means the judge skips gracefully and the loop continues unchanged.
+- **Requires:** an OpenAI API key, resolved from one of [several sources](#setting-your-openai_api_key). No SDK install needed — the judge uses stdlib `urllib`, so any working Python 3.10+ is enough. Missing key → judge skips gracefully and the loop continues unchanged.
 
 ### Judge eval TL;DR
 
@@ -150,22 +150,39 @@ Set `max_rereview_requests` to change the persistent loop cap. The CLI flag `--m
 
 ### Setting your `OPENAI_API_KEY`
 
-The judge needs an OpenAI key. The key must be visible to subprocesses that Claude spawns — `~/.zshrc` is **not** enough, since subprocesses don't source it. Use `~/.zshenv` instead.
+The judge resolves the key from the first available source, in this order:
 
-**macOS (one-time, key stored in Keychain — never sits in a plaintext file):**
+1. **`OPENAI_API_KEY` env var** — CI, power users, Claude Code `settings.json` `env` block.
+2. **Dotfile** at `~/.config/gh-gemini-review-loop/.env` (chmod 600) — `OPENAI_API_KEY="sk-..."`.
+3. **macOS Keychain** (`gh-gemini-review-loop` / `openai`).
+4. **Linux Secret Service** (`secret-tool`, GNOME Keyring / KWallet).
+
+**Recommended one-liner** — stores the key in the OS keystore (Keychain on macOS, Secret Service on Linux) or chmod-600 dotfile elsewhere. Survives shell reloads, no rc-file edits, no `ps` leakage:
 
 ```bash
-security add-generic-password -a "$USER" -s "openai-api-key" -w "sk-..."
-echo 'export OPENAI_API_KEY=$(security find-generic-password -a "$USER" -s "openai-api-key" -w 2>/dev/null)' >> ~/.zshenv
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py" --set
+# Or, non-interactively from a password manager:
+op read 'op://Personal/OpenAI/api key' | \
+  python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py" --set --from-stdin
 ```
 
-Restart Claude Code so the new env propagates.
+**Inspect / debug:**
 
-**Self-hosted endpoints** (Ollama / LiteLLM / LM Studio / enterprise gateway): also set `OPENAI_BASE_URL` and the SDK will use that endpoint. Key-shape validation is bypassed automatically.
+```bash
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py" --print-source
+# → source: macos_keychain
+#   key:    sk-abc...wxyz   (redacted)
+
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py" --clear
+```
+
+**Self-hosted endpoints** (Ollama / LiteLLM / LM Studio / enterprise gateway): also set `OPENAI_BASE_URL` and the judge will POST there instead of `api.openai.com`. Key-shape validation is bypassed automatically.
+
+> **Migrating from earlier versions?** Older releases required `OPENAI_API_KEY` as a shell-exported env var plus `pip install openai`. Both still work, but `key_resolver.py --set` is the new recommended path and the SDK is no longer needed.
 
 ### Verify your setup
 
-If judge eval isn't working, run the doctor — it diagnoses every common failure (missing key, placeholder injected by `~/.claude/settings.json`, wrong Python, SDK not installed) and prints the exact fix:
+If judge eval isn't working, run the doctor — it diagnoses every common failure (missing key, placeholder injected by `~/.claude/settings.json`, network unreachable, wrong Python) and prints the exact fix:
 
 ```bash
 python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/judge_doctor.py" --probe
