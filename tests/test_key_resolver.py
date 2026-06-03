@@ -132,6 +132,42 @@ class TestDotenvIO:
         assert key_resolver._read_dotenv() == "sk-new"
 
 
+class TestStoreInputValidation:
+    def test_non_string_key_raises_typeerror(self):
+        # Defensive: bool / int / None from a future plumbing path must
+        # raise a clear TypeError instead of crashing inside .strip() with
+        # an opaque AttributeError.
+        import pytest as _pytest
+
+        with _pytest.raises(TypeError):
+            key_resolver.store_api_key(True)
+        with _pytest.raises(TypeError):
+            key_resolver.store_api_key(None)
+
+
+class TestSecretToolStorageShape:
+    def test_no_trailing_newline_sent_to_secret_tool(self, monkeypatch):
+        # secret-tool reads stdin until EOF, so any "\n" we append is
+        # persisted as part of the secret. Retrieval would then return
+        # "sk-...\n" and break a downstream Bearer header silently.
+        captured = {}
+
+        def _fake_run(cmd, **kwargs):  # noqa: ARG001
+            captured["cmd"] = cmd
+            captured["input"] = kwargs.get("input")
+
+            class _R:
+                returncode = 0
+                stdout = ""
+
+            return _R()
+
+        monkeypatch.setattr(key_resolver.subprocess, "run", _fake_run)
+        key_resolver._store_linux_secret_service("sk-test-123")
+        assert captured["input"] == "sk-test-123"
+        assert not captured["input"].endswith("\n")
+
+
 class TestClear:
     def test_clear_removes_dotenv_key_only(self, tmp_path):
         (tmp_path / ".env").write_text(

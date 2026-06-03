@@ -422,6 +422,16 @@ class JudgeClient:
                 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py "
                 "--set' to store one, or 'judge_doctor.py' for full setup guidance."
             )
+        # Defensive type check: settings.json env-injection can pass a bool
+        # or int through unchanged. Without this, the next string operation
+        # downstream would AttributeError instead of producing a clear
+        # "this is not a string" message.
+        if not isinstance(self.api_key, str):
+            return False, (
+                f"OPENAI_API_KEY is not a string (type={type(self.api_key).__name__}, "
+                f"source={self.api_key_source}). Edit ~/.claude/settings.json "
+                "and quote the value, or unset and re-store via key_resolver.py --set."
+            )
         if looks_like_placeholder_key(self.api_key):
             preview = self.api_key[:12] + "..." if len(self.api_key) > 12 else self.api_key
             return False, (
@@ -461,7 +471,12 @@ class JudgeClient:
         )
         try:
             with _urlrequest.urlopen(req, timeout=self.request_timeout) as resp:
-                raw = resp.read().decode("utf-8")
+                # errors="replace": invalid UTF-8 from a misbehaving proxy
+                # would otherwise raise UnicodeDecodeError outside the
+                # HTTPError/URLError try arms and surface as an unhandled
+                # exception. Replacement chars degrade the JSON parse
+                # cleanly into a structured JudgeError below.
+                raw = resp.read().decode("utf-8", errors="replace")
         except _urlerror.HTTPError as exc:
             # Surface the API's error body — for 401 we want the user to
             # see "Incorrect API key provided" not a generic message.

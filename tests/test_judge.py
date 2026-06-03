@@ -290,6 +290,16 @@ class TestJudgeClientReadiness:
         assert ready is False
         assert "placeholder" in reason.lower()
 
+    def test_non_string_api_key_blocked_with_typed_reason(self):
+        # settings.json env-injection can pass a bool/int through unchanged.
+        # The readiness check must reject it with a clear "not a string"
+        # reason instead of letting a downstream string op AttributeError.
+        client = JudgeClient(api_key=True)
+        ready, reason = client.is_ready()
+        assert ready is False
+        assert "not a string" in reason
+        assert "bool" in reason
+
     def test_real_looking_key_not_blocked_by_placeholder_check(self):
         # A plausible-shape key (sk- + 48 chars) must NOT match the placeholder
         # heuristic — otherwise valid keys would be falsely rejected.
@@ -576,6 +586,31 @@ class TestUrllibCall:
         with pytest.raises(JudgeError) as excinfo:
             client.judge({"body": "x"})
         assert "network error" in str(excinfo.value).lower()
+
+    def test_invalid_utf8_decoded_with_replace(self, monkeypatch):
+        # A misbehaving proxy / gateway can splice in invalid UTF-8 bytes.
+        # We must not let a UnicodeDecodeError escape outside the
+        # HTTPError/URLError catches as an unhandled exception — that would
+        # crash the loop. errors="replace" degrades to a structured
+        # JudgeError via the JSON-parse path instead.
+        class _FakeResp:
+            def read(self):
+                # Invalid utf-8 byte 0x80 in the middle of the payload.
+                return b'{"choices":[{"message":{"content":"\x80not-json"}}]}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        from judge import JudgeClient as JC, JudgeError  # noqa: PLC0415
+
+        monkeypatch.setattr("judge._urlrequest.urlopen", lambda *_a, **_kw: _FakeResp())
+        client = JC(api_key="sk-" + "a" * 48)
+        # Doesn't matter how this fails — it must NOT be UnicodeDecodeError.
+        with pytest.raises(JudgeError):
+            client.judge({"body": "x"})
 
     def test_base_url_override_respected(self, monkeypatch):
         captured = {}

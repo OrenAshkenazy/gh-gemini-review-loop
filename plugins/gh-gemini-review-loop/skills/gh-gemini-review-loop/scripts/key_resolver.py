@@ -173,6 +173,12 @@ def store_api_key(key: str) -> str:
     Linux: ``secret-tool`` if available; otherwise chmod-600 dotfile.
     Anywhere else: dotfile.
     """
+    # Defensive type check: callers can come from CLI (always str),
+    # programmatic use, or a future settings.json plumbing path. Bail
+    # with a clear TypeError instead of an opaque AttributeError on
+    # `.strip()` if a bool / int / None ever slips in.
+    if not isinstance(key, str):
+        raise TypeError(f"key must be str, got {type(key).__name__}")
     key = key.strip()
     if not key:
         raise ValueError("empty key")
@@ -204,10 +210,14 @@ def _store_macos_keychain(key: str) -> str:
 
 
 def _store_linux_secret_service(key: str) -> str:
+    # No trailing newline: secret-tool reads stdin until EOF, so any \n
+    # we add is persisted as part of the secret. A retrieval would then
+    # return "sk-...\n" and a downstream comparison or Bearer header
+    # would silently break.
     subprocess.run(
         ["secret-tool", "store", "--label", "gh-gemini-review-loop OpenAI key",
          *SOURCE_LABELS_SECRET_TOOL_ARGS()],
-        input=key + "\n",
+        input=key,
         check=True,
         capture_output=True,
         text=True,
