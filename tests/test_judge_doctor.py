@@ -68,15 +68,11 @@ class TestExitCodes:
         out = capsys.readouterr().out
         assert "placeholder" in out.lower()
 
-    def test_real_looking_key_passes_key_check(self, monkeypatch, capsys):
-        # If the env is otherwise healthy a plausible key shape must NOT
-        # cause the key check to fail. (Other checks like gh CLI may still
-        # warn, but warn-only checks don't flip the exit code.)
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-" + "a" * 48)
+    def test_real_looking_key_passes_key_check(self, tmp_path, monkeypatch, capsys):
+        # A well-formed key in the dotfile must show "well-formed", never "placeholder".
+        (tmp_path / ".env").write_text(f'OPENAI_API_KEY="sk-{"a" * 48}"\n', encoding="utf-8")
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         rc = judge_doctor.main([])
-        # rc could be 0 or 1 depending on the host (settings.json on dev
-        # machines, etc.) — but the [3/5] OPENAI_API_KEY section must show
-        # the well-formed marker, never the placeholder one.
         out = capsys.readouterr().out
         section = out.split("[3/5]")[1].split("[4/5]")[0]
         assert "placeholder" not in section.lower()

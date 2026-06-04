@@ -143,8 +143,10 @@ def check_api_key() -> tuple[bool, str | None]:
             "no OpenAI key in any source",
             "Store one with: python3 "
             f"{SCRIPT_DIR / 'key_resolver.py'} --set\n"
-            "    Resolver checks, in order: env var OPENAI_API_KEY, dotfile "
-            f"{dotenv_path()}, macOS Keychain, Linux secret-tool.",
+            f"    Resolver checks, in order: dotfile {dotenv_path()}, "
+            "macOS Keychain, Linux secret-tool.\n"
+            "    Note: OPENAI_API_KEY env var is intentionally ignored — "
+            "use --set to store your key.",
         )
         return False, None
     if looks_like_placeholder_key(key):
@@ -161,16 +163,16 @@ def check_api_key() -> tuple[bool, str | None]:
 
 
 def check_settings_json() -> bool:
-    """Warn if ~/.claude/settings.json injects a placeholder OPENAI_API_KEY.
+    """Note if ~/.claude/settings.json injects OPENAI_API_KEY.
 
-    This is the highest-leverage check — the Claude Code env block silently
-    overrides the shell-exported value, which is the failure mode we hit
-    that wastes the most time to diagnose.
+    The resolver no longer reads OPENAI_API_KEY from the environment, so an
+    env-block injection is harmless for key resolution. We still warn when a
+    placeholder is present so the user knows it won't do anything useful.
     """
     print(_color("\n[4/5] Claude Code settings.json", BOLD))
     settings = Path.home() / ".claude" / "settings.json"
     if not settings.exists():
-        _ok("no ~/.claude/settings.json (nothing to override env)")
+        _ok("no ~/.claude/settings.json")
         return True
     try:
         import json  # noqa: PLC0415
@@ -179,7 +181,7 @@ def check_settings_json() -> bool:
     except (OSError, ValueError) as exc:
         _warn(
             f"could not parse {settings}: {exc}",
-            "Fix or remove the file so it doesn't silently break env injection.",
+            "Fix or remove the file.",
         )
         return True
     env = data.get("env") if isinstance(data, dict) else None
@@ -188,31 +190,27 @@ def check_settings_json() -> bool:
         return True
     injected = env.get("OPENAI_API_KEY")
     if injected is None or injected == "":
-        _ok("settings.json does not inject OPENAI_API_KEY")
+        _ok("settings.json does not set OPENAI_API_KEY")
         return True
-    # Explicit type check: looks_like_placeholder_key returns False for
-    # non-strings (defensively), which would let an obviously-broken
-    # settings.json (boolean true, integer 0) slip through here as
-    # "non-placeholder". Catch it before the placeholder heuristic runs.
     if not isinstance(injected, str):
-        _fail(
-            f"settings.json injects non-string OPENAI_API_KEY "
-            f"(type={type(injected).__name__})",
-            "OPENAI_API_KEY must be a string. Edit ~/.claude/settings.json "
-            "and either delete the line or quote the value as a string.",
+        _warn(
+            f"settings.json sets non-string OPENAI_API_KEY "
+            f"(type={type(injected).__name__}) — has no effect on the resolver",
+            "The resolver reads the dotfile, not env vars. Remove the line or fix the type.",
         )
-        return False
+        return True
     if looks_like_placeholder_key(injected):
         preview = injected[:12] + "..." if len(injected) > 12 else injected
-        _fail(
-            f"settings.json injects placeholder OPENAI_API_KEY ({preview!r})",
-            "This overrides any shell-exported value. Edit ~/.claude/settings.json "
-            "and either delete the OPENAI_API_KEY line from the 'env' block, "
-            "or replace the placeholder with your real key. Then restart "
-            "Claude Code so the new env takes effect.",
+        _warn(
+            f"settings.json sets placeholder OPENAI_API_KEY ({preview!r}) — has no effect on the resolver",
+            "The resolver reads the dotfile, not env vars. "
+            "Remove the line or run: python3 key_resolver.py --set",
         )
-        return False
-    _ok("settings.json injects a non-placeholder key")
+        return True
+    _warn(
+        "settings.json sets OPENAI_API_KEY — has no effect on the resolver",
+        "The resolver reads the dotfile, not env vars. You can remove this line.",
+    )
     return True
 
 
