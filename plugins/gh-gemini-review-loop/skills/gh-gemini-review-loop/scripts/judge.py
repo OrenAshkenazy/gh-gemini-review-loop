@@ -106,7 +106,7 @@ DEFAULT_MAX_REREVIEW_REQUESTS = 3
 # learn a new var when we drop the SDK dep.
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
-PREFS_SCHEMA_VERSION = 1
+PREFS_SCHEMA_VERSION = 2
 
 SYSTEM_PROMPT = """\
 You are an expert code-review judge. The user is deciding whether to act on \
@@ -209,12 +209,15 @@ def load_preferences() -> dict[str, t.Any]:
     max_rereview_requests = _coerce_max_rereview_requests(
         data.get("max_rereview_requests")
     )
+    raw_profiles = data.get("profiles")
+    profiles = raw_profiles if isinstance(raw_profiles, dict) else {}
     return {
         "schema_version": data.get("schema_version", PREFS_SCHEMA_VERSION),
         "judge_mode": mode,
         "judge_model": data.get("judge_model") or DEFAULT_MODEL,
         "judge_tip_shown": bool(data.get("judge_tip_shown", False)),
         "max_rereview_requests": max_rereview_requests,
+        "profiles": profiles,
         "set_at": data.get("set_at") or "",
     }
 
@@ -232,6 +235,7 @@ def save_preferences(judge_mode: str, *, judge_model: str | None = None) -> dict
         "max_rereview_requests": existing.get(
             "max_rereview_requests", DEFAULT_MAX_REREVIEW_REQUESTS
         ),
+        "profiles": existing.get("profiles", {}),
         "set_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     path = prefs_path()
@@ -256,6 +260,7 @@ def _default_prefs() -> dict[str, t.Any]:
         "judge_model": DEFAULT_MODEL,
         "judge_tip_shown": False,
         "max_rereview_requests": DEFAULT_MAX_REREVIEW_REQUESTS,
+        "profiles": {},
         "set_at": "",
     }
 

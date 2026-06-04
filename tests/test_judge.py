@@ -201,6 +201,32 @@ class TestPreferences:
         save_preferences("on_complete")
         assert load_preferences()["max_rereview_requests"] == 4
 
+    def test_default_prefs_include_empty_profiles(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        prefs = load_preferences()
+        assert prefs["profiles"] == {}
+        assert prefs["schema_version"] == 2
+
+    def test_save_preferences_preserves_profiles(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        path = tmp_path / "preferences.json"
+        path.write_text(json.dumps({
+            "schema_version": 2,
+            "judge_mode": "off",
+            "profiles": {"o/r": {"source": "confirmed", "checks": []}},
+        }))
+        # Saving an unrelated judge setting must not wipe profiles.
+        save_preferences("on_complete")
+        saved = json.loads(path.read_text())
+        assert saved["profiles"] == {"o/r": {"source": "confirmed", "checks": []}}
+
+    def test_load_coerces_non_dict_profiles_to_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "preferences.json").write_text(json.dumps({
+            "schema_version": 2, "judge_mode": "off", "profiles": "garbage",
+        }))
+        assert load_preferences()["profiles"] == {}
+
 
 # ---------------------------------------------------------------------------
 # should_judge_run — dispatch logic (the single source of truth)

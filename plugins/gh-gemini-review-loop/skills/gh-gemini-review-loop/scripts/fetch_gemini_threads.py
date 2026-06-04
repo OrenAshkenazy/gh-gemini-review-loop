@@ -551,11 +551,12 @@ def _direct_preferences_path() -> Path:
 # read any documented key (``judge_mode``, ``judge_model``, etc.) without
 # guarding against KeyError when the optional ``judge`` module is missing.
 _FALLBACK_PREFS_DEFAULTS: dict[str, Any] = {
-    "schema_version": 1,
+    "schema_version": 2,
     "judge_mode": "off",
     "judge_model": "gpt-4o-mini",
     "judge_tip_shown": False,
     "max_rereview_requests": DEFAULT_REREVIEW_LIMIT,
+    "profiles": {},
     "set_at": "",
 }
 
