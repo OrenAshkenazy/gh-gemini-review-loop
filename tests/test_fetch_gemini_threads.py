@@ -16,6 +16,7 @@ from fetch_gemini_threads import (
     STICKY_RECEIPT_MARKER,
     PullRequest,
     addressed_by_reply_threads,
+    _derive_outcome,
     clear_run_tracking,
     derive_record_fields,
     effective_rereview_limit,
@@ -663,6 +664,25 @@ class TestDeriveRecordFields:
             judge_results={},
         )
         assert fields["needs_human"] == 0
+
+
+class TestDeriveOutcome:
+    def test_cap_reached_wins(self):
+        # cap_reached takes priority even if other conditions would apply
+        assert _derive_outcome(0, "passed", cap_reached=True) == "capped"
+
+    def test_verification_failed(self):
+        assert _derive_outcome(0, "failed", cap_reached=False) == "verification_failed"
+
+    def test_clean_when_no_remaining_and_passed(self):
+        assert _derive_outcome(0, "passed", cap_reached=False) == "clean"
+
+    def test_human_fallback_when_remaining(self):
+        assert _derive_outcome(2, "passed", cap_reached=False) == "human"
+
+    def test_human_fallback_when_verification_skipped(self):
+        # skipped verification + no remaining is not "clean" (clean requires passed)
+        assert _derive_outcome(0, "skipped", cap_reached=False) == "human"
 
 
 # ---------------------------------------------------------------------------

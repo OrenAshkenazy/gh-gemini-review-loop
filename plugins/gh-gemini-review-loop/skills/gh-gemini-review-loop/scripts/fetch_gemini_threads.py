@@ -423,6 +423,13 @@ def derive_record_fields(
 
 
 def _derive_outcome(remaining_actionable: int, verification: str, cap_reached: bool) -> str:
+    """Best-effort outcome when the agent does not pass --outcome explicitly.
+
+    Can only produce the outcomes inferable from script-visible state:
+    capped / verification_failed / clean / human. The remaining
+    metrics.VALID_OUTCOMES values (regression, no_progress) encode an agent
+    judgment the script cannot see, so the agent must pass them via --outcome.
+    """
     if cap_reached:
         return "capped"
     if verification == "failed":
