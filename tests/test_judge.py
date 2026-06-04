@@ -789,4 +789,5 @@ class TestProfiles:
         save_profile("o/a", source="confirmed", checks=[])
         save_profile("o/b", source="skipped")
         assert get_profile("o/a")["source"] == "confirmed"
+        assert get_profile("o/a")["checks"] == []
         assert get_profile("o/b")["source"] == "skipped"

@@ -290,7 +290,7 @@ def save_profile(
     if detected_stack is not None:
         profile["detected_stack"] = detected_stack
     if source != "skipped":
-        profile["checks"] = checks or []
+        profile["checks"] = checks if checks is not None else []
         profile["working_directory"] = working_directory
         profile["timeout_seconds"] = timeout_seconds
     profiles = dict(prefs.get("profiles", {}))
