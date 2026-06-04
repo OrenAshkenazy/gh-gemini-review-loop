@@ -98,7 +98,7 @@ class TestPreferences:
     def test_unknown_mode_in_file_falls_back_to_off(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         (tmp_path / "preferences.json").write_text(
-            json.dumps({"schema_version": 1, "judge_mode": "wat", "judge_model": "x"})
+            json.dumps({"schema_version": 2, "judge_mode": "wat", "judge_model": "x"})
         )
         prefs = load_preferences()
         assert prefs["judge_mode"] == "off"
@@ -174,7 +174,7 @@ class TestPreferences:
     def test_loads_saved_max_rereview_requests(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         (tmp_path / "preferences.json").write_text(
-            json.dumps({"schema_version": 1, "max_rereview_requests": 5})
+            json.dumps({"schema_version": 2, "max_rereview_requests": 5})
         )
         assert load_preferences()["max_rereview_requests"] == 5
 
@@ -182,21 +182,21 @@ class TestPreferences:
     def test_invalid_max_rereview_requests_falls_back(self, tmp_path, monkeypatch, value):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         (tmp_path / "preferences.json").write_text(
-            json.dumps({"schema_version": 1, "max_rereview_requests": value})
+            json.dumps({"schema_version": 2, "max_rereview_requests": value})
         )
         assert load_preferences()["max_rereview_requests"] == DEFAULT_MAX_REREVIEW_REQUESTS
 
     def test_string_max_rereview_requests_is_accepted(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         (tmp_path / "preferences.json").write_text(
-            json.dumps({"schema_version": 1, "max_rereview_requests": " 6 "})
+            json.dumps({"schema_version": 2, "max_rereview_requests": " 6 "})
         )
         assert load_preferences()["max_rereview_requests"] == 6
 
     def test_save_preserves_max_rereview_requests(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         (tmp_path / "preferences.json").write_text(
-            json.dumps({"schema_version": 1, "max_rereview_requests": 4})
+            json.dumps({"schema_version": 2, "max_rereview_requests": 4})
         )
         save_preferences("on_complete")
         assert load_preferences()["max_rereview_requests"] == 4
@@ -226,6 +226,22 @@ class TestPreferences:
             "schema_version": 2, "judge_mode": "off", "profiles": "garbage",
         }))
         assert load_preferences()["profiles"] == {}
+
+    def test_mark_tip_shown_preserves_profiles(self, tmp_path, monkeypatch):
+        """mark_tip_shown uses a mutate-and-write path; it must not clobber profiles."""
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        path = tmp_path / "preferences.json"
+        profiles_entry = {"o/r": {"source": "confirmed", "checks": []}}
+        path.write_text(json.dumps({
+            "schema_version": 2,
+            "judge_mode": "off",
+            "judge_tip_shown": False,
+            "profiles": profiles_entry,
+        }))
+        mark_tip_shown()
+        saved = json.loads(path.read_text())
+        assert saved["profiles"] == profiles_entry
+        assert saved["judge_tip_shown"] is True
 
 
 # ---------------------------------------------------------------------------
