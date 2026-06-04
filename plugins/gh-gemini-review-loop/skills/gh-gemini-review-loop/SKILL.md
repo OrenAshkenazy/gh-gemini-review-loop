@@ -163,6 +163,51 @@ Or edit the JSON directly:
 
 `gpt-4o-mini` ≈ $0.001 per finding. `on_complete` ≈ $0.005 max per PR. `on_cycle` worst case depends on the configured cap (default: ≈ $0.015 for 3 cycles × 5 findings).
 
+## Run Metrics
+
+After a loop completes, the script can append one JSON record to a local append-only log and print a one-screen summary.
+
+### What is stored and where
+
+Records are appended to `~/.config/gh-gemini-review-loop/runs.jsonl` (override the directory with `GGRL_STATE_DIR`). The file is append-only JSONL — one record per completed loop run. It is never transmitted anywhere.
+
+Each record holds counts only: findings fetched, fixed, needs-human, addressed-by-reply, cycles used, verification result, outcome, duration (seconds), finding areas/paths, and optionally a judge-derived breakdown (only when judge mode was on). The record also includes the repo and PR number so stats can be scoped per repo.
+
+**No identity is recorded** — no git author, no GitHub login, no username. The data cannot be sliced per developer and cannot become a productivity score.
+
+The run's start timestamp and per-finding accumulation reuse the same per-PR key in `state.json` (see [Sticky receipt](#sticky-receipt-background-visibility)) — no extra state file is needed. Judge-derived lines (e.g. false-positive counts) appear in the record and summary only when judge mode was on for that run.
+
+### `--record-run` (write once at loop end)
+
+Call exactly once after the loop reaches a terminal state:
+
+```bash
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+    --record-run \
+    --fixed-count <n> \
+    --verification <passed|failed|skipped>
+```
+
+Optional additions:
+
+- `--verification-details '<json>'` — structured test output
+- `--outcome <clean|capped|human|regression|no_progress|verification_failed>` — terminal state label
+- `--outcome-reason '<text>'` — one-line explanation
+
+The script fetches the current thread state, derives counts, appends the record, and prints a `[loop] Summary` block to stdout.
+
+### `--stats` (read-only)
+
+Print aggregated stats for the current repo from `runs.jsonl` and exit. Never touches GitHub.
+
+```bash
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --stats
+```
+
+Options: `--stats-window N` (default 10 most-recent runs), `--stats-all-repos`, `--format json`.
+
+Run metrics and `--stats` are local-only — stored under `~/.config/gh-gemini-review-loop/`, never posted to GitHub, and contain no identity.
+
 ## Progress Narration
 
 While the loop is running, the agent MUST emit one-line status updates to the user-facing chat at each phase transition. The format is `[loop] cycle N/<cap> — <phase>`. This is the cheapest user visibility — no code path, just instructions to the agent.
@@ -179,6 +224,7 @@ Required narration points:
 | After push, before re-review | `[loop] cycle N/<cap> — pushed. Requesting Gemini re-review (cycle N consumed).` |
 | Stop condition triggered | `[loop] STOP — <stop-condition>: <one-line explanation>.` |
 | Loop complete (all clean) | `[loop] DONE — 0 actionable threads remaining. Cycles used: N/<cap>.` |
+| Loop complete / stopped (after DONE/STOP) | `[loop] Summary` block (from `--record-run`) |
 
 Skip narration only when running in pure non-interactive batch mode (e.g. `gh pr create` chained into a script that captures output for later — but in Claude Code interactive sessions, never skip).
 
@@ -214,6 +260,9 @@ When the user phrases the request differently, dispatch to the right flag combin
 | **Change saved preference** | "change my eval preference" / "reset judge mode" | Show `AskUserQuestion` prompt; overwrite prefs file. |
 | **Default loop with saved judge mode** | (no special phrasing — agent reads saved prefs) | `--judge-phase cycle` per cycle; `--judge-phase complete` at final invocation. Script obeys saved mode. |
 | **History investigation** | "show me all Gemini threads ever, including resolved" | `--include-resolved --include-outdated --include-addressed-by-reply --no-resolve-outdated --no-resolve-addressed-by-reply` |
+| **Local stats** | "show Gemini loop stats" / "loop stats for this repo" / "how's the loop doing here" | `--stats` |
+
+Run metrics and `--stats` are local-only — stored under `~/.config/gh-gemini-review-loop/`, never posted to GitHub, and contain no identity.
 
 If the user explicitly opts out of any default behavior (e.g. "don't auto-resolve anything"), respect it for the rest of the session via `--no-resolve-outdated --no-resolve-addressed-by-reply`.
 
@@ -309,6 +358,9 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
     - Default comment:
       - `@gemini-code-assist please review the latest changes.`
     - If the repository uses a different Gemini trigger phrase, use the repo-specific phrase when known.
+   - After the loop reaches a terminal state, record the run exactly once:
+     `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --record-run --fixed-count <n> --verification <passed|failed|skipped> [--outcome <state>]`
+     then show the printed `[loop] Summary` block to the user.
 
 ## Script Usage
 

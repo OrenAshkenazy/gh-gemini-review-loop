@@ -22,6 +22,8 @@ from typing import Any
 # Under `/plugin install` both files live in the same scripts/ directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import metrics  # noqa: E402 — sibling module, pure/stdlib-only
+
 
 DEFAULT_AUTHOR = "gemini-code-assist"
 DEFAULT_REREVIEW_LIMIT = 3
@@ -107,6 +109,22 @@ def resolve_pr(value: str | None) -> PullRequest:
         return PullRequest(owner=owner, repo=repo, number=int(number))
 
     raise RuntimeError("Use a PR URL like https://github.com/OWNER/REPO/pull/123 or OWNER/REPO#123.")
+
+
+def select_stats_records(
+    records: list[dict[str, Any]], *, repo: str, window: int, all_repos: bool
+) -> list[dict[str, Any]]:
+    if not all_repos:
+        records = [r for r in records if r.get("repo") == repo]
+    return records[-window:] if window > 0 else records
+
+
+def resolve_current_repo() -> str:
+    """Return 'owner/repo' for the current dir without needing an open PR."""
+    view = run_gh(["repo", "view", "--json", "nameWithOwner"])
+    if not isinstance(view, dict) or "nameWithOwner" not in view:
+        raise RuntimeError("Could not resolve the current repo with gh repo view.")
+    return view["nameWithOwner"]
 
 
 QUERY = """
@@ -369,6 +387,58 @@ def severity_counts(threads: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def derive_record_fields(
+    *,
+    baseline_ids: set[str],
+    current_actionable_ids: set[str],
+    addressed_by_reply_ids: set[str],
+    outcome: str,
+    judge_ran: bool,
+    judge_results: dict[str, dict[str, Any]],
+) -> dict[str, int]:
+    """Compute the script-derived metric counts for a run record."""
+    findings_fetched = len(baseline_ids | current_actionable_ids)
+    observed_fixed_count = len(
+        baseline_ids - current_actionable_ids - addressed_by_reply_ids
+    )
+    remaining_actionable = len(current_actionable_ids)
+    addressed_by_reply = len(addressed_by_reply_ids)
+    if judge_ran:
+        needs_human = sum(
+            1
+            for r in judge_results.values()
+            if r.get("verdict") == "needs_human"
+        )
+    elif outcome == "human":
+        needs_human = remaining_actionable
+    else:
+        needs_human = 0
+    return {
+        "findings_fetched": findings_fetched,
+        "observed_fixed_count": observed_fixed_count,
+        "remaining_actionable": remaining_actionable,
+        "addressed_by_reply": addressed_by_reply,
+        "needs_human": needs_human,
+    }
+
+
+def _derive_outcome(remaining_actionable: int, verification: str, cap_reached: bool) -> str:
+    """Best-effort outcome when the agent does not pass --outcome explicitly.
+
+    Can only produce the outcomes inferable from script-visible state:
+    capped / verification_failed / clean / human. The remaining
+    metrics.VALID_OUTCOMES values (regression, no_progress) encode an agent
+    judgment the script cannot see, so the agent must pass them via --outcome.
+    """
+    if cap_reached:
+        return "capped"
+    if verification == "failed":
+        return "verification_failed"
+    if remaining_actionable == 0 and verification == "passed":
+        return "clean"
+    return "human"
+
+
 def pagination_warnings(pull_request: dict[str, Any]) -> list[str]:
     """Return human-readable warnings when any GraphQL page hit its limit.
 
@@ -607,6 +677,45 @@ def save_sticky_state(state: dict[str, Any]) -> None:
     path = sticky_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2, sort_keys=True))
+
+
+def update_run_tracking(pr: PullRequest, findings: list[tuple[str, str | None]]) -> None:
+    """Merge this invocation's findings into the run's tracking state.
+
+    ``findings`` is a list of (thread_id, path) pairs. Sets ``started_at`` on
+    the first call of a run; unions ids/paths on every call. Stored under the
+    existing ``owner/repo#number`` key so it rides alongside sticky state.
+    """
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key, {})
+    run = entry.get("run", {})
+    if "started_at" not in run:
+        run["started_at"] = _now_iso()
+    ids = set(run.get("finding_ids", []))
+    paths = set(run.get("finding_paths", []))
+    for thread_id, path in findings:
+        if thread_id:
+            ids.add(thread_id)
+        if path:
+            paths.add(path)
+    run["finding_ids"] = sorted(ids)
+    run["finding_paths"] = sorted(paths)
+    entry["run"] = run
+    state[key] = entry
+    save_sticky_state(state)
+
+
+def read_run_tracking(pr: PullRequest) -> dict[str, Any]:
+    return load_sticky_state().get(_state_key(pr), {}).get("run", {})
+
+
+def clear_run_tracking(pr: PullRequest) -> None:
+    state = load_sticky_state()
+    key = _state_key(pr)
+    if key in state and "run" in state[key]:
+        del state[key]["run"]
+        save_sticky_state(state)
 
 
 def _now_iso() -> str:
@@ -1068,7 +1177,73 @@ def main() -> int:
         default=None,
         help="Override the OpenAI model used by the judge for this invocation.",
     )
+    parser.add_argument(
+        "--record-run",
+        action="store_true",
+        help=(
+            "Write one run-metrics record to runs.jsonl and print the [loop] Summary. "
+            "Use once at loop end. Combine with --fixed-count and --verification."
+        ),
+    )
+    parser.add_argument("--fixed-count", type=int, default=0, help="Agent-claimed fixes this run.")
+    parser.add_argument(
+        "--verification",
+        choices=["passed", "failed", "skipped"],
+        default="skipped",
+        help="Result of the verification step this run.",
+    )
+    parser.add_argument(
+        "--verification-details",
+        default=None,
+        help="Optional JSON object with structured verification context.",
+    )
+    parser.add_argument(
+        "--outcome",
+        choices=list(metrics.VALID_OUTCOMES),
+        default=None,
+        help="Terminal outcome of the loop. If omitted, derived from state.",
+    )
+    parser.add_argument("--outcome-reason", default=None, help="One-line reason for --outcome.")
+    parser.add_argument(
+        "--stats",
+        action="store_true",
+        help="Print local Gemini-loop stats for this repo from runs.jsonl and exit.",
+    )
+    parser.add_argument(
+        "--stats-window",
+        type=int,
+        default=metrics.DEFAULT_WINDOW,
+        help=f"Number of most-recent runs to aggregate. Default: {metrics.DEFAULT_WINDOW}.",
+    )
+    parser.add_argument(
+        "--stats-all-repos",
+        action="store_true",
+        help="Aggregate across all repos instead of only the current one.",
+    )
     args = parser.parse_args()
+
+    if args.stats:
+        try:
+            if args.pr:
+                pr = resolve_pr(args.pr)
+                repo_full = f"{pr.owner}/{pr.repo}"
+            elif args.stats_all_repos:
+                repo_full = "(all repos)"
+            else:
+                repo_full = resolve_current_repo()
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        records, skipped = metrics.load_records()
+        selected = select_stats_records(
+            records, repo=repo_full, window=args.stats_window, all_repos=args.stats_all_repos
+        )
+        agg = metrics.aggregate(selected)
+        if args.format == "json":
+            print(json.dumps({"repo": repo_full, "stats": agg, "skipped": skipped}, indent=2, sort_keys=True))
+        else:
+            print(metrics.format_stats(repo_full, agg, skipped=skipped))
+        return 0
 
     try:
         prefs = load_preferences_with_fallback()
@@ -1145,6 +1320,11 @@ def main() -> int:
             include_addressed_by_reply=args.include_addressed_by_reply,
         )
         threads = sort_by_severity(threads)
+        if not args.record_run and not args.stats:
+            try:
+                update_run_tracking(pr, [(t["id"], t.get("path", "")) for t in threads])
+            except OSError as exc:
+                print(f"warning: could not update run tracking: {exc}", file=sys.stderr)
         if args.min_severity or args.drop_unknown_severity:
             before = len(threads)
             threads = filter_by_min_severity(
@@ -1249,6 +1429,68 @@ def main() -> int:
                 f"the configured loop cap is {args.max_rereview_requests}.",
                 file=sys.stderr,
             )
+        if args.record_run:
+            try:
+                update_run_tracking(pr, [(t["id"], t.get("path", "")) for t in threads])
+                run = read_run_tracking(pr)
+            except OSError as exc:
+                print(f"warning: could not update or read run tracking: {exc}", file=sys.stderr)
+                run = {}
+            baseline_ids = set(run.get("finding_ids", []))
+            finding_paths = run.get("finding_paths", [])
+            current_actionable_ids = {t["id"] for t in threads}
+            addressed_by_reply_ids = {
+                t["id"] for t in addressed_by_reply_threads(pull_request, args.author)
+            }
+            judge_ran = bool(judge_status.get("ran"))
+            cap_reached = len(rereviews) >= args.max_rereview_requests
+            outcome = args.outcome or _derive_outcome(
+                len(current_actionable_ids), args.verification, cap_reached
+            )
+            derived = derive_record_fields(
+                baseline_ids=baseline_ids,
+                current_actionable_ids=current_actionable_ids,
+                addressed_by_reply_ids=addressed_by_reply_ids,
+                outcome=outcome,
+                judge_ran=judge_ran,
+                judge_results=judge_results,
+            )
+            verification_details: dict[str, Any] = {}
+            if args.verification_details:
+                try:
+                    verification_details = json.loads(args.verification_details)
+                except json.JSONDecodeError:
+                    print(
+                        "warning: --verification-details is not valid JSON; storing {}.",
+                        file=sys.stderr,
+                    )
+            record = metrics.build_record(
+                repo=f"{pr.owner}/{pr.repo}",
+                pr=pr.number,
+                provider=args.author,
+                fixed_count=args.fixed_count,
+                cycles_used=len(rereviews),
+                cycle_cap=args.max_rereview_requests,
+                verification=args.verification,
+                verification_details=verification_details,
+                outcome=outcome,
+                outcome_reason=args.outcome_reason or f"outcome: {outcome}",
+                started_at=run.get("started_at"),
+                finding_paths=finding_paths,
+                judge=metrics.build_judge_block(judge_ran, judge_results),
+                **derived,
+            )
+            try:
+                metrics.append_record(record)
+            except OSError as exc:
+                print(f"warning: could not record run metrics: {exc}", file=sys.stderr)
+            else:
+                try:
+                    clear_run_tracking(pr)
+                except OSError as exc:
+                    print(f"warning: could not clear run tracking: {exc}", file=sys.stderr)
+            print(metrics.format_run_summary(record))
+            return 0
         if args.post_receipt or args.sticky_receipt:
             sticky = args.sticky_receipt
             status = args.receipt_status.upper() if args.receipt_status else (

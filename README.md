@@ -190,6 +190,40 @@ python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/judge_doctor.p
 
 See [SKILL.md -> Optional Judge Eval](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md) for the full flow and verdict schema.
 
+### Run metrics & local stats
+
+Every completed loop run prints a one-screen summary and appends a local record. The `--stats` flag aggregates those records per repo.
+
+**Per-run summary** (printed at loop end via `--record-run`):
+
+```
+[loop] Summary
+Findings fetched: 7
+Fixed: 4
+Needs human: 1
+Cycles used: 2/3
+Verification: passed
+Time to clean PR: 12m
+```
+
+**Aggregated stats** (via `--stats`):
+
+```
+Gemini loop stats — OrenAshkenazy/gh-gemini-review-loop
+Last 10 runs
+
+Average cycles used: 1.8
+Average time to clean PR: 9m
+Findings fixed: 32 of 41
+Human decisions needed: 6
+Addressed by reply: 9
+False positives avoided: 14   (across 6 of 10 judged runs)
+Most common provider: gemini-code-assist
+Most repeated finding area: tests
+```
+
+Metrics are local-only (`~/.config/gh-gemini-review-loop/runs.jsonl`), contain no identity (repo and PR number only), and are never transmitted. Judge-derived lines (e.g. "False positives avoided", "Ignored by judge") appear only when judge mode was on for those runs.
+
 ---
 
 ## Configuring the skill

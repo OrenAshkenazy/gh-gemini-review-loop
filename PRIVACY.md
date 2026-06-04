@@ -1,6 +1,6 @@
 # Privacy and Data Handling
 
-**Last updated: 2026-05-29**
+**Last updated: 2026-06-04**
 
 ## Summary
 
@@ -90,11 +90,16 @@ Known files:
 ```text
 ~/.config/gh-gemini-review-loop/preferences.json
 ~/.config/gh-gemini-review-loop/state.json
+~/.config/gh-gemini-review-loop/runs.jsonl
 ```
 
 `preferences.json` stores user preferences such as judge mode, judge model, and whether the one time judge eval tip was shown.
 
-`state.json` stores local sticky receipt state, such as pull request identifiers and GitHub comment IDs used to update an existing receipt comment instead of posting duplicate comments.
+`state.json` stores local sticky receipt state, such as pull request identifiers and GitHub comment IDs used to update an existing receipt comment instead of posting duplicate comments. It also holds per-run loop tracking (the run start timestamp and the set of finding identifiers seen during a run).
+
+`runs.jsonl` stores one append-only record per completed loop run: workflow counts (findings fetched, fixed, needs-human, addressed-by-reply, cycles used, verification result, outcome, duration), the repository name, and the pull request number. It contains no identity — no git author, GitHub login, or email — and is never transmitted. It exists solely to power the local run summary and the `--stats` command.
+
+The directory location is overridable with the `GGRL_STATE_DIR` environment variable.
 
 These files should not contain API keys, full source code, full PR diffs, or OpenAI responses.
 
@@ -104,7 +109,7 @@ This plugin does not include telemetry.
 
 It does not send analytics, usage events, crash reports, repository names, usernames, prompts, PR content, or command output to the plugin author.
 
-If workflow metrics are added in the future, they should be generated locally by default. Any remote export should require explicit user configuration.
+Workflow metrics (the per-run summary and the `--stats` aggregate) are generated and stored locally by default and are never exported. There is no remote export path; any future remote export would require explicit user configuration.
 
 ## User controls
 
@@ -114,10 +119,16 @@ To disable judge eval, set judge mode to off or remove the preferences file:
 rm ~/.config/gh-gemini-review-loop/preferences.json
 ```
 
-To remove local sticky receipt state:
+To remove local sticky receipt and run-tracking state:
 
 ```bash
 rm ~/.config/gh-gemini-review-loop/state.json
+```
+
+To remove locally stored run metrics:
+
+```bash
+rm ~/.config/gh-gemini-review-loop/runs.jsonl
 ```
 
 To remove all local plugin state:

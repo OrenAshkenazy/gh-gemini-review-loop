@@ -16,6 +16,9 @@ from fetch_gemini_threads import (
     STICKY_RECEIPT_MARKER,
     PullRequest,
     addressed_by_reply_threads,
+    _derive_outcome,
+    clear_run_tracking,
+    derive_record_fields,
     effective_rereview_limit,
     filter_by_min_severity,
     filter_threads,
@@ -25,14 +28,17 @@ from fetch_gemini_threads import (
     nonnegative_int,
     pagination_warnings,
     parse_pr_url,
+    read_run_tracking,
     render_receipt,
     rereview_requests,
     save_sticky_state,
+    select_stats_records,
     severity_counts,
     sort_by_severity,
     sticky_state_path,
     thread_fingerprint,
     thread_severity,
+    update_run_tracking,
 )
 
 
@@ -584,3 +590,118 @@ class TestStickyReceiptRender:
         )
         # Header line ends after "receipt" with no " — " suffix
         assert body.splitlines()[0] == "### gh-gemini-review-loop receipt"
+
+
+class TestRunTracking:
+    def _pr(self):
+        return PullRequest(owner="o", repo="r", number=1)
+
+    def test_first_update_sets_started_at_and_ids(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        update_run_tracking(self._pr(), [("t1", "a.py"), ("t2", "b.py")])
+        run = read_run_tracking(self._pr())
+        assert "started_at" in run
+        assert run["finding_ids"] == ["t1", "t2"]
+        assert run["finding_paths"] == ["a.py", "b.py"]
+
+    def test_second_update_unions_and_preserves_started_at(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")])
+        first_started = read_run_tracking(pr)["started_at"]
+        update_run_tracking(pr, [("t1", "a.py"), ("t2", "b.py")])
+        run = read_run_tracking(pr)
+        assert run["started_at"] == first_started
+        assert run["finding_ids"] == ["t1", "t2"]
+
+    def test_clear_removes_run_but_keeps_other_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        from fetch_gemini_threads import load_sticky_state, save_sticky_state, _state_key
+        save_sticky_state({_state_key(pr): {"commentId": 42}})
+        update_run_tracking(pr, [("t1", "a.py")])
+        clear_run_tracking(pr)
+        assert read_run_tracking(pr) == {}
+        assert load_sticky_state()[_state_key(pr)]["commentId"] == 42
+
+
+class TestDeriveRecordFields:
+    def test_observed_fixed_and_findings_and_needs_human(self):
+        # baseline saw t1,t2,t3,t4; now t1 still actionable, t2 addressed-by-reply,
+        # t3 & t4 gone (presumed fixed). judge off, outcome human.
+        fields = derive_record_fields(
+            baseline_ids={"t1", "t2", "t3", "t4"},
+            current_actionable_ids={"t1"},
+            addressed_by_reply_ids={"t2"},
+            outcome="human",
+            judge_ran=False,
+            judge_results={},
+        )
+        assert fields["findings_fetched"] == 4
+        assert fields["observed_fixed_count"] == 2          # t3, t4
+        assert fields["remaining_actionable"] == 1          # t1
+        assert fields["addressed_by_reply"] == 1            # t2
+        assert fields["needs_human"] == 1                   # outcome human -> remaining_actionable
+
+    def test_needs_human_from_judge_when_judge_ran(self):
+        fields = derive_record_fields(
+            baseline_ids={"t1"},
+            current_actionable_ids={"t1"},
+            addressed_by_reply_ids=set(),
+            outcome="clean",
+            judge_ran=True,
+            judge_results={"t1": {"verdict": "needs_human", "recommended_action": "escalate"}},
+        )
+        assert fields["needs_human"] == 1
+
+    def test_needs_human_zero_when_not_human_and_no_judge(self):
+        fields = derive_record_fields(
+            baseline_ids={"t1"},
+            current_actionable_ids=set(),
+            addressed_by_reply_ids=set(),
+            outcome="clean",
+            judge_ran=False,
+            judge_results={},
+        )
+        assert fields["needs_human"] == 0
+
+
+class TestDeriveOutcome:
+    def test_cap_reached_wins(self):
+        # cap_reached takes priority even if other conditions would apply
+        assert _derive_outcome(0, "passed", cap_reached=True) == "capped"
+
+    def test_verification_failed(self):
+        assert _derive_outcome(0, "failed", cap_reached=False) == "verification_failed"
+
+    def test_clean_when_no_remaining_and_passed(self):
+        assert _derive_outcome(0, "passed", cap_reached=False) == "clean"
+
+    def test_human_fallback_when_remaining(self):
+        assert _derive_outcome(2, "passed", cap_reached=False) == "human"
+
+    def test_human_fallback_when_verification_skipped(self):
+        # skipped verification + no remaining is not "clean" (clean requires passed)
+        assert _derive_outcome(0, "skipped", cap_reached=False) == "human"
+
+
+# ---------------------------------------------------------------------------
+# select_stats_records
+# ---------------------------------------------------------------------------
+
+class TestSelectStatsRecords:
+    def _rec(self, repo, pr):
+        return {"schema_version": 1, "repo": repo, "pr": pr}
+
+    def test_filters_to_repo_and_takes_window(self):
+        recs = [
+            self._rec("o/r", 1), self._rec("x/y", 2),
+            self._rec("o/r", 3), self._rec("o/r", 4),
+        ]
+        out = select_stats_records(recs, repo="o/r", window=2, all_repos=False)
+        assert [r["pr"] for r in out] == [3, 4]   # last 2 for o/r, file order
+
+    def test_all_repos_keeps_everything_in_window(self):
+        recs = [self._rec("o/r", 1), self._rec("x/y", 2), self._rec("o/r", 3)]
+        out = select_stats_records(recs, repo="o/r", window=2, all_repos=True)
+        assert [r["pr"] for r in out] == [2, 3]
