@@ -155,3 +155,87 @@ class TestFormatRunSummary:
         assert out[3] == "Ignored by judge: 3"   # false_positive+duplicate+already_addressed+explanation_only
         assert out[4] == "Needs human (judge): 1"
         assert out[5] == "Needs human: 1"
+
+
+class TestAggregate:
+    def _rec(self, **over):
+        base = dict(
+            schema_version=1, repo="o/r", pr=1, provider="gemini-code-assist",
+            findings_fetched=5, observed_fixed_count=4, needs_human=1,
+            addressed_by_reply=1, cycles_used=2, duration_seconds=600,
+            finding_areas=["tests"], judge={"enabled": False},
+        )
+        base.update(over)
+        return base
+
+    def test_empty_returns_count_zero(self):
+        assert metrics.aggregate([]) == {"count": 0}
+
+    def test_basic_aggregation(self):
+        recs = [
+            self._rec(cycles_used=2, duration_seconds=600, observed_fixed_count=4, findings_fetched=5),
+            self._rec(cycles_used=1, duration_seconds=1200, observed_fixed_count=3, findings_fetched=4),
+        ]
+        agg = metrics.aggregate(recs)
+        assert agg["count"] == 2
+        assert agg["avg_cycles"] == 1.5
+        assert agg["avg_duration"] == 900.0
+        assert agg["total_fixed"] == 7
+        assert agg["total_fetched"] == 9
+        assert agg["top_provider"] == "gemini-code-assist"
+        assert agg["top_area"] == "tests"
+
+    def test_duration_zero_excluded_from_average(self):
+        recs = [self._rec(duration_seconds=0), self._rec(duration_seconds=600)]
+        assert metrics.aggregate(recs)["avg_duration"] == 600.0
+
+    def test_false_positives_only_over_judged_runs(self):
+        judged = self._rec(judge={"enabled": True, "verdicts": {"false_positive": 3}})
+        unjudged = self._rec(judge={"enabled": False})
+        agg = metrics.aggregate([judged, unjudged])
+        assert agg["judged_count"] == 1
+        assert agg["false_positives_avoided"] == 3
+
+
+class TestFormatStats:
+    def test_empty_message(self):
+        out = metrics.format_stats("o/r", {"count": 0})
+        assert "No Gemini loop runs recorded yet" in out
+
+    def test_full_output_with_judge_footnote(self):
+        agg = {
+            "count": 10, "avg_cycles": 1.8, "avg_duration": 540.0,
+            "total_fixed": 32, "total_fetched": 41, "needs_human": 6,
+            "addressed_by_reply": 9, "judged_count": 6,
+            "false_positives_avoided": 14, "top_provider": "gemini-code-assist",
+            "top_area": "tests",
+        }
+        out = metrics.format_stats("OrenAshkenazy/gh-gemini-review-loop", agg)
+        assert "Last 10 runs" in out
+        assert "Average cycles used: 1.8" in out
+        assert "Average time to clean PR: 9m" in out
+        assert "Findings fixed: 32 of 41" in out
+        assert "False positives avoided: 14   (across 6 of 10 judged runs)" in out
+        assert "Most repeated finding area: tests" in out
+
+    def test_judge_line_omitted_when_no_judged_runs(self):
+        agg = {
+            "count": 2, "avg_cycles": 1.0, "avg_duration": None,
+            "total_fixed": 1, "total_fetched": 2, "needs_human": 0,
+            "addressed_by_reply": 0, "judged_count": 0,
+            "false_positives_avoided": 0, "top_provider": "gemini-code-assist",
+            "top_area": None,
+        }
+        out = metrics.format_stats("o/r", agg)
+        assert "False positives avoided" not in out
+        assert "Average time to clean PR" not in out  # avg_duration is None
+
+    def test_skipped_footnote(self):
+        agg = {
+            "count": 1, "avg_cycles": 1.0, "avg_duration": None,
+            "total_fixed": 0, "total_fetched": 0, "needs_human": 0,
+            "addressed_by_reply": 0, "judged_count": 0,
+            "false_positives_avoided": 0, "top_provider": None, "top_area": None,
+        }
+        out = metrics.format_stats("o/r", agg, skipped=2)
+        assert "(2 unreadable records skipped)" in out

@@ -151,6 +151,73 @@ def format_run_summary(record: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _mode(items: list[Any]) -> Any | None:
+    if not items:
+        return None
+    return Counter(items).most_common(1)[0][0]
+
+
+def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
+    n = len(records)
+    if n == 0:
+        return {"count": 0}
+    cycles = [r.get("cycles_used", 0) for r in records]
+    durations = [r["duration_seconds"] for r in records if r.get("duration_seconds")]
+    judged = [r for r in records if (r.get("judge") or {}).get("enabled")]
+    false_pos = sum(
+        (r["judge"].get("verdicts", {}) or {}).get("false_positive", 0) for r in judged
+    )
+    providers = [r.get("provider") for r in records if r.get("provider")]
+    areas = [a for r in records for a in (r.get("finding_areas") or [])]
+    return {
+        "count": n,
+        "avg_cycles": sum(cycles) / n,
+        "avg_duration": (sum(durations) / len(durations)) if durations else None,
+        "total_fetched": sum(r.get("findings_fetched", 0) for r in records),
+        "total_fixed": sum(r.get("observed_fixed_count", 0) for r in records),
+        "needs_human": sum(r.get("needs_human", 0) for r in records),
+        "addressed_by_reply": sum(r.get("addressed_by_reply", 0) for r in records),
+        "judged_count": len(judged),
+        "false_positives_avoided": false_pos,
+        "top_provider": _mode(providers),
+        "top_area": _mode(areas),
+    }
+
+
+def format_stats(repo: str, stats: dict[str, Any], skipped: int = 0) -> str:
+    if stats.get("count", 0) == 0:
+        msg = (
+            "No Gemini loop runs recorded yet for this repo. "
+            "Run the loop once and stats will appear here."
+        )
+        if skipped:
+            msg += f"\n\n({skipped} unreadable record{'s' if skipped != 1 else ''} skipped)"
+        return msg
+    lines = [f"Gemini loop stats — {repo}", f"Last {stats['count']} runs", ""]
+    lines.append(f"Average cycles used: {stats['avg_cycles']:.1f}")
+    if stats["avg_duration"] is not None:
+        lines.append(
+            f"Average time to clean PR: {format_duration(round(stats['avg_duration']))}"
+        )
+    lines.append(f"Findings fixed: {stats['total_fixed']} of {stats['total_fetched']}")
+    lines.append(f"Human decisions needed: {stats['needs_human']}")
+    if stats["addressed_by_reply"]:
+        lines.append(f"Addressed by reply: {stats['addressed_by_reply']}")
+    if stats["judged_count"] > 0:
+        lines.append(
+            f"False positives avoided: {stats['false_positives_avoided']}   "
+            f"(across {stats['judged_count']} of {stats['count']} judged runs)"
+        )
+    if stats["top_provider"]:
+        lines.append(f"Most common provider: {stats['top_provider']}")
+    if stats["top_area"]:
+        lines.append(f"Most repeated finding area: {stats['top_area']}")
+    out = "\n".join(lines)
+    if skipped:
+        out += f"\n\n({skipped} unreadable record{'s' if skipped != 1 else ''} skipped)"
+    return out
+
+
 def build_record(
     *,
     repo: str,
