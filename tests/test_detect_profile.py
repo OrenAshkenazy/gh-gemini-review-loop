@@ -64,3 +64,10 @@ def test_unknown_stack_low_confidence_no_checks(tmp_path):
     assert result["stack"] == "unknown"
     assert result["confidence"] == "low"
     assert result["candidate_checks"] == []
+
+
+def test_node_malformed_package_json_is_safe(tmp_path):
+    (tmp_path / "package.json").write_text("{ this is not valid json")
+    result = detect(tmp_path)
+    assert result["stack"] == "node"
+    assert result["candidate_checks"] == []
