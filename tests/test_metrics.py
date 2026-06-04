@@ -54,13 +54,12 @@ class TestPersistence:
     def test_load_returns_empty_on_oserror(self, tmp_path, monkeypatch):
         path = tmp_path / "runs.jsonl"
         path.write_text('{"schema_version": 1, "pr": 1}\n')
-        path.chmod(0o000)
-        try:
-            records, skipped = metrics.load_records(path)
-            assert records == []
-            assert skipped == 0
-        finally:
-            path.chmod(0o644)
+        def _raise(*a, **kw):
+            raise OSError("Permission denied")
+        monkeypatch.setattr(metrics.Path, "read_text", _raise)
+        records, skipped = metrics.load_records(path)
+        assert records == []
+        assert skipped == 0
 
 
 class TestBuildJudgeBlock:

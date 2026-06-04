@@ -1321,7 +1321,10 @@ def main() -> int:
         )
         threads = sort_by_severity(threads)
         if not args.record_run and not args.stats:
-            update_run_tracking(pr, [(t["id"], t.get("path", "")) for t in threads])
+            try:
+                update_run_tracking(pr, [(t["id"], t.get("path", "")) for t in threads])
+            except OSError as exc:
+                print(f"warning: could not update run tracking: {exc}", file=sys.stderr)
         if args.min_severity or args.drop_unknown_severity:
             before = len(threads)
             threads = filter_by_min_severity(
@@ -1427,10 +1430,12 @@ def main() -> int:
                 file=sys.stderr,
             )
         if args.record_run:
-            update_run_tracking(
-                pr, [(t["id"], t.get("path")) for t in threads]
-            )
-            run = read_run_tracking(pr)
+            try:
+                update_run_tracking(pr, [(t["id"], t.get("path", "")) for t in threads])
+                run = read_run_tracking(pr)
+            except OSError as exc:
+                print(f"warning: could not update or read run tracking: {exc}", file=sys.stderr)
+                run = {}
             baseline_ids = set(run.get("finding_ids", []))
             finding_paths = run.get("finding_paths", [])
             current_actionable_ids = {t["id"] for t in threads}
@@ -1480,7 +1485,10 @@ def main() -> int:
             except OSError as exc:
                 print(f"warning: could not record run metrics: {exc}", file=sys.stderr)
             else:
-                clear_run_tracking(pr)
+                try:
+                    clear_run_tracking(pr)
+                except OSError as exc:
+                    print(f"warning: could not clear run tracking: {exc}", file=sys.stderr)
             print(metrics.format_run_summary(record))
             return 0
         if args.post_receipt or args.sticky_receipt:
