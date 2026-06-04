@@ -3,7 +3,11 @@
 ## Test runner
 
 ```bash
+# If installed via Homebrew on Apple Silicon:
 /opt/homebrew/bin/pytest
+
+# Or run pytest from a virtual environment:
+pytest
 ```
 
 `python3 -m pytest` does not work — pytest is not on the bare Python path.
