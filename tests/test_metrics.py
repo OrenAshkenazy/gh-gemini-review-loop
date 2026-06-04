@@ -11,6 +11,12 @@ class TestHelpers:
         assert metrics.top_dir("src/auth/login.py") == "src"
         assert metrics.top_dir("") == "(unknown)"
 
+    def test_runs_log_path_default(self, monkeypatch):
+        monkeypatch.delenv("GGRL_STATE_DIR", raising=False)
+        result = metrics.runs_log_path()
+        assert result.name == "runs.jsonl"
+        assert "gh-gemini-review-loop" in str(result)
+
     def test_format_duration(self):
         assert metrics.format_duration(48) == "48s"
         assert metrics.format_duration(720) == "12m"

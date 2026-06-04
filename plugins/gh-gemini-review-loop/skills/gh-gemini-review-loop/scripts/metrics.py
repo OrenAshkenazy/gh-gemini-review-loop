@@ -51,6 +51,7 @@ def now_iso() -> str:
 
 
 def top_dir(path: str) -> str:
+    """First path segment of a repo-relative path, or '(unknown)' if empty."""
     if not path:
         return "(unknown)"
     parts = Path(path).parts
