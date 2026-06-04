@@ -101,7 +101,7 @@ def load_records(path: Path | None = None) -> tuple[list[dict[str, Any]], int]:
     return records, skipped
 
 
-def build_judge_block(judge_ran: bool, judge_results: dict) -> dict:
+def build_judge_block(judge_ran: bool, judge_results: dict[str, Any]) -> dict[str, Any]:
     if not judge_ran:
         return {"enabled": False}
     verdicts = {v: 0 for v in JUDGE_VERDICTS}
@@ -139,14 +139,14 @@ def build_record(
     cycles_used: int,
     cycle_cap: int,
     verification: str,
-    verification_details: Any,
+    verification_details: dict[str, Any] | None,
     outcome: str,
     outcome_reason: str,
-    started_at: Any,
-    finding_paths: list,
-    judge: Any,
-    ts: Any = None,
-) -> dict:
+    started_at: str | None,
+    finding_paths: list[str],
+    judge: dict[str, Any] | None,
+    ts: str | None = None,
+) -> dict[str, Any]:
     ts = ts or now_iso()
     if not started_at:
         started_at = ts
