@@ -193,21 +193,22 @@ def check_settings_json() -> bool:
     if not isinstance(injected, str):
         _warn(
             f"settings.json sets non-string OPENAI_API_KEY "
-            f"(type={type(injected).__name__}) — has no effect on the resolver",
-            "The resolver reads the dotfile, not env vars. Remove the line or fix the type.",
+            f"(type={type(injected).__name__})",
+            "OPENAI_API_KEY must be a string. Remove the line or fix the type.",
         )
         return True
     if looks_like_placeholder_key(injected):
         preview = injected[:12] + "..." if len(injected) > 12 else injected
         _warn(
-            f"settings.json sets placeholder OPENAI_API_KEY ({preview!r}) — has no effect on the resolver",
-            "The resolver reads the dotfile, not env vars. "
+            f"settings.json sets placeholder OPENAI_API_KEY ({preview!r})",
+            "This is used as a last-resort fallback and will fail validation. "
             "Remove the line or run: python3 key_resolver.py --set",
         )
         return True
     _warn(
-        "settings.json sets OPENAI_API_KEY — has no effect on the resolver",
-        "The resolver reads the dotfile, not env vars. You can remove this line.",
+        "settings.json sets OPENAI_API_KEY",
+        "This is used as a last-resort fallback. For better security, store the "
+        "key in the dotfile or OS keystore: python3 key_resolver.py --set",
     )
     return True
 
