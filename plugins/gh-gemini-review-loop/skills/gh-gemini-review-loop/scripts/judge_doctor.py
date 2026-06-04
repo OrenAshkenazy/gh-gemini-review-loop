@@ -205,11 +205,20 @@ def check_settings_json() -> bool:
             "Remove the line or run: python3 key_resolver.py --set",
         )
         return True
-    _warn(
-        "settings.json sets OPENAI_API_KEY",
-        "This is used as a last-resort fallback. For better security, store the "
-        "key in the dotfile or OS keystore: python3 key_resolver.py --set",
-    )
+    _, resolved_source = resolve_api_key()
+    if resolved_source in ("dotenv", "macos_keychain", "linux_secret_service"):
+        _warn(
+            "settings.json sets OPENAI_API_KEY",
+            f"Your active key is already in {resolved_source!r} — this entry is "
+            "shadowed and has no effect. You can safely remove the 'OPENAI_API_KEY' "
+            "line from ~/.claude/settings.json.",
+        )
+    else:
+        _warn(
+            "settings.json sets OPENAI_API_KEY",
+            "This is used as a last-resort fallback. For better security, store the "
+            "key in the dotfile or OS keystore: python3 key_resolver.py --set",
+        )
     return True
 
 
