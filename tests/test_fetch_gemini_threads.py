@@ -17,6 +17,7 @@ from fetch_gemini_threads import (
     PullRequest,
     addressed_by_reply_threads,
     clear_run_tracking,
+    derive_record_fields,
     effective_rereview_limit,
     filter_by_min_severity,
     filter_threads,
@@ -620,3 +621,44 @@ class TestRunTracking:
         clear_run_tracking(pr)
         assert read_run_tracking(pr) == {}
         assert load_sticky_state()[_state_key(pr)]["commentId"] == 42
+
+
+class TestDeriveRecordFields:
+    def test_observed_fixed_and_findings_and_needs_human(self):
+        # baseline saw t1,t2,t3,t4; now t1 still actionable, t2 addressed-by-reply,
+        # t3 & t4 gone (presumed fixed). judge off, outcome human.
+        fields = derive_record_fields(
+            baseline_ids={"t1", "t2", "t3", "t4"},
+            current_actionable_ids={"t1"},
+            addressed_by_reply_ids={"t2"},
+            outcome="human",
+            judge_ran=False,
+            judge_results={},
+        )
+        assert fields["findings_fetched"] == 4
+        assert fields["observed_fixed_count"] == 2          # t3, t4
+        assert fields["remaining_actionable"] == 1          # t1
+        assert fields["addressed_by_reply"] == 1            # t2
+        assert fields["needs_human"] == 1                   # outcome human -> remaining_actionable
+
+    def test_needs_human_from_judge_when_judge_ran(self):
+        fields = derive_record_fields(
+            baseline_ids={"t1"},
+            current_actionable_ids={"t1"},
+            addressed_by_reply_ids=set(),
+            outcome="clean",
+            judge_ran=True,
+            judge_results={"t1": {"verdict": "needs_human", "recommended_action": "escalate"}},
+        )
+        assert fields["needs_human"] == 1
+
+    def test_needs_human_zero_when_not_human_and_no_judge(self):
+        fields = derive_record_fields(
+            baseline_ids={"t1"},
+            current_actionable_ids=set(),
+            addressed_by_reply_ids=set(),
+            outcome="clean",
+            judge_ran=False,
+            judge_results={},
+        )
+        assert fields["needs_human"] == 0
