@@ -24,16 +24,16 @@ import judge_doctor  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _isolate_key_resolver(monkeypatch, tmp_path):
-    """Force the tiered resolver to read only the env var for every test.
+    """Isolate every test from the developer's real key sources.
 
-    Without this, a developer machine with a real key in macOS Keychain
-    would silently override ``monkeypatch.delenv("OPENAI_API_KEY")`` calls
-    and flip exit codes. We pin GGRL_STATE_DIR to a temp dotfile location
-    and stub the keystore readers so tests are host-independent.
+    Pins GGRL_STATE_DIR to a fresh tmp dir (no dotfile), stubs OS keystores,
+    and clears the env var so tests control exactly what the resolver sees.
+    Tests that need a key write one themselves (dotfile or env var).
     """
     import key_resolver  # noqa: PLC0415
 
     monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setitem(key_resolver._READERS, "macos_keychain", lambda: None)
     monkeypatch.setitem(key_resolver._READERS, "linux_secret_service", lambda: None)
 
@@ -53,30 +53,25 @@ def _green_non_key_checks(monkeypatch):
 class TestExitCodes:
     """Doctor must return 0 only when every gating check passes."""
 
-    def test_missing_key_returns_nonzero(self, monkeypatch, capsys):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    def test_missing_key_returns_nonzero(self, capsys):
         rc = judge_doctor.main([])
         assert rc == 1
         out = capsys.readouterr().out
         assert "OPENAI_API_KEY" in out
         assert "no OpenAI key" in out
 
-    def test_placeholder_key_returns_nonzero(self, monkeypatch, capsys):
-        monkeypatch.setenv("OPENAI_API_KEY", "REPLACE_WITH_YOUR_KEY")
+    def test_placeholder_key_returns_nonzero(self, tmp_path, capsys):
+        (tmp_path / ".env").write_text('OPENAI_API_KEY="REPLACE_WITH_YOUR_KEY"\n', encoding="utf-8")
         rc = judge_doctor.main([])
         assert rc == 1
         out = capsys.readouterr().out
         assert "placeholder" in out.lower()
 
-    def test_real_looking_key_passes_key_check(self, monkeypatch, capsys):
-        # If the env is otherwise healthy a plausible key shape must NOT
-        # cause the key check to fail. (Other checks like gh CLI may still
-        # warn, but warn-only checks don't flip the exit code.)
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-" + "a" * 48)
+    def test_real_looking_key_passes_key_check(self, tmp_path, capsys):
+        # A well-formed key in the dotfile must show "well-formed", never "placeholder".
+        # GGRL_STATE_DIR is already pinned to tmp_path by the autouse fixture.
+        (tmp_path / ".env").write_text(f'OPENAI_API_KEY="sk-{"a" * 48}"\n', encoding="utf-8")
         rc = judge_doctor.main([])
-        # rc could be 0 or 1 depending on the host (settings.json on dev
-        # machines, etc.) — but the [3/5] OPENAI_API_KEY section must show
-        # the well-formed marker, never the placeholder one.
         out = capsys.readouterr().out
         section = out.split("[3/5]")[1].split("[4/5]")[0]
         assert "placeholder" not in section.lower()
@@ -88,12 +83,12 @@ class TestExitCodes:
 class TestProbeFlag:
     """``--probe`` is the only path that touches the network."""
 
-    def test_no_probe_makes_no_network_call(self, monkeypatch, capsys):
+    def test_no_probe_makes_no_network_call(self, tmp_path, monkeypatch, capsys):
         # Even with everything green, the default invocation must NOT call
         # the network. We assert this by sabotaging JudgeClient.judge —
         # if anything tried to call it during a no-probe run, the test
         # would crash.
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-" + "a" * 48)
+        (tmp_path / ".env").write_text(f'OPENAI_API_KEY="sk-{"a" * 48}"\n', encoding="utf-8")
 
         def _explode(*_args, **_kwargs):
             raise AssertionError("judge() must NOT be called without --probe")
@@ -103,8 +98,8 @@ class TestProbeFlag:
         judge_doctor.main([])
         capsys.readouterr()  # drain stdout so it doesn't pollute output
 
-    def test_probe_invokes_judge_when_checks_pass(self, monkeypatch, capsys):
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-" + "a" * 48)
+    def test_probe_invokes_judge_when_checks_pass(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / ".env").write_text(f'OPENAI_API_KEY="sk-{"a" * 48}"\n', encoding="utf-8")
         called = {"n": 0}
 
         def _fake_probe(model="x"):
@@ -123,7 +118,6 @@ class TestProbeFlag:
             assert called["n"] == 0
 
     def test_probe_skipped_when_gating_check_fails(self, monkeypatch, capsys):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         called = {"n": 0}
 
         def _fake_probe(model="x"):
@@ -139,10 +133,10 @@ class TestProbeFlag:
 
 @pytest.mark.usefixtures("_green_non_key_checks")
 class TestColorOutput:
-    def test_no_color_when_not_a_tty(self, monkeypatch, capsys):
+    def test_no_color_when_not_a_tty(self, tmp_path, capsys):
         # capsys captures a non-tty stream, so the doctor should emit no
         # ANSI escapes — keeps log files / CI output readable.
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-" + "a" * 48)
+        (tmp_path / ".env").write_text(f'OPENAI_API_KEY="sk-{"a" * 48}"\n', encoding="utf-8")
         judge_doctor.main([])
         out = capsys.readouterr().out
         assert "\033[" not in out
@@ -171,12 +165,14 @@ class TestSettingsJsonTypeCheck:
         settings.parent.mkdir(parents=True)
         settings.write_text('{"env": {"OPENAI_API_KEY": true}}')
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-" + "a" * 48)
+        (tmp_path / ".env").write_text(f'OPENAI_API_KEY="sk-{"a" * 48}"\n', encoding="utf-8")
         rc = judge_doctor.main([])
         out = capsys.readouterr().out
         assert "non-string" in out
         assert "type=bool" in out
-        assert rc == 1
+        # Since the resolver no longer reads env vars, a non-string key in
+        # settings.json is harmless — the doctor warns but does not fail.
+        assert rc == 0
 
 
 class TestNetworkReachability:

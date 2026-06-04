@@ -40,18 +40,23 @@ class TestResolutionPrecedence:
     def test_missing_when_no_source(self):
         assert key_resolver.resolve_api_key() == (None, "missing")
 
-    def test_env_wins(self, monkeypatch):
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
-        assert key_resolver.resolve_api_key() == ("sk-env", "env")
-
-    def test_dotenv_when_env_absent(self, tmp_path):
+    def test_dotenv_is_first_source(self, tmp_path):
         (tmp_path / ".env").write_text('OPENAI_API_KEY="sk-dot"\n', encoding="utf-8")
         assert key_resolver.resolve_api_key() == ("sk-dot", "dotenv")
 
-    def test_env_beats_dotenv(self, monkeypatch, tmp_path):
+    def test_env_var_is_last_resort(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+        assert key_resolver.resolve_api_key() == ("sk-env", "env")
+
+    def test_dotenv_beats_env(self, monkeypatch, tmp_path):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
         (tmp_path / ".env").write_text("OPENAI_API_KEY=sk-dot\n", encoding="utf-8")
-        assert key_resolver.resolve_api_key()[0] == "sk-env"
+        assert key_resolver.resolve_api_key() == ("sk-dot", "dotenv")
+
+    def test_dotenv_beats_keychain(self, monkeypatch, tmp_path):
+        (tmp_path / ".env").write_text("OPENAI_API_KEY=sk-dot\n", encoding="utf-8")
+        monkeypatch.setitem(key_resolver._READERS, "macos_keychain", lambda: "sk-kc")
+        assert key_resolver.resolve_api_key() == ("sk-dot", "dotenv")
 
     def test_keychain_when_others_absent(self, monkeypatch):
         monkeypatch.setitem(key_resolver._READERS, "macos_keychain", lambda: "sk-kc")
@@ -214,13 +219,21 @@ class TestCLI:
         assert rc == 1
         assert "source: missing" in out
 
+    def test_print_source_dotenv_returns_0(self, tmp_path, capsys):
+        (tmp_path / ".env").write_text('OPENAI_API_KEY="sk-cli-dot-abcdef"\n', encoding="utf-8")
+        rc = key_resolver._main(["--print-source"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "source: dotenv" in out
+        # Redacted, never raw.
+        assert "sk-cli-dot-abcdef" not in out
+
     def test_print_source_env_returns_0(self, monkeypatch, capsys):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-cli-env-abcdef")
         rc = key_resolver._main(["--print-source"])
         out = capsys.readouterr().out
         assert rc == 0
         assert "source: env" in out
-        # Redacted, never raw.
         assert "sk-cli-env-abcdef" not in out
 
     def test_set_from_stdin(self, monkeypatch, capsys, tmp_path):
