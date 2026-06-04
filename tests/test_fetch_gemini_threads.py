@@ -31,6 +31,7 @@ from fetch_gemini_threads import (
     render_receipt,
     rereview_requests,
     save_sticky_state,
+    select_stats_records,
     severity_counts,
     sort_by_severity,
     sticky_state_path,
@@ -662,3 +663,25 @@ class TestDeriveRecordFields:
             judge_results={},
         )
         assert fields["needs_human"] == 0
+
+
+# ---------------------------------------------------------------------------
+# select_stats_records
+# ---------------------------------------------------------------------------
+
+class TestSelectStatsRecords:
+    def _rec(self, repo, pr):
+        return {"schema_version": 1, "repo": repo, "pr": pr}
+
+    def test_filters_to_repo_and_takes_window(self):
+        recs = [
+            self._rec("o/r", 1), self._rec("x/y", 2),
+            self._rec("o/r", 3), self._rec("o/r", 4),
+        ]
+        out = select_stats_records(recs, repo="o/r", window=2, all_repos=False)
+        assert [r["pr"] for r in out] == [3, 4]   # last 2 for o/r, file order
+
+    def test_all_repos_keeps_everything_in_window(self):
+        recs = [self._rec("o/r", 1), self._rec("x/y", 2), self._rec("o/r", 3)]
+        out = select_stats_records(recs, repo="o/r", window=2, all_repos=True)
+        assert [r["pr"] for r in out] == [2, 3]

@@ -111,6 +111,22 @@ def resolve_pr(value: str | None) -> PullRequest:
     raise RuntimeError("Use a PR URL like https://github.com/OWNER/REPO/pull/123 or OWNER/REPO#123.")
 
 
+def select_stats_records(
+    records: list[dict[str, Any]], *, repo: str, window: int, all_repos: bool
+) -> list[dict[str, Any]]:
+    if not all_repos:
+        records = [r for r in records if r.get("repo") == repo]
+    return records[-window:] if window > 0 else records
+
+
+def resolve_current_repo() -> str:
+    """Return 'owner/repo' for the current dir without needing an open PR."""
+    view = run_gh(["repo", "view", "--json", "nameWithOwner"])
+    if not isinstance(view, dict) or "nameWithOwner" not in view:
+        raise RuntimeError("Could not resolve the current repo with gh repo view.")
+    return view["nameWithOwner"]
+
+
 QUERY = """
 query($owner:String!, $repo:String!, $number:Int!) {
   repository(owner:$owner, name:$repo) {
@@ -1198,6 +1214,29 @@ def main() -> int:
         help="Aggregate across all repos instead of only the current one.",
     )
     args = parser.parse_args()
+
+    if args.stats:
+        try:
+            if args.pr:
+                pr = resolve_pr(args.pr)
+                repo_full = f"{pr.owner}/{pr.repo}"
+            elif args.stats_all_repos:
+                repo_full = "(all repos)"
+            else:
+                repo_full = resolve_current_repo()
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        records, skipped = metrics.load_records()
+        selected = select_stats_records(
+            records, repo=repo_full, window=args.stats_window, all_repos=args.stats_all_repos
+        )
+        agg = metrics.aggregate(selected)
+        if args.format == "json":
+            print(json.dumps({"repo": repo_full, "stats": agg, "skipped": skipped}, indent=2, sort_keys=True))
+        else:
+            print(metrics.format_stats(repo_full, agg, skipped=skipped))
+        return 0
 
     try:
         prefs = load_preferences_with_fallback()
