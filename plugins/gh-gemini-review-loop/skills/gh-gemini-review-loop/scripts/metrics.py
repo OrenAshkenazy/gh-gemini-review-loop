@@ -81,11 +81,15 @@ def load_records(path: Path | None = None) -> tuple[list[dict[str, Any]], int]:
     """Return (records, skipped). Skips blank lines silently; counts corrupt
     lines and records whose schema_version this code does not understand."""
     path = path or runs_log_path()
-    if not path.exists():
+    try:
+        if not path.exists():
+            return [], 0
+        content = path.read_text(encoding="utf-8")
+    except OSError:
         return [], 0
     records: list[dict[str, Any]] = []
     skipped = 0
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in content.splitlines():
         line = line.strip()
         if not line:
             continue

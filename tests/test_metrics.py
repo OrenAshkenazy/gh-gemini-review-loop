@@ -51,6 +51,17 @@ class TestPersistence:
         assert [r["pr"] for r in records] == [1, 3]
         assert skipped == 2  # corrupt line + future version; blank line ignored
 
+    def test_load_returns_empty_on_oserror(self, tmp_path, monkeypatch):
+        path = tmp_path / "runs.jsonl"
+        path.write_text('{"schema_version": 1, "pr": 1}\n')
+        path.chmod(0o000)
+        try:
+            records, skipped = metrics.load_records(path)
+            assert records == []
+            assert skipped == 0
+        finally:
+            path.chmod(0o644)
+
 
 class TestBuildJudgeBlock:
     def test_disabled_when_not_run(self):

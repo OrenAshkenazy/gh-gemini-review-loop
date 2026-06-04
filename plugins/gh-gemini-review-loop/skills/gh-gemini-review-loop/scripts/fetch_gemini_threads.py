@@ -1320,6 +1320,8 @@ def main() -> int:
             include_addressed_by_reply=args.include_addressed_by_reply,
         )
         threads = sort_by_severity(threads)
+        if not args.record_run and not args.stats:
+            update_run_tracking(pr, [(t["id"], t.get("path", "")) for t in threads])
         if args.min_severity or args.drop_unknown_severity:
             before = len(threads)
             threads = filter_by_min_severity(
