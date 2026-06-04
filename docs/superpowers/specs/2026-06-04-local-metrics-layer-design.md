@@ -28,7 +28,8 @@ modules beside `fetch_gemini_threads.py`).
 - **`fetch_gemini_threads.py`** is the single CLI entry point. Two new flags:
   - `--record-run --fixed-count <n> --verification <passed|failed|skipped>` — does a final
     fetch (current thread state), computes derived fields, folds in the agent-supplied
-    facts, appends the record, prints the summary.
+    facts, appends the record, prints the summary. Optional `--verification-details '<json>'`
+    carries the structured verification context.
   - `--stats` (+ `--stats-window N`, `--stats-all-repos`, `--format json`) — read-only
     aggregate for the current repo.
 - The agent supplies only the two facts it alone knows (`fixed_count`, `verification`).
@@ -51,14 +52,16 @@ line never poisons the file and appends need no rewrite.
   "provider": "gemini-code-assist",
   "findings_fetched": 7,
   "fixed_count": 4,
-  "fixed_observed": 4,
+  "observed_fixed_count": 4,
   "remaining_actionable": 1,
   "needs_human": 1,
   "addressed_by_reply": 2,
   "cycles_used": 2,
   "cycle_cap": 3,
   "verification": "passed",
+  "verification_details": {},
   "outcome": "clean",
+  "outcome_reason": "0 actionable threads remaining",
   "started_at": "2026-06-04T18:10:11Z",
   "duration_seconds": 720,
   "finding_areas": ["tests", "src"],
@@ -84,26 +87,33 @@ Judge block when judge mode ran:
 
 - `findings_fetched` — distinct actionable threads seen during the run.
 - `fixed_count` — agent-claimed fixes.
-- `fixed_observed` — derived from threads that went UNRESOLVED→RESOLVED/OUTDATED this run.
-  Stored alongside the claim so the headline KPI stays honest; Feature 1 displays the claim,
-  Feature 2 uses the observed value for its denominators.
+- `observed_fixed_count` — derived from threads that went UNRESOLVED→RESOLVED/OUTDATED this
+  run. Stored alongside the claim so the headline KPI stays honest; Feature 1 displays the
+  claim, Feature 2 uses the observed value for its denominators.
 - `remaining_actionable` — unresolved findings still potentially fixable at loop end.
 - `needs_human` — unresolved threads that should **not** be auto-fixed because they need
   product/design/security/maintainer judgment. **Pending** decisions only.
 - `addressed_by_reply` — threads where a maintainer already replied with a substantive
   decision/explanation. A human **already decided** — distinct from `needs_human`.
+- `verification` — `passed | failed | skipped`, agent-supplied.
+- `verification_details` — optional agent-supplied object with structured context about the
+  verification step (e.g. `{ "command": "pytest", "passed": 42, "failed": 0 }`). Empty `{}`
+  when the agent has nothing structured to add. Free-form; not aggregated in v1.
 - `outcome` ∈ `clean | capped | human | regression | no_progress | verification_failed`.
   `verification_failed` is separate from `regression` (env failure, missing dep, flaky test,
   or no verification command available is not a regression).
+- `outcome_reason` — one-line human-readable explanation of the terminal `outcome`, derived
+  by the script from the stop condition (e.g. `"1 finding requires human decision"`).
 - `judge` — `{ "enabled": false }` when off; full verdict/action breakdown when on.
 
 **Field ownership.**
 
 - *Script already has:* repo, pr, provider, cycles_used, cycle_cap, judge.*, started_at, ts,
   duration_seconds.
-- *Agent supplies:* `fixed_count`, `verification`.
-- *Derived by script at record time:* findings_fetched, fixed_observed, remaining_actionable,
-  needs_human, addressed_by_reply, finding_areas, finding_paths, outcome.
+- *Agent supplies:* `fixed_count`, `verification`, `verification_details`.
+- *Derived by script at record time:* findings_fetched, observed_fixed_count,
+  remaining_actionable, needs_human, addressed_by_reply, finding_areas, finding_paths,
+  outcome, outcome_reason.
 
 **Cross-cycle start timestamp.** On the first fetch of a run, the script writes
 `loop_started_at` into `state.json` under the existing `owner/repo#number` key. At record
@@ -179,7 +189,8 @@ Most repeated finding area: tests
 - Average cycles → mean of `cycles_used`.
 - Average time → mean `duration_seconds`; runs with `duration_seconds: 0` excluded from the
   average; formatted compact.
-- Findings fixed: X of Y → Σ`fixed_observed` of Σ`findings_fetched` (observed denominator).
+- Findings fixed: X of Y → Σ`observed_fixed_count` of Σ`findings_fetched` (observed
+  denominator).
 - Human decisions needed → Σ top-level `needs_human`.
 - Addressed by reply → Σ`addressed_by_reply`.
 - False positives avoided → Σ`judge.verdicts.false_positive`, **only over runs where
@@ -232,8 +243,9 @@ versions, skips future versions (counted footnote). Aggregation reads fields def
 Matches the existing pytest layout under `tests/`.
 
 - **`metrics.py` unit tests (bulk, no network):**
-  - `record_run`: schema shape, derived fields, judge-on vs judge-off block, `fixed_observed`
-    from transitions, missing-`started_at` fallback, all six `outcome` values.
+  - `record_run`: schema shape, derived fields, judge-on vs judge-off block,
+    `observed_fixed_count` from transitions, missing-`started_at` fallback, all six `outcome`
+    values + matching `outcome_reason`, `verification_details` passthrough.
   - `format_run_summary`: judge-off omits judge lines; `addressed_by_reply: 0` omits line;
     duration formatting (`48s` / `12m` / `1h 4m`).
   - `aggregate` / `format_stats`: averages, `X of Y` fixed, false-positives-only-over-judged
