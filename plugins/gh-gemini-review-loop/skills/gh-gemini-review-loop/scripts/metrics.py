@@ -67,3 +67,35 @@ def format_duration(seconds: int) -> str:
     if hours:
         return f"{hours}h {minutes}m"
     return f"{minutes}m"
+
+
+def append_record(record: dict[str, Any], path: Path | None = None) -> None:
+    """Append one record as a JSON line. Caller wraps for failure isolation."""
+    path = path or runs_log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def load_records(path: Path | None = None) -> tuple[list[dict[str, Any]], int]:
+    """Return (records, skipped). Skips blank lines silently; counts corrupt
+    lines and records whose schema_version this code does not understand."""
+    path = path or runs_log_path()
+    if not path.exists():
+        return [], 0
+    records: list[dict[str, Any]] = []
+    skipped = 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            skipped += 1
+            continue
+        if not isinstance(rec, dict) or rec.get("schema_version") != RECORD_SCHEMA_VERSION:
+            skipped += 1
+            continue
+        records.append(rec)
+    return records, skipped
