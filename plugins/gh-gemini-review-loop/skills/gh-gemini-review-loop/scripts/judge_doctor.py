@@ -144,9 +144,7 @@ def check_api_key() -> tuple[bool, str | None]:
             "Store one with: python3 "
             f"{SCRIPT_DIR / 'key_resolver.py'} --set\n"
             f"    Resolver checks, in order: dotfile {dotenv_path()}, "
-            "macOS Keychain, Linux secret-tool.\n"
-            "    Note: OPENAI_API_KEY env var is intentionally ignored — "
-            "use --set to store your key.",
+            "macOS Keychain, Linux secret-tool, env var OPENAI_API_KEY.",
         )
         return False, None
     if looks_like_placeholder_key(key):
@@ -165,9 +163,9 @@ def check_api_key() -> tuple[bool, str | None]:
 def check_settings_json() -> bool:
     """Note if ~/.claude/settings.json injects OPENAI_API_KEY.
 
-    The resolver no longer reads OPENAI_API_KEY from the environment, so an
-    env-block injection is harmless for key resolution. We still warn when a
-    placeholder is present so the user knows it won't do anything useful.
+    The env var is now the last-resort fallback (after dotfile / OS keystores),
+    so an env-block injection is harmless for local users but could interfere
+    with CI/CD if a placeholder leaks there. Warn in that case.
     """
     print(_color("\n[4/5] Claude Code settings.json", BOLD))
     settings = Path.home() / ".claude" / "settings.json"

@@ -4,19 +4,22 @@ Resolution order (first hit wins):
 
 1. ``~/.config/gh-gemini-review-loop/.env`` — a chmod-600 dotfile with
    ``OPENAI_API_KEY=sk-...``. Gitignored, survives shell reloads, easy to
-   inspect, and immune to stale env-var pollution from shell profiles.
+   inspect, and the canonical store for interactive local use.
 2. macOS Keychain (``security find-generic-password -s gh-gemini-review-loop
    -a openai -w``) — system-protected, prompts Touch ID / password for access
    on first read per process.
 3. Linux Secret Service (``secret-tool lookup service gh-gemini-review-loop
    key openai``) — D-Bus secret backend used by GNOME Keyring, KWallet,
    etc. Skipped when ``secret-tool`` is absent.
+4. ``OPENAI_API_KEY`` environment variable — last-resort fallback for CI/CD
+   pipelines, Docker containers, and headless environments where env vars are
+   the standard injection mechanism. Checked last so a stale project-level env
+   var never shadows a dotfile or OS-keystore key stored via ``--set``.
 
-Rationale: the dotfile is the canonical store for this plugin's key.
-``OPENAI_API_KEY`` in the shell environment is intentionally NOT consulted —
-a stale or project-specific env var would silently shadow the key the user
-stored here, causing confusing 401s. Use the dotfile (``--set``) or the OS
-keystore instead.
+Rationale: the dotfile is the canonical store for interactive local use.
+Placing the env var last means CI/CD workflows continue to work while local
+developers are never surprised by a stale ``OPENAI_API_KEY`` in their shell
+overriding the key they stored with ``--set``.
 
 This module is the ONE place that uses ``subprocess`` in the judge tree.
 ``judge.py`` consults a pure function exposed here so the
@@ -48,7 +51,7 @@ SECRET_TOOL_SCHEMA = ("service", KEYCHAIN_SERVICE, "key", KEYCHAIN_ACCOUNT)
 # Sources, in resolution order. Each entry: (label, reader_callable).
 # Tests mock individual readers via monkeypatch on the module-level
 # callables — keeps the resolver pure for the happy path.
-SOURCE_LABELS = ("dotenv", "macos_keychain", "linux_secret_service")
+SOURCE_LABELS = ("dotenv", "macos_keychain", "linux_secret_service", "env")
 
 
 def dotenv_path() -> Path:
@@ -57,6 +60,12 @@ def dotenv_path() -> Path:
         "~/.config/gh-gemini-review-loop"
     )
     return Path(base) / ".env"
+
+
+def _read_env() -> str | None:
+    """Read OPENAI_API_KEY from the environment. Last-resort fallback for CI/CD."""
+    val = os.environ.get("OPENAI_API_KEY")
+    return val.strip() if val and val.strip() else None
 
 
 def _read_dotenv() -> str | None:
@@ -142,6 +151,7 @@ _READERS: dict[str, t.Callable[[], str | None]] = {
     "dotenv": _read_dotenv,
     "macos_keychain": _read_macos_keychain,
     "linux_secret_service": _read_linux_secret_service,
+    "env": _read_env,
 }
 
 
@@ -304,7 +314,7 @@ def _main(argv: list[str] | None = None) -> int:
         if not key:
             print("source: missing")
             print("checked: dotenv (~/.config/gh-gemini-review-loop/.env), "
-                  "macos_keychain, linux_secret_service")
+                  "macos_keychain, linux_secret_service, env")
             return 1
         print(f"source: {source}")
         print(f"key:    {_redact(key)}")

@@ -24,16 +24,16 @@ import judge_doctor  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _isolate_key_resolver(monkeypatch, tmp_path):
-    """Force the tiered resolver to read only the env var for every test.
+    """Isolate every test from the developer's real key sources.
 
-    Without this, a developer machine with a real key in macOS Keychain
-    would silently override ``monkeypatch.delenv("OPENAI_API_KEY")`` calls
-    and flip exit codes. We pin GGRL_STATE_DIR to a temp dotfile location
-    and stub the keystore readers so tests are host-independent.
+    Pins GGRL_STATE_DIR to a fresh tmp dir (no dotfile), stubs OS keystores,
+    and clears the env var so tests control exactly what the resolver sees.
+    Tests that need a key write one themselves (dotfile or env var).
     """
     import key_resolver  # noqa: PLC0415
 
     monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setitem(key_resolver._READERS, "macos_keychain", lambda: None)
     monkeypatch.setitem(key_resolver._READERS, "linux_secret_service", lambda: None)
 
@@ -53,8 +53,7 @@ def _green_non_key_checks(monkeypatch):
 class TestExitCodes:
     """Doctor must return 0 only when every gating check passes."""
 
-    def test_missing_key_returns_nonzero(self, monkeypatch, capsys):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    def test_missing_key_returns_nonzero(self, capsys):
         rc = judge_doctor.main([])
         assert rc == 1
         out = capsys.readouterr().out
@@ -119,7 +118,6 @@ class TestProbeFlag:
             assert called["n"] == 0
 
     def test_probe_skipped_when_gating_check_fails(self, monkeypatch, capsys):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         called = {"n": 0}
 
         def _fake_probe(model="x"):
