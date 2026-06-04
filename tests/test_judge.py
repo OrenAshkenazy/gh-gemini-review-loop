@@ -22,15 +22,18 @@ from judge import (  # noqa: E402
     DEFAULT_MAX_REREVIEW_REQUESTS,
     DEFAULT_MODEL,
     PREFS_SCHEMA_VERSION,
+    PROFILE_SOURCES,
     VALID_VERDICTS,
     JudgeClient,
     JudgeError,
     build_user_prompt,
+    get_profile,
     load_preferences,
     looks_like_placeholder_key,
     mark_tip_shown,
     prefs_path,
     save_preferences,
+    save_profile,
     should_judge_run,
 )
 
@@ -738,3 +741,52 @@ class TestJudgeInvariant:
             assert forbidden not in src, (
                 f"judge.py imports/uses {forbidden!r} — judge must be read-only."
             )
+
+
+# ---------------------------------------------------------------------------
+# Profile persistence helpers
+# ---------------------------------------------------------------------------
+
+
+class TestProfiles:
+    def test_get_profile_missing_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        assert get_profile("o/r") is None
+
+    def test_save_and_get_roundtrip(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        checks = [{"name": "tests", "command": "pytest", "required": True}]
+        save_profile("o/r", source="confirmed", checks=checks,
+                     detected_stack="python")
+        prof = get_profile("o/r")
+        assert prof["source"] == "confirmed"
+        assert prof["detected_stack"] == "python"
+        assert prof["checks"] == checks
+        assert prof["working_directory"] == "."
+        assert prof["timeout_seconds"] == 300
+        assert prof["updated_at"]  # non-empty ISO timestamp
+
+    def test_save_skipped_omits_checks(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_profile("o/r", source="skipped")
+        prof = get_profile("o/r")
+        assert prof["source"] == "skipped"
+        assert "checks" not in prof
+
+    def test_save_invalid_source_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        with pytest.raises(ValueError):
+            save_profile("o/r", source="bogus", checks=[])
+
+    def test_save_profile_preserves_judge_mode(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_preferences("on_complete")
+        save_profile("o/r", source="confirmed", checks=[])
+        assert load_preferences()["judge_mode"] == "on_complete"
+
+    def test_two_repos_coexist(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_profile("o/a", source="confirmed", checks=[])
+        save_profile("o/b", source="skipped")
+        assert get_profile("o/a")["source"] == "confirmed"
+        assert get_profile("o/b")["source"] == "skipped"
