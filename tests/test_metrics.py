@@ -106,3 +106,52 @@ class TestBuildRecord:
         for outcome in metrics.VALID_OUTCOMES:
             rec = metrics.build_record(**self._kwargs(outcome=outcome))
             assert rec["outcome"] == outcome
+
+
+class TestFormatRunSummary:
+    def _rec(self, **over):
+        base = metrics.build_record(
+            repo="o/r", pr=23, provider="gemini-code-assist",
+            findings_fetched=7, fixed_count=4, observed_fixed_count=4,
+            remaining_actionable=1, needs_human=1, addressed_by_reply=0,
+            cycles_used=2, cycle_cap=3, verification="passed",
+            verification_details={}, outcome="clean", outcome_reason="ok",
+            started_at="2026-06-04T18:10:11Z", ts="2026-06-04T18:22:11Z",
+            finding_paths=["tests/x.py"], judge={"enabled": False},
+        )
+        base.update(over)
+        return base
+
+    def test_judge_off_omits_judge_lines(self):
+        out = metrics.format_run_summary(self._rec())
+        assert out.splitlines() == [
+            "[loop] Summary",
+            "Findings fetched: 7",
+            "Fixed: 4",
+            "Needs human: 1",
+            "Cycles used: 2/3",
+            "Verification: passed",
+            "Time to clean PR: 12m",
+        ]
+
+    def test_addressed_by_reply_line_omitted_when_zero(self):
+        assert "Addressed by reply" not in metrics.format_run_summary(self._rec())
+
+    def test_addressed_by_reply_line_shown_when_nonzero(self):
+        out = metrics.format_run_summary(self._rec(addressed_by_reply=2))
+        assert "Addressed by reply: 2" in out
+
+    def test_judge_on_inserts_two_judge_lines_after_fixed(self):
+        judge = {
+            "enabled": True,
+            "verdicts": {
+                "valid_actionable": 3, "false_positive": 1, "duplicate": 1,
+                "already_addressed": 1, "explanation_only": 0, "needs_human": 1,
+            },
+            "recommended_actions": {"fix": 3, "reply": 1, "ignore": 2, "escalate": 1},
+        }
+        out = metrics.format_run_summary(self._rec(judge=judge)).splitlines()
+        assert out[2] == "Fixed: 4"
+        assert out[3] == "Ignored by judge: 3"   # false_positive+duplicate+already_addressed+explanation_only
+        assert out[4] == "Needs human (judge): 1"
+        assert out[5] == "Needs human: 1"

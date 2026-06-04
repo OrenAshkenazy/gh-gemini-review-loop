@@ -125,6 +125,32 @@ def _duration_seconds(started_at: str, ts: str) -> int:
     return max(0, int((end - start).total_seconds()))
 
 
+def format_run_summary(record: dict[str, Any]) -> str:
+    lines = [
+        "[loop] Summary",
+        f"Findings fetched: {record['findings_fetched']}",
+        f"Fixed: {record['fixed_count']}",
+    ]
+    judge = record.get("judge") or {}
+    if judge.get("enabled"):
+        verdicts = judge.get("verdicts", {})
+        ignored = (
+            verdicts.get("false_positive", 0)
+            + verdicts.get("duplicate", 0)
+            + verdicts.get("already_addressed", 0)
+            + verdicts.get("explanation_only", 0)
+        )
+        lines.append(f"Ignored by judge: {ignored}")
+        lines.append(f"Needs human (judge): {verdicts.get('needs_human', 0)}")
+    lines.append(f"Needs human: {record['needs_human']}")
+    if record.get("addressed_by_reply"):
+        lines.append(f"Addressed by reply: {record['addressed_by_reply']}")
+    lines.append(f"Cycles used: {record['cycles_used']}/{record['cycle_cap']}")
+    lines.append(f"Verification: {record['verification']}")
+    lines.append(f"Time to clean PR: {format_duration(record['duration_seconds'])}")
+    return "\n".join(lines)
+
+
 def build_record(
     *,
     repo: str,
