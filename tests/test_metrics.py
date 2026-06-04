@@ -50,3 +50,59 @@ class TestPersistence:
         records, skipped = metrics.load_records()
         assert [r["pr"] for r in records] == [1, 3]
         assert skipped == 2  # corrupt line + future version; blank line ignored
+
+
+class TestBuildJudgeBlock:
+    def test_disabled_when_not_run(self):
+        assert metrics.build_judge_block(False, {}) == {"enabled": False}
+
+    def test_counts_verdicts_and_actions(self):
+        results = {
+            "t1": {"verdict": "valid_actionable", "recommended_action": "fix"},
+            "t2": {"verdict": "false_positive", "recommended_action": "ignore"},
+            "t3": {"verdict": "false_positive", "recommended_action": "ignore"},
+            "t4": {"verdict": "needs_human", "recommended_action": "escalate"},
+        }
+        block = metrics.build_judge_block(True, results)
+        assert block["enabled"] is True
+        assert block["verdicts"]["false_positive"] == 2
+        assert block["verdicts"]["needs_human"] == 1
+        assert block["verdicts"]["duplicate"] == 0
+        assert block["recommended_actions"]["ignore"] == 2
+        assert block["recommended_actions"]["escalate"] == 1
+
+
+class TestBuildRecord:
+    def _kwargs(self, **over):
+        base = dict(
+            repo="o/r", pr=23, provider="gemini-code-assist",
+            findings_fetched=7, fixed_count=4, observed_fixed_count=4,
+            remaining_actionable=1, needs_human=1, addressed_by_reply=2,
+            cycles_used=2, cycle_cap=3, verification="passed",
+            verification_details={}, outcome="clean",
+            outcome_reason="0 actionable threads remaining",
+            started_at="2026-06-04T18:10:11Z", ts="2026-06-04T18:22:11Z",
+            finding_paths=["tests/test_auth.py", "src/auth/login.py"],
+            judge={"enabled": False},
+        )
+        base.update(over)
+        return base
+
+    def test_full_record_shape_and_derived_fields(self):
+        rec = metrics.build_record(**self._kwargs())
+        assert rec["schema_version"] == 1
+        assert rec["duration_seconds"] == 720
+        assert rec["finding_areas"] == ["tests", "src"]
+        assert rec["finding_paths"] == ["tests/test_auth.py", "src/auth/login.py"]
+        assert rec["verification_details"] == {}
+        assert rec["judge"] == {"enabled": False}
+
+    def test_missing_started_at_falls_back_to_ts(self):
+        rec = metrics.build_record(**self._kwargs(started_at=None))
+        assert rec["started_at"] == rec["ts"]
+        assert rec["duration_seconds"] == 0
+
+    def test_all_outcomes_accepted(self):
+        for outcome in metrics.VALID_OUTCOMES:
+            rec = metrics.build_record(**self._kwargs(outcome=outcome))
+            assert rec["outcome"] == outcome

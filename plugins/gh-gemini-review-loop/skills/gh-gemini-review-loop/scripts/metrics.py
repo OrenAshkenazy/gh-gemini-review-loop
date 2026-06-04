@@ -99,3 +99,82 @@ def load_records(path: Path | None = None) -> tuple[list[dict[str, Any]], int]:
             continue
         records.append(rec)
     return records, skipped
+
+
+def build_judge_block(judge_ran: bool, judge_results: dict) -> dict:
+    if not judge_ran:
+        return {"enabled": False}
+    verdicts = {v: 0 for v in JUDGE_VERDICTS}
+    actions = {a: 0 for a in JUDGE_ACTIONS}
+    for result in judge_results.values():
+        verdict = result.get("verdict")
+        if verdict in verdicts:
+            verdicts[verdict] += 1
+        action = result.get("recommended_action")
+        if action in actions:
+            actions[action] += 1
+    return {"enabled": True, "verdicts": verdicts, "recommended_actions": actions}
+
+
+def _duration_seconds(started_at: str, ts: str) -> int:
+    try:
+        start = _dt.datetime.strptime(started_at, _TS_FMT)
+        end = _dt.datetime.strptime(ts, _TS_FMT)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, int((end - start).total_seconds()))
+
+
+def build_record(
+    *,
+    repo: str,
+    pr: int,
+    provider: str,
+    findings_fetched: int,
+    fixed_count: int,
+    observed_fixed_count: int,
+    remaining_actionable: int,
+    needs_human: int,
+    addressed_by_reply: int,
+    cycles_used: int,
+    cycle_cap: int,
+    verification: str,
+    verification_details: Any,
+    outcome: str,
+    outcome_reason: str,
+    started_at: Any,
+    finding_paths: list,
+    judge: Any,
+    ts: Any = None,
+) -> dict:
+    ts = ts or now_iso()
+    if not started_at:
+        started_at = ts
+        duration = 0
+    else:
+        duration = _duration_seconds(started_at, ts)
+    paths = list(finding_paths or [])
+    return {
+        "schema_version": RECORD_SCHEMA_VERSION,
+        "ts": ts,
+        "repo": repo,
+        "pr": pr,
+        "provider": provider,
+        "findings_fetched": findings_fetched,
+        "fixed_count": fixed_count,
+        "observed_fixed_count": observed_fixed_count,
+        "remaining_actionable": remaining_actionable,
+        "needs_human": needs_human,
+        "addressed_by_reply": addressed_by_reply,
+        "cycles_used": cycles_used,
+        "cycle_cap": cycle_cap,
+        "verification": verification,
+        "verification_details": verification_details or {},
+        "outcome": outcome,
+        "outcome_reason": outcome_reason,
+        "started_at": started_at,
+        "duration_seconds": duration,
+        "finding_areas": [top_dir(p) for p in paths],
+        "finding_paths": paths,
+        "judge": judge or {"enabled": False},
+    }
