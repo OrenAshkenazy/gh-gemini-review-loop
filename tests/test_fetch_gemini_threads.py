@@ -16,6 +16,7 @@ from fetch_gemini_threads import (
     STICKY_RECEIPT_MARKER,
     PullRequest,
     addressed_by_reply_threads,
+    clear_run_tracking,
     effective_rereview_limit,
     filter_by_min_severity,
     filter_threads,
@@ -25,6 +26,7 @@ from fetch_gemini_threads import (
     nonnegative_int,
     pagination_warnings,
     parse_pr_url,
+    read_run_tracking,
     render_receipt,
     rereview_requests,
     save_sticky_state,
@@ -33,6 +35,7 @@ from fetch_gemini_threads import (
     sticky_state_path,
     thread_fingerprint,
     thread_severity,
+    update_run_tracking,
 )
 
 
@@ -584,3 +587,36 @@ class TestStickyReceiptRender:
         )
         # Header line ends after "receipt" with no " — " suffix
         assert body.splitlines()[0] == "### gh-gemini-review-loop receipt"
+
+
+class TestRunTracking:
+    def _pr(self):
+        return PullRequest(owner="o", repo="r", number=1)
+
+    def test_first_update_sets_started_at_and_ids(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        update_run_tracking(self._pr(), [("t1", "a.py"), ("t2", "b.py")])
+        run = read_run_tracking(self._pr())
+        assert "started_at" in run
+        assert run["finding_ids"] == ["t1", "t2"]
+        assert run["finding_paths"] == ["a.py", "b.py"]
+
+    def test_second_update_unions_and_preserves_started_at(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")])
+        first_started = read_run_tracking(pr)["started_at"]
+        update_run_tracking(pr, [("t1", "a.py"), ("t2", "b.py")])
+        run = read_run_tracking(pr)
+        assert run["started_at"] == first_started
+        assert run["finding_ids"] == ["t1", "t2"]
+
+    def test_clear_removes_run_but_keeps_other_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        from fetch_gemini_threads import load_sticky_state, save_sticky_state, _state_key
+        save_sticky_state({_state_key(pr): {"commentId": 42}})
+        update_run_tracking(pr, [("t1", "a.py")])
+        clear_run_tracking(pr)
+        assert read_run_tracking(pr) == {}
+        assert load_sticky_state()[_state_key(pr)]["commentId"] == 42

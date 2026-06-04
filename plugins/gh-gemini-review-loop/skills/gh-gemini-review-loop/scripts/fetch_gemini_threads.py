@@ -609,6 +609,45 @@ def save_sticky_state(state: dict[str, Any]) -> None:
     path.write_text(json.dumps(state, indent=2, sort_keys=True))
 
 
+def update_run_tracking(pr: PullRequest, findings: list[tuple[str, str | None]]) -> None:
+    """Merge this invocation's findings into the run's tracking state.
+
+    ``findings`` is a list of (thread_id, path) pairs. Sets ``started_at`` on
+    the first call of a run; unions ids/paths on every call. Stored under the
+    existing ``owner/repo#number`` key so it rides alongside sticky state.
+    """
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key, {})
+    run = entry.get("run", {})
+    if "started_at" not in run:
+        run["started_at"] = _now_iso()
+    ids = set(run.get("finding_ids", []))
+    paths = set(run.get("finding_paths", []))
+    for thread_id, path in findings:
+        if thread_id:
+            ids.add(thread_id)
+        if path:
+            paths.add(path)
+    run["finding_ids"] = sorted(ids)
+    run["finding_paths"] = sorted(paths)
+    entry["run"] = run
+    state[key] = entry
+    save_sticky_state(state)
+
+
+def read_run_tracking(pr: PullRequest) -> dict[str, Any]:
+    return load_sticky_state().get(_state_key(pr), {}).get("run", {})
+
+
+def clear_run_tracking(pr: PullRequest) -> None:
+    state = load_sticky_state()
+    key = _state_key(pr)
+    if key in state and "run" in state[key]:
+        del state[key]["run"]
+        save_sticky_state(state)
+
+
 def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
