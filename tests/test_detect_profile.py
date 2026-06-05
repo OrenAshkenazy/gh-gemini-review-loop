@@ -71,3 +71,20 @@ def test_node_malformed_package_json_is_safe(tmp_path):
     result = detect(tmp_path)
     assert result["stack"] == "node"
     assert result["candidate_checks"] == []
+
+
+def test_strong_marker_beats_bare_tests_dir(tmp_path):
+    # A node repo that also has a tests/ dir must detect as node, not python:
+    # tests/ is a weak signal common to many languages (Gemini review #30).
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"test": "jest"}}))
+    (tmp_path / "tests").mkdir()
+    result = detect(tmp_path)
+    assert result["stack"] == "node"
+
+
+def test_bare_tests_dir_falls_back_to_python(tmp_path):
+    # With no strong marker, a tests/ dir still falls back to python.
+    (tmp_path / "tests").mkdir()
+    result = detect(tmp_path)
+    assert result["stack"] == "python"
+    assert result["confidence"] == "medium"

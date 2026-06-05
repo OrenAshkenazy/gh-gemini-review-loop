@@ -43,11 +43,18 @@ class ProfileRunResult:
         }
 
 
-def _run_one(check: dict[str, Any], cwd: Path, timeout: int) -> CheckResult:
-    name = check["name"]
-    command = check["command"]
-    required = bool(check.get("required", True))
+def _run_one(check: Any, cwd: Path, timeout: int) -> CheckResult:
     start = time.monotonic()
+    # A profile can be hand-edited or corrupted; never trust the shape.
+    if not isinstance(check, dict):
+        return CheckResult("<invalid>", repr(check), True, "failed", None,
+                           time.monotonic() - start)
+    name = str(check.get("name", "<unnamed>"))
+    command = check.get("command")
+    required = bool(check.get("required", True))
+    if not isinstance(command, str):
+        return CheckResult(name, str(command), required, "failed", None,
+                           time.monotonic() - start)
     argv = shlex.split(command)
     if not argv:
         return CheckResult(name, command, required, "failed", None,
@@ -71,12 +78,27 @@ def _run_one(check: dict[str, Any], cwd: Path, timeout: int) -> CheckResult:
                        time.monotonic() - start)
 
 
-def run_profile(profile: dict[str, Any], repo_root: Path | str) -> ProfileRunResult:
-    """Run all checks in ``profile`` rooted at ``repo_root``; compute the gate."""
+def run_profile(profile: Any, repo_root: Path | str) -> ProfileRunResult:
+    """Run all checks in ``profile`` rooted at ``repo_root``; compute the gate.
+
+    The profile may have been hand-edited in preferences.json, so every field
+    is validated/coerced before use rather than trusted.
+    """
     root = Path(repo_root)
-    cwd = root / profile.get("working_directory", ".")
-    timeout = int(profile.get("timeout_seconds", 300))
-    results = [_run_one(c, cwd, timeout) for c in profile.get("checks", [])]
+    if not isinstance(profile, dict):
+        profile = {}
+    working_directory = profile.get("working_directory", ".")
+    if not isinstance(working_directory, str):
+        working_directory = "."
+    cwd = root / working_directory
+    try:
+        timeout = int(profile.get("timeout_seconds", 300))
+    except (TypeError, ValueError):
+        timeout = 300
+    checks = profile.get("checks", [])
+    if not isinstance(checks, list):
+        checks = []
+    results = [_run_one(c, cwd, timeout) for c in checks]
     failed_required = [
         c.name for c in results if c.required and c.status != "passed"
     ]
@@ -103,7 +125,12 @@ def main(argv: list[str]) -> int:
                           "reason": "judge module unavailable"}))
         return 0
     profile = get_profile(repo)
-    if not profile or profile.get("source") == "skipped" or not profile.get("checks"):
+    if (
+        not isinstance(profile, dict)
+        or profile.get("source") == "skipped"
+        or not isinstance(profile.get("checks"), list)
+        or not profile.get("checks")
+    ):
         print(json.dumps({"verification": "skipped",
                           "reason": "no runnable profile"}))
         return 0

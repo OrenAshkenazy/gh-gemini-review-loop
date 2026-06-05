@@ -88,3 +88,48 @@ def test_empty_command_is_failed_not_crash(tmp_path):
     assert result.verification == "failed"
     assert result.checks[0].status == "failed"
     assert result.failed_required == ["blank"]
+
+
+# --- Corrupt / hand-edited profile robustness (Gemini review #30) -------------
+
+_OK = 'python3 -c "import sys; sys.exit(0)"'
+
+
+def test_non_dict_profile_does_not_crash(tmp_path):
+    result = run_profile("not a profile", tmp_path)
+    assert result.verification == "passed"  # no checks -> vacuously passed
+    assert result.checks == []
+
+
+def test_non_list_checks_does_not_crash(tmp_path):
+    result = run_profile({"checks": 5}, tmp_path)
+    assert result.verification == "passed"
+    assert result.checks == []
+
+
+def test_non_dict_check_fails_gate(tmp_path):
+    result = run_profile({"checks": ["garbage"]}, tmp_path)
+    assert result.verification == "failed"
+    assert result.checks[0].status == "failed"
+
+
+def test_non_str_command_fails_gate(tmp_path):
+    result = run_profile(
+        {"checks": [{"name": "x", "command": 123, "required": True}]}, tmp_path
+    )
+    assert result.verification == "failed"
+    assert result.checks[0].status == "failed"
+
+
+def test_invalid_timeout_falls_back_to_default(tmp_path):
+    prof = _profile([{"name": "ok", "command": _OK, "required": True}])
+    prof["timeout_seconds"] = "not-a-number"
+    result = run_profile(prof, tmp_path)
+    assert result.verification == "passed"
+
+
+def test_non_str_working_directory_falls_back(tmp_path):
+    prof = _profile([{"name": "ok", "command": _OK, "required": True}])
+    prof["working_directory"] = 12345
+    result = run_profile(prof, tmp_path)
+    assert result.verification == "passed"

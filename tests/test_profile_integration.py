@@ -74,3 +74,15 @@ def test_save_profile_upgrades_v1_schema(tmp_path, monkeypatch):
     saved = json.loads(path.read_text())
     assert saved["schema_version"] == 2
     assert saved["judge_mode"] == "off"  # existing field preserved
+
+
+def test_cli_corrupt_non_dict_profile_skips(tmp_path, monkeypatch, capsys):
+    # A hand-edited preferences.json where the profile entry is a string, not a
+    # dict, must not crash the CLI (Gemini review #30).
+    monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+    path = tmp_path / "preferences.json"
+    path.write_text(json.dumps({"schema_version": 2, "profiles": {"o/r": "garbage"}}))
+    rc = run_profile_main(["run_profile.py", "o/r", str(tmp_path)])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["verification"] == "skipped"

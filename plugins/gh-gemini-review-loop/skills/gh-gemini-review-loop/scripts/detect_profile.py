@@ -91,14 +91,15 @@ def _detect_go(root: Path) -> dict[str, Any]:
 def detect(repo_root: Path | str) -> dict[str, Any]:
     """Return {stack, confidence, reasons, candidate_checks} for ``repo_root``.
 
-    Detection order is fixed: python, node, rust, go. The first matching marker
-    wins. Unknown stacks return a low-confidence empty candidate so the caller
-    falls back to ad-hoc verification.
+    Strong, unambiguous stack markers (pyproject.toml, setup.py, package.json,
+    Cargo.toml, go.mod) are checked first. A bare ``tests/`` directory is a weak
+    signal — common across many languages — so it is only used as a Python
+    fallback when no strong marker is present. Unknown stacks return a
+    low-confidence empty candidate so the caller falls back to ad-hoc verification.
     """
     root = Path(repo_root)
-    if (root / "pyproject.toml").exists() or (root / "setup.py").exists() or (
-        root / "tests"
-    ).is_dir():
+    # Strong markers first.
+    if (root / "pyproject.toml").exists() or (root / "setup.py").exists():
         return _detect_python(root)
     if (root / "package.json").exists():
         return _detect_node(root)
@@ -106,6 +107,9 @@ def detect(repo_root: Path | str) -> dict[str, Any]:
         return _detect_rust(root)
     if (root / "go.mod").exists():
         return _detect_go(root)
+    # Weak fallback: a bare tests/ directory suggests Python.
+    if (root / "tests").is_dir():
+        return _detect_python(root)
     return {
         "stack": "unknown",
         "confidence": "low",
