@@ -192,28 +192,40 @@ See [SKILL.md -> Optional Judge Eval](plugins/gh-gemini-review-loop/skills/gh-ge
 
 ### Run metrics & local stats
 
-Every completed loop run prints a one-screen summary and appends a local record. The `--stats` flag aggregates those records per repo.
+Every completed loop run prints a one-screen receipt and appends a local record. Just ask:
 
-**Per-run summary** (printed at loop end via `--record-run`):
+> *"Show Gemini loop stats for this repo"*
+
+(or run `--stats` directly) to aggregate those records per repo.
+
+**Per-run receipt** (printed at loop end via `--record-run`, and per cycle via `--cycle-summary`). A small always-on core plus lines that appear only when they carry signal:
 
 ```
 [loop] Summary
 Findings fetched: 7
 Fixed: 4
+Remaining actionable: 0
 Needs human: 1
 Cycles used: 2/3
 Verification: passed
+Outcome: clean
 Time to clean PR: 12m
 ```
 
-**Aggregated stats** (via `--stats`):
+**Aggregated stats** — *"Show Gemini loop stats for this repo"* / `--stats`:
 
 ```
 Gemini loop stats — OrenAshkenazy/gh-gemini-review-loop
 Last 10 runs
 
 Average cycles used: 1.8
-Average time to clean PR: 9m
+Average elapsed time to terminal outcome: 9m
+Average elapsed time to clean PR: 7m
+Average elapsed time to capped run: 31m
+Average elapsed time to failed run: 4m
+Average active cycle time: 3m
+Average active time per run: 6m
+Average cycles per run: 1.5
 Findings fixed: 32 of 41
 Human decisions needed: 6
 Addressed by reply: 9
@@ -222,7 +234,12 @@ Most common provider: gemini-code-assist
 Most repeated finding area: tests
 ```
 
-Metrics are local-only (`~/.config/gh-gemini-review-loop/runs.jsonl`), contain no identity (repo and PR number only), and are never transmitted. Judge-derived lines (e.g. "False positives avoided", "Ignored by judge") appear only when judge mode was on for those runs.
+Two kinds of time are reported separately:
+
+- **Elapsed** — user-visible wall-clock latency (includes review-bot waits, polling, and idle time), split by terminal outcome (clean / capped / failed).
+- **Active** — agent/loop processing time only, excluding waits.
+
+Metrics are local-only (`~/.config/gh-gemini-review-loop/runs.jsonl`), contain no identity (repo and PR number only), and are never transmitted. Judge-derived and conditional lines (e.g. "False positives avoided", "Addressed by reply", the active-cycle lines) appear only when that data exists for the runs in range.
 
 ---
 
