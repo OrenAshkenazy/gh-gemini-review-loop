@@ -169,26 +169,32 @@ Each repo can have an opinionated, code-derived **verification profile**: the
 checks the loop runs at its verify step. Stored in
 `~/.config/gh-gemini-review-loop/preferences.json` under `profiles["owner/repo"]`.
 
-### First run (detect → propose → confirm)
+### First run (detect → preset menu → save)
 
 Run detection **after fetching findings, before the first fix attempt**, so the
 verification strategy is fixed before any edits. If `get_profile(owner/repo)`
 returns `None`:
 
-1. Run `detect_profile.py <repo_root>` to get `{stack, confidence, reasons,
-   candidate_checks}`.
-2. Reconcile candidates against repo docs (`CLAUDE.md`, `CONTRIBUTING`,
-   `README`). If docs pin a non-standard invocation, surface it explicitly:
-   *"Repo docs pin `/opt/homebrew/bin/pytest` — use that instead of `pytest`?"*
-   Never auto-persist an absolute path from prose without confirmation.
-3. Prompt with `AskUserQuestion`:
-   *"Detected Python (pyproject.toml, tests/). Proposed: pytest [required],
-   ruff check . [required], mypy . [optional]. Confirm / customize / skip?"*
-4. Persist via `judge.save_profile(...)`:
-   - Confirm → `source="confirmed"` with the candidate checks.
-   - Customize → `source="customized"` with the user's edited checks.
-   - Skip → `source="skipped"` (no checks).
-5. `detect`'s `stack == "unknown"` → do not persist; use ad-hoc verification.
+1. Run `detect_profile.py <repo_root>`. It returns `{stack, confidence, reasons,
+   candidate_checks, presets}`. `presets` is an explicit, ordered, code-built
+   option list — do **not** hand-roll the menu or rely on `AskUserQuestion`
+   auto-adding an option.
+2. If `stack == "unknown"` (empty `candidate_checks`, empty `presets`) → do
+   **not** prompt or persist; use ad-hoc verification.
+3. Reconcile against repo docs (`CLAUDE.md`, `CONTRIBUTING`, `README`). If docs
+   pin a non-standard invocation, surface it as a note beside the menu — *"Repo
+   docs pin `/opt/homebrew/bin/pytest`; pick **Customize manually** to use it."*
+   Never auto-persist an absolute path from prose.
+4. Prompt once with `AskUserQuestion`, using each `presets[i].label` verbatim as
+   an option. Example menu for a multi-check Python repo:
+   *"All detected — pytest + ruff check ." / "Tests only — pytest" / "Skip — use
+   ad-hoc verification" / "Customize manually"*.
+5. Persist the chosen preset via `judge.save_profile(...)`:
+   - Has `customize == true` (**Customize manually**) → run the free-form NL
+     customize path; persist the user's edited checks with `source="customized"`.
+   - Otherwise persist `preset["checks"]` with `source=preset["source"]`
+     (`confirmed` for All detected, `customized` for a narrower preset, `skipped`
+     for Skip). Every persisted check is `required: true`.
 
 ### Subsequent runs
 
@@ -201,10 +207,14 @@ its `verification` into `--verification` and the JSON into
 
 ### Customizing / un-skipping
 
+`source="skipped"` suppresses **automatic** detection prompts only. Explicit user
+intent always overrides it:
+
 - *"add mypy to this repo's verification profile"* / *"change the checks to X"* →
   edit the profile via `save_profile(..., source="customized")`.
-- *"set up a verification profile for this repo"* → force re-detection even if a
-  `skipped` marker exists.
+- *"set up a verification profile for this repo"* → re-enter the detect → preset
+  menu → save flow and overwrite the profile, **even if** a `skipped` marker
+  exists.
 
 ### Gate semantics
 
@@ -311,9 +321,9 @@ When the user phrases the request differently, dispatch to the right flag combin
 | **Default loop with saved judge mode** | (no special phrasing — agent reads saved prefs) | `--judge-phase cycle` per cycle; `--judge-phase complete` at final invocation. Script obeys saved mode. |
 | **History investigation** | "show me all Gemini threads ever, including resolved" | `--include-resolved --include-outdated --include-addressed-by-reply --no-resolve-outdated --no-resolve-addressed-by-reply` |
 | **Local stats** | "show Gemini loop stats" / "loop stats for this repo" / "how's the loop doing here" | `--stats` |
-| **Set up verification profile** | "set up a verification profile for this repo" / "configure checks for this repo" | Run `detect_profile.py`, confirm, then `save_profile(..., source="confirmed")` |
+| **Set up verification profile** | "set up a verification profile for this repo" / "configure checks for this repo" | Run `detect_profile.py`, show preset menu, then persist the chosen preset |
 | **Customize profile** | "add mypy to this repo's checks" / "change the verification checks to X" | Edit checks, `save_profile(..., source="customized")` |
-| **Skip profile** | "skip verification profile" / "use ad-hoc checks for this repo" | `save_profile(repo, source="skipped")` — no re-prompt |
+| **Skip profile** | "skip verification profile" / "use ad-hoc checks for this repo" | `save_profile(repo, source="skipped")` — suppress automatic re-prompt |
 
 Run metrics and `--stats` are local-only — stored under `~/.config/gh-gemini-review-loop/`, never posted to GitHub, and contain no identity.
 
@@ -385,7 +395,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
 6. Acknowledge what needs to be fixed.
    - Before editing, briefly summarize the actionable Gemini findings grouped by file or behavior.
    - If there are no actionable unresolved threads, say so and stop after reporting the clean result.
-   - On the first run for this repo with no saved profile, set up the verification profile now (detect → propose → confirm/customize/skip) before applying fixes. See the **Verification Profile** section.
+   - On the first run for this repo with no saved profile, set up the verification profile now (detect → preset menu → save) before applying fixes. See the **Verification Profile** section.
 
 7. Classify comments.
    - Group by file and behavioral area.
