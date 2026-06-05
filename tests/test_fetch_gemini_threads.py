@@ -738,7 +738,8 @@ class TestRecordRunIntegration:
 
         out = capsys.readouterr().out
         assert "Ignored by judge: 1" in out      # false_positive counts as ignored
-        assert "Needs human (judge): 0" in out
+        # needs_human == 0 -> the judge needs-human line is omitted (receipt, not dashboard)
+        assert "Needs human by judge" not in out
 
         record = json.loads(runs_log_path().read_text().strip().splitlines()[-1])
         assert record["judge"]["enabled"] is True

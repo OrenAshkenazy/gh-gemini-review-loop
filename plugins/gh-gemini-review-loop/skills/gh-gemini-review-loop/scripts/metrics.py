@@ -130,11 +130,20 @@ def _duration_seconds(started_at: str, ts: str) -> int:
 
 
 def format_run_summary(record: dict[str, Any]) -> str:
+    """Human-readable receipt for one loop run.
+
+    A receipt, not a dashboard: a small fixed core, plus optional lines that
+    appear only when they carry signal (observed != fixed, judge verdicts > 0,
+    addressed-by-reply > 0, a named failed check).
+    """
     lines = [
         "[loop] Summary",
         f"Findings fetched: {record['findings_fetched']}",
         f"Fixed: {record['fixed_count']}",
     ]
+    observed = record.get("observed_fixed_count")
+    if observed is not None and observed != record["fixed_count"]:
+        lines.append(f"Observed fixed: {observed}")
     judge = record.get("judge") or {}
     if judge.get("enabled"):
         verdicts = judge.get("verdicts", {})
@@ -144,14 +153,24 @@ def format_run_summary(record: dict[str, Any]) -> str:
             + verdicts.get("already_addressed", 0)
             + verdicts.get("explanation_only", 0)
         )
-        lines.append(f"Ignored by judge: {ignored}")
-        lines.append(f"Needs human (judge): {verdicts.get('needs_human', 0)}")
+        if ignored:
+            lines.append(f"Ignored by judge: {ignored}")
+        if verdicts.get("needs_human", 0):
+            lines.append(f"Needs human by judge: {verdicts['needs_human']}")
+    lines.append(f"Remaining actionable: {record['remaining_actionable']}")
     lines.append(f"Needs human: {record['needs_human']}")
     if record.get("addressed_by_reply"):
         lines.append(f"Addressed by reply: {record['addressed_by_reply']}")
     lines.append(f"Cycles used: {record['cycles_used']}/{record['cycle_cap']}")
     lines.append(f"Verification: {record['verification']}")
-    lines.append(f"Time to clean PR: {format_duration(record['duration_seconds'])}")
+    if record["verification"] == "failed":
+        details = record.get("verification_details")
+        failed_check = details.get("failed_check") if isinstance(details, dict) else None
+        if failed_check:
+            lines.append(f"Failed check: {failed_check}")
+    lines.append(f"Outcome: {record['outcome']}")
+    label = "Time to clean PR" if record["outcome"] == "clean" else "Time spent"
+    lines.append(f"{label}: {format_duration(record['duration_seconds'])}")
     return "\n".join(lines)
 
 
