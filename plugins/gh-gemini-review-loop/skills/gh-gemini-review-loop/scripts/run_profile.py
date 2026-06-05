@@ -71,11 +71,15 @@ def _run_one(check: Any, cwd: Path, timeout: int) -> CheckResult:
             timeout=timeout,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except subprocess.TimeoutExpired:
         return CheckResult(name, command, required, "timeout", None,
                            time.monotonic() - start)
-    except (FileNotFoundError, OSError):
+    except (FileNotFoundError, OSError, ValueError):
+        # ValueError covers bad subprocess args and UnicodeDecodeError
+        # (a ValueError subclass), which the OSError clause would miss.
         return CheckResult(name, command, required, "failed", None,
                            time.monotonic() - start)
     status = "passed" if proc.returncode == 0 else "failed"

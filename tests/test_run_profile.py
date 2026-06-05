@@ -151,3 +151,13 @@ def test_non_positive_timeout_is_coerced(tmp_path):
         prof["timeout_seconds"] = bad
         result = run_profile(prof, tmp_path)
         assert result.verification == "passed"  # coerced to 300, runs fine
+
+
+def test_utf8_output_is_decoded(tmp_path):
+    # Non-ASCII output (emoji) must decode via explicit encoding="utf-8" rather
+    # than the platform locale, without crashing the check (Gemini PR #30 c4).
+    cmd = 'python3 -c "print(\'done \\u2713 \\U0001f389\')"'
+    prof = _profile([{"name": "emoji", "command": cmd, "required": True}])
+    result = run_profile(prof, tmp_path)
+    assert result.verification == "passed"
+    assert result.checks[0].status == "passed"
