@@ -164,7 +164,8 @@ def format_run_summary(record: dict[str, Any]) -> str:
     lines.append(f"Cycles used: {record['cycles_used']}/{record['cycle_cap']}")
     lines.append(f"Verification: {record['verification']}")
     if record["verification"] == "failed":
-        failed_check = (record.get("verification_details") or {}).get("failed_check")
+        details = record.get("verification_details")
+        failed_check = details.get("failed_check") if isinstance(details, dict) else None
         if failed_check:
             lines.append(f"Failed check: {failed_check}")
     lines.append(f"Outcome: {record['outcome']}")
