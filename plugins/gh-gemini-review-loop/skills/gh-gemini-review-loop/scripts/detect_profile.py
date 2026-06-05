@@ -20,21 +20,22 @@ def _check(name: str, command: str, required: bool) -> dict[str, Any]:
 def _detect_python(root: Path) -> dict[str, Any]:
     reasons: list[str] = []
     pyproject = root / "pyproject.toml"
-    if pyproject.exists():
+    has_pyproject = pyproject.is_file()
+    if has_pyproject:
         reasons.append("pyproject.toml")
-    if (root / "setup.py").exists():
+    if (root / "setup.py").is_file():
         reasons.append("setup.py")
     if (root / "tests").is_dir():
         reasons.append("tests/")
     checks = [_check("tests", "pytest", True)]
-    deps_text = pyproject.read_text(encoding="utf-8") if pyproject.exists() else ""
+    deps_text = pyproject.read_text(encoding="utf-8") if has_pyproject else ""
     if "ruff" in deps_text:
         checks.append(_check("lint", "ruff check .", True))
     if "mypy" in deps_text:
         checks.append(_check("typecheck", "mypy .", False))
     return {
         "stack": "python",
-        "confidence": "high" if pyproject.exists() else "medium",
+        "confidence": "high" if has_pyproject else "medium",
         "reasons": reasons,
         "candidate_checks": checks,
     }
@@ -98,14 +99,16 @@ def detect(repo_root: Path | str) -> dict[str, Any]:
     low-confidence empty candidate so the caller falls back to ad-hoc verification.
     """
     root = Path(repo_root)
-    # Strong markers first.
-    if (root / "pyproject.toml").exists() or (root / "setup.py").exists():
+    # Strong markers first. Use is_file() so a directory that happens to share a
+    # marker name (e.g. a dir literally named pyproject.toml) is not mistaken for
+    # the file and does not crash a later read_text().
+    if (root / "pyproject.toml").is_file() or (root / "setup.py").is_file():
         return _detect_python(root)
-    if (root / "package.json").exists():
+    if (root / "package.json").is_file():
         return _detect_node(root)
-    if (root / "Cargo.toml").exists():
+    if (root / "Cargo.toml").is_file():
         return _detect_rust(root)
-    if (root / "go.mod").exists():
+    if (root / "go.mod").is_file():
         return _detect_go(root)
     # Weak fallback: a bare tests/ directory suggests Python.
     if (root / "tests").is_dir():

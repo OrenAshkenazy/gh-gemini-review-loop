@@ -88,3 +88,17 @@ def test_bare_tests_dir_falls_back_to_python(tmp_path):
     result = detect(tmp_path)
     assert result["stack"] == "python"
     assert result["confidence"] == "medium"
+
+
+def test_directory_named_like_marker_is_ignored(tmp_path):
+    # A *directory* named pyproject.toml must not be treated as the file marker
+    # (would crash read_text with IsADirectoryError) nor classify as python.
+    (tmp_path / "pyproject.toml").mkdir()
+    result = detect(tmp_path)
+    assert result["stack"] == "unknown"
+
+
+def test_directory_named_package_json_is_not_node(tmp_path):
+    (tmp_path / "package.json").mkdir()
+    result = detect(tmp_path)
+    assert result["stack"] == "unknown"

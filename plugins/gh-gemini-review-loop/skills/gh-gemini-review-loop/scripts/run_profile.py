@@ -55,7 +55,12 @@ def _run_one(check: Any, cwd: Path, timeout: int) -> CheckResult:
     if not isinstance(command, str):
         return CheckResult(name, str(command), required, "failed", None,
                            time.monotonic() - start)
-    argv = shlex.split(command)
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        # Malformed/unclosed quotes in a hand-edited command.
+        return CheckResult(name, command, required, "failed", None,
+                           time.monotonic() - start)
     if not argv:
         return CheckResult(name, command, required, "failed", None,
                            time.monotonic() - start)
@@ -94,6 +99,9 @@ def run_profile(profile: Any, repo_root: Path | str) -> ProfileRunResult:
     try:
         timeout = int(profile.get("timeout_seconds", 300))
     except (TypeError, ValueError):
+        timeout = 300
+    if timeout <= 0:
+        # subprocess.run treats 0/negative as an immediate/invalid timeout.
         timeout = 300
     checks = profile.get("checks", [])
     if not isinstance(checks, list):

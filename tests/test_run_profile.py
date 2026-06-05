@@ -133,3 +133,21 @@ def test_non_str_working_directory_falls_back(tmp_path):
     prof["working_directory"] = 12345
     result = run_profile(prof, tmp_path)
     assert result.verification == "passed"
+
+
+# --- Follow-up robustness from Gemini review (PR #30, cycle 2) ----------------
+
+def test_malformed_command_quotes_is_failed_not_crash(tmp_path):
+    # Unclosed quote -> shlex.split raises ValueError; must be caught.
+    prof = _profile([{"name": "bad", "command": 'echo "unclosed', "required": True}])
+    result = run_profile(prof, tmp_path)
+    assert result.verification == "failed"
+    assert result.checks[0].status == "failed"
+
+
+def test_non_positive_timeout_is_coerced(tmp_path):
+    prof = _profile([{"name": "ok", "command": _OK, "required": True}])
+    for bad in (0, -5):
+        prof["timeout_seconds"] = bad
+        result = run_profile(prof, tmp_path)
+        assert result.verification == "passed"  # coerced to 300, runs fine
