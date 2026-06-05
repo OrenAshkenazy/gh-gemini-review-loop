@@ -285,7 +285,9 @@ def build_record(
         "cycles_used": cycles_used,
         "cycle_cap": cycle_cap,
         "verification": verification,
-        "verification_details": verification_details or {},
+        "verification_details": (
+            verification_details if isinstance(verification_details, dict) else {}
+        ),
         "outcome": outcome,
         "outcome_reason": outcome_reason,
         "started_at": started_at,

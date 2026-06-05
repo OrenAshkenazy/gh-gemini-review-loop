@@ -112,6 +112,12 @@ class TestBuildRecord:
         assert rec["started_at"] == rec["ts"]
         assert rec["duration_seconds"] == 0
 
+    def test_non_dict_verification_details_coerced_to_empty(self):
+        # Reachable via `--verification-details '"lint"'` (valid JSON, not an object).
+        # The stored record must stay schema-valid (verification_details is an object).
+        rec = metrics.build_record(**self._kwargs(verification_details="lint"))
+        assert rec["verification_details"] == {}
+
     def test_all_outcomes_accepted(self):
         for outcome in metrics.VALID_OUTCOMES:
             rec = metrics.build_record(**self._kwargs(outcome=outcome))
@@ -186,6 +192,13 @@ class TestFormatRunSummary:
 
     def test_failed_check_line_omitted_when_verification_passed(self):
         assert "Failed check" not in metrics.format_run_summary(self._rec())
+
+    def test_tolerates_non_dict_verification_details(self):
+        # Defense-in-depth: a legacy/hand-crafted record with a non-dict
+        # verification_details must not crash the receipt (no .get on a str).
+        rec = self._rec(verification="failed", verification_details="lint")
+        out = metrics.format_run_summary(rec)  # must not raise
+        assert "Failed check" not in out
 
     def test_judge_on_inserts_renamed_lines_after_fixed(self):
         judge = {
