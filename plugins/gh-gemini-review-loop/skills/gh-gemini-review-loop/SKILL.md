@@ -196,6 +196,21 @@ Optional additions:
 
 The script fetches the current thread state, derives counts, appends the record, and prints a `[loop] Summary` block to stdout.
 
+### Per-cycle summary block
+
+`--record-run` is terminal: it writes a record **and clears** the run accumulator, so it must be called exactly once at loop end. To show the `[loop] Summary` block **during** the loop — at the end of each cycle — use `--cycle-summary` instead:
+
+```bash
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+    --cycle-summary \
+    --fixed-count <n-this-cycle> \
+    --verification <passed|failed|skipped>
+```
+
+`--cycle-summary` builds the record from the **accumulated** run state (findings and judge verdicts unioned across cycles so far) and prints the same `[loop] Summary` block — but it does **not** append to `runs.jsonl` and does **not** clear the accumulator. It is read-only and safe to call every cycle. Emit it right after the verify step of each cycle (see the Progress Narration table). At the true terminal state, still call `--record-run` exactly once to persist the run.
+
+Do not call `--record-run` more than once per loop: each call clears the accumulator, so a second call would undercount `findings_fetched` and reset the duration. Use `--cycle-summary` for all mid-loop visibility.
+
 ### `--stats` (read-only)
 
 Print aggregated stats for the current repo from `runs.jsonl` and exit. Never touches GitHub.
@@ -222,6 +237,7 @@ Required narration points:
 | After verify | `[loop] cycle N/<cap> — verified (<test summary>).` |
 | Before push | `[loop] cycle N/<cap> — committing and pushing <commit-sha>...` |
 | After push, before re-review | `[loop] cycle N/<cap> — pushed. Requesting Gemini re-review (cycle N consumed).` |
+| **End of each cycle** | **`[loop] Summary` block (from `--cycle-summary`)** — see [Per-cycle summary](#per-cycle-summary-block) |
 | Stop condition triggered | `[loop] STOP — <stop-condition>: <one-line explanation>.` |
 | Loop complete (all clean) | `[loop] DONE — 0 actionable threads remaining. Cycles used: N/<cap>.` |
 | Loop complete / stopped (after DONE/STOP) | `[loop] Summary` block (from `--record-run`) |
