@@ -9,9 +9,11 @@
 
 Replace the profile's first-run **confirm / customize / skip** prompt with a
 **single-select preset menu** built deterministically from detected checks. After
-`detect_profile.py` runs, the agent presents 2–4 preset bundles — "All detected",
-optionally "Tests only", and "Skip" — each treated as a **required gate**. The
-chosen preset is persisted exactly as today (`judge.save_profile`); the scripts'
+`detect_profile.py` runs, the agent presents explicit preset bundles — "All
+detected", optionally "Tests only", "Skip", and "Customize manually" — each gating
+check treated as a **required gate**. Every option is constructed by code
+(`build_presets`); nothing relies on the tool auto-adding an option. The chosen
+preset is persisted exactly as today (`judge.save_profile`); the scripts'
 storage and execution layers are unchanged. This makes the setup step legible to
 the user (they see the actual checks and pick one bundle) while staying inside the
 `AskUserQuestion` tool's 2–4-option, single-select limit.
@@ -49,30 +51,44 @@ as in the merged design. If `get_profile(owner/repo)` returns `None`:
    candidate_checks}`.
 2. If `stack == "unknown"` (empty `candidate_checks`) → do **not** prompt or
    persist; fall back to ad-hoc verification.
-3. Build presets from `candidate_checks` (rule below) and prompt once via
-   `AskUserQuestion`.
+3. Call `build_presets(candidate_checks)` (rule below) to get the explicit option
+   list, then prompt once via `AskUserQuestion`.
 4. Persist the chosen preset via `judge.save_profile(...)`:
    - **All detected** → `source="confirmed"`, all checks `required: true`.
-   - A narrower preset → `source="customized"`, selected checks `required: true`.
+   - A narrower preset (e.g. "Tests only") → `source="customized"`, selected
+     checks `required: true`.
    - **Skip** → `source="skipped"`, `checks=[]` (remembered; see below).
-   - **Other** (auto-added) → route to the free-form NL customize path →
+   - **Customize manually** → route to the free-form NL customize path →
      `source="customized"`.
 
-### Preset generation rule
+### Preset generation rule — `build_presets(candidate_checks)`
 
-Given `candidate_checks` (ordered; `tests` first by construction):
+Preset construction is **deterministic code**, not agent prose. `build_presets`
+takes the detector's `candidate_checks` (ordered; `tests` first by construction)
+and returns the explicit ordered option list. Do **not** depend on the
+`AskUserQuestion` tool auto-adding an "Other"/escape option — "Customize manually"
+is an option we emit ourselves.
+
+Components:
 
 - **"All detected"** — every candidate check, each `required: true`. Always
   present; labeled recommended. Option label lists the commands, e.g.
   *"All detected — pytest + ruff check ."*
-- **"Tests only"** — only the `tests` check (or the first check if none is named
-  `tests`). **Omitted** when it would be identical to "All detected" (i.e. a
-  single detected check), so no duplicate option is ever shown.
+- **"Tests only"** (multi-check, has a `tests` check) / **"First check only"**
+  (multi-check, no check named `tests` → the first candidate). **Omitted** when it
+  would be identical to "All detected" (i.e. a single detected check), so no
+  duplicate option is ever shown.
 - **"Skip — use ad-hoc verification"** — always present.
-- **"Other"** — auto-provided by the tool; routes to NL customize.
+- **"Customize manually"** — always present; routes to the free-form NL customize
+  path.
 
-This yields 2 options (single-check repos: All detected + Skip) to 3 options
-(multi-check repos: All detected + Tests only + Skip), always within the 2–4 limit.
+Resulting menus (always within the `AskUserQuestion` 2–4-option limit):
+
+- **Single check** → All detected · Skip · Customize manually *(3)*
+- **Multi-check with `tests`** → All detected · Tests only · Skip · Customize
+  manually *(4)*
+- **Multi-check without `tests`** → All detected · First check only · Skip ·
+  Customize manually *(4)*
 
 ### Doc reconciliation (absolute paths)
 
@@ -93,9 +109,14 @@ from prose automatically.
 ### Skip is remembered
 
 Skip persists `source="skipped"` with `checks=[]`. On later runs the profile
-exists, so the loop **does not re-prompt** and uses **ad-hoc verification** (the
-narrowest-meaningful-checks fallback) — not "run nothing." Re-detection is
-available via the NL command *"set up a verification profile for this repo."*
+exists, so the loop uses **ad-hoc verification** (the narrowest-meaningful-checks
+fallback) — not "run nothing."
+
+`source="skipped"` suppresses **automatic** detection prompts only. **Explicit
+user intent overrides it** and re-runs detection: an NL command such as *"set up a
+verification profile for this repo"* re-enters the detect → preset-menu → save
+flow and overwrites the skipped marker. So skip is sticky against auto-prompting
+but never blocks a deliberate setup request.
 
 ## Data Model
 
@@ -129,10 +150,13 @@ In v1 every entry in `checks` has `required: true`. A `skipped` profile has
   the NL-commands table.
 - **`README.md`** — update the "Verification profiles" paragraph to describe the
   preset menu and remembered skip.
-- **`detect_profile.py`** — unchanged detection logic. Optionally add a small pure
-  helper (e.g. `build_presets(candidate_checks) -> list[preset]`) so preset
-  construction is deterministic and unit-testable rather than agent-side prose;
-  if added, it does not read/write prefs.
+- **`detect_profile.py`** — unchanged detection logic. **Add** the pure helper
+  `build_presets(candidate_checks) -> list[preset]` so preset construction is
+  deterministic and unit-testable in code, not agent-side prose. It does not
+  read/write prefs. Each returned preset carries a stable label, the gating
+  `checks`, the `source` to persist on selection (`confirmed`/`customized`/
+  `skipped`), and a flag marking the "Customize manually" escape (no checks; hands
+  off to the NL path).
 - **`judge.py`** — unchanged. `save_profile` / `get_profile` already cover all
   three sources.
 - **`run_profile.py`** — unchanged. With all saved checks `required: true`, any
@@ -140,13 +164,19 @@ In v1 every entry in `checks` has `required: true`. A `skipped` profile has
 
 ## Testing
 
-- **Preset generation** (if `build_presets` added): multi-check stack → All
-  detected + Tests only; single-check stack → All detected only (no duplicate);
-  unknown stack → empty (no menu).
+- **`build_presets` (unit)**, asserting exact ordered option labels:
+  - single check → `All detected` · `Skip` · `Customize manually` (no duplicate).
+  - multi-check with `tests` → `All detected` · `Tests only` · `Skip` ·
+    `Customize manually`.
+  - multi-check without `tests` → `All detected` · `First check only` · `Skip` ·
+    `Customize manually`.
+  - unknown stack / empty `candidate_checks` → empty list (no menu).
 - **Source lifecycle**: All detected → `confirmed`; narrower preset → `customized`;
-  Skip → `skipped` with `checks: []`.
-- **Remembered skip**: a `skipped` profile suppresses re-detection and routes to
-  ad-hoc verification.
+  Skip → `skipped` with `checks: []`; Customize manually → escape flag set, no
+  persisted checks.
+- **Remembered skip**: a `skipped` profile suppresses *automatic* re-detection and
+  routes to ad-hoc verification, **but** an explicit "set up a verification
+  profile" request overrides it and re-runs detection.
 - **Absolute path not auto-saved**: a doc-pinned `/opt/homebrew/bin/pytest` is not
   persisted unless explicitly selected.
 - Existing `detect_profile` / `judge` / `run_profile` / integration suites stay
