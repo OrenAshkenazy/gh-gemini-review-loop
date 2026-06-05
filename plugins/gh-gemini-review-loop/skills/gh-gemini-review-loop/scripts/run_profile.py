@@ -46,9 +46,13 @@ def _run_one(check: dict[str, Any], cwd: Path, timeout: int) -> CheckResult:
     command = check["command"]
     required = bool(check.get("required", True))
     start = time.monotonic()
+    argv = shlex.split(command)
+    if not argv:
+        return CheckResult(name, command, required, "failed", None,
+                           time.monotonic() - start)
     try:
         proc = subprocess.run(  # noqa: S603 - command is user-confirmed, no shell
-            shlex.split(command),
+            argv,
             cwd=str(cwd),
             timeout=timeout,
             capture_output=True,

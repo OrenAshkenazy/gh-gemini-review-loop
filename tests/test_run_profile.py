@@ -80,3 +80,11 @@ def test_to_details_dict_is_json_serializable(tmp_path):
     result = run_profile(prof, tmp_path)
     json.dumps(result.to_details())  # must not raise
     assert result.to_details()["verification"] == "passed"
+
+
+def test_empty_command_is_failed_not_crash(tmp_path):
+    prof = _profile([{"name": "blank", "command": "   ", "required": True}])
+    result = run_profile(prof, tmp_path)
+    assert result.verification == "failed"
+    assert result.checks[0].status == "failed"
+    assert result.failed_required == ["blank"]
