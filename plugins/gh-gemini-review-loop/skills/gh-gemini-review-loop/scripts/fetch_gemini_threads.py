@@ -1489,7 +1489,9 @@ def main() -> int:
             # Merge verdicts accumulated across cycles with this invocation's,
             # so the record reflects the whole run even when the terminal pass
             # has no live findings to re-judge. Current invocation supersedes.
-            accumulated_results = run.get("judge_results", {})
+            if not isinstance(run, dict):
+                run = {}
+            accumulated_results = run.get("judge_results")
             if not isinstance(accumulated_results, dict):
                 accumulated_results = {}
             merged_judge_results = merge_judge_results(accumulated_results, judge_results)
