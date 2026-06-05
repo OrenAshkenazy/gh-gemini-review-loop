@@ -123,7 +123,12 @@ starts a fresh clock. If `started_at` is missing, set `started_at = ts` and
 
 ## Feature 1 — Run summary
 
-**Trigger.** Once per run, at loop end (clean, capped, or stopped). Not per cycle.
+**Trigger.** The persisted **record** is written once per run, at loop end (clean,
+capped, or stopped) via `--record-run`. The `[loop] Summary` **block** is also shown
+at the end of each cycle for visibility via the read-only `--cycle-summary` mode
+(builds the block from accumulated state without appending a record or clearing the
+accumulator). Amendment 2026-06-05: per-cycle display added — the original "not per
+cycle" applied only to *writing records*, not to *showing the block*.
 
 **Mechanism.** `metrics.py` exposes `record_run(payload) -> Record` (validate, fill derived
 fields, append one JSONL line) and `format_run_summary(record) -> str`. At loop end the agent

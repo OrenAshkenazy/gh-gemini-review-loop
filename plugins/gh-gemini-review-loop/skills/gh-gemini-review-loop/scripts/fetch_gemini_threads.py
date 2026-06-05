@@ -1230,6 +1230,15 @@ def main() -> int:
             "Use once at loop end. Combine with --fixed-count and --verification."
         ),
     )
+    parser.add_argument(
+        "--cycle-summary",
+        action="store_true",
+        help=(
+            "Print the [loop] Summary block for the current cycle from accumulated "
+            "state, WITHOUT writing a record or clearing run tracking. Safe to call "
+            "every cycle (unlike --record-run, which is terminal and destructive)."
+        ),
+    )
     parser.add_argument("--fixed-count", type=int, default=0, help="Agent-claimed fixes this run.")
     parser.add_argument(
         "--verification",
@@ -1482,9 +1491,13 @@ def main() -> int:
                 f"the configured loop cap is {args.max_rereview_requests}.",
                 file=sys.stderr,
             )
-        if args.record_run:
+        if args.record_run or args.cycle_summary:
             try:
-                update_run_tracking(pr, [(t["id"], t.get("path", "")) for t in threads])
+                # --record-run owns accumulation here because it skips the
+                # per-fetch tracking above; --cycle-summary just reads what that
+                # path already accumulated this cycle.
+                if args.record_run:
+                    update_run_tracking(pr, [(t["id"], t.get("path", "")) for t in threads])
                 run = read_run_tracking(pr)
             except OSError as exc:
                 print(f"warning: could not update or read run tracking: {exc}", file=sys.stderr)
@@ -1542,15 +1555,18 @@ def main() -> int:
                 judge=metrics.build_judge_block(judge_ran, merged_judge_results),
                 **derived,
             )
-            try:
-                metrics.append_record(record)
-            except OSError as exc:
-                print(f"warning: could not record run metrics: {exc}", file=sys.stderr)
-            else:
+            # --cycle-summary is read-only: print the block but never append a
+            # record or clear the accumulator, so it is safe to call every cycle.
+            if args.record_run:
                 try:
-                    clear_run_tracking(pr)
+                    metrics.append_record(record)
                 except OSError as exc:
-                    print(f"warning: could not clear run tracking: {exc}", file=sys.stderr)
+                    print(f"warning: could not record run metrics: {exc}", file=sys.stderr)
+                else:
+                    try:
+                        clear_run_tracking(pr)
+                    except OSError as exc:
+                        print(f"warning: could not clear run tracking: {exc}", file=sys.stderr)
             print(metrics.format_run_summary(record))
             return 0
         if args.post_receipt or args.sticky_receipt:

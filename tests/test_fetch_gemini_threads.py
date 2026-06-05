@@ -750,6 +750,60 @@ class TestRecordRunIntegration:
         assert read_run_tracking(pr) == {}
 
 
+class TestCycleSummary:
+    """Drive main() --cycle-summary with the GitHub seams stubbed: it must print
+    the [loop] Summary block from accumulated state WITHOUT writing a record or
+    clearing the accumulator, so it is safe to call every cycle."""
+
+    def test_cycle_summary_prints_block_without_recording_or_clearing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+        from metrics import runs_log_path
+
+        pr = PullRequest(owner="o", repo="r", number=7)
+
+        # A prior cycle fetched two findings and judged them.
+        update_run_tracking(pr, [("t1", "a.py"), ("t2", "b.py")])
+        accumulate_judge_results(pr, {
+            "t1": {"verdict": "valid_actionable", "recommended_action": "fix"},
+            "t2": {"verdict": "false_positive", "recommended_action": "ignore"},
+        })
+
+        # This cycle: t2 still actionable. Stub the GitHub seams.
+        thread = {"id": "t2", "path": "b.py"}
+        monkeypatch.setattr(fgt, "resolve_pr", lambda spec: pr)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda p: {"stub": True})
+        monkeypatch.setattr(fgt, "filter_threads", lambda *a, **k: [thread])
+        monkeypatch.setattr(fgt, "sort_by_severity", lambda threads: threads)
+        monkeypatch.setattr(fgt, "rereview_requests", lambda *a, **k: ["c1"])
+        monkeypatch.setattr(fgt, "addressed_by_reply_threads", lambda *a, **k: [])
+        monkeypatch.setattr(fgt, "pagination_warnings", lambda pull_request: [])
+
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py", "--cycle-summary",
+            "--judge-mode", "off", "--no-agent-filter",
+            "--no-resolve-outdated", "--no-resolve-addressed-by-reply",
+            "--fixed-count", "1", "--verification", "passed",
+        ])
+
+        rc = fgt.main()
+        assert rc == 0
+
+        out = capsys.readouterr().out
+        assert "[loop] Summary" in out
+        assert "Findings fetched: 2" in out      # t1 + t2 accumulated
+        assert "Fixed: 1" in out
+        assert "Ignored by judge: 1" in out      # t2 false_positive, from accumulation
+
+        # Read-only: no record written, accumulator NOT cleared.
+        assert not runs_log_path().exists()
+        run = read_run_tracking(pr)
+        assert set(run.get("finding_ids", [])) == {"t1", "t2"}
+        assert run.get("judge_results")  # verdicts still present for next cycle
+
+
 class TestDeriveRecordFields:
     def test_observed_fixed_and_findings_and_needs_human(self):
         # baseline saw t1,t2,t3,t4; now t1 still actionable, t2 addressed-by-reply,
