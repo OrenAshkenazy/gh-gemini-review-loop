@@ -790,9 +790,15 @@ def record_cycle(
     }
     state = load_sticky_state()
     key = _state_key(pr)
-    entry = dict(state.get(key) or {})
-    run = dict(entry.get("run") or {})
-    cycles = list(run.get("cycles") or [])
+    # The state file can be hand-edited or corrupt; verify each level is the
+    # expected type before casting (dict()/list() on a string/int would raise),
+    # mirroring accumulate_judge_results.
+    entry = state.get(key)
+    entry = dict(entry) if isinstance(entry, dict) else {}
+    run = entry.get("run")
+    run = dict(run) if isinstance(run, dict) else {}
+    cycles = run.get("cycles")
+    cycles = list(cycles) if isinstance(cycles, list) else []
     cycles.append(cycle)
     run["cycles"] = cycles
     entry["run"] = run

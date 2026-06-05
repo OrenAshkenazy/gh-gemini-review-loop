@@ -306,6 +306,27 @@ class TestAggregate:
         assert agg["avg_active_time_per_run"] is None
         assert agg["avg_cycles_per_run"] is None
 
+    def test_elapsed_ignores_non_numeric_duration(self):
+        # A corrupt/hand-edited record with a non-numeric (or bool) duration
+        # must be excluded from the average rather than crash summation.
+        recs = [
+            self._rec(duration_seconds="oops"),
+            self._rec(duration_seconds=True),   # bool is not a real duration
+            self._rec(duration_seconds=600),
+        ]
+        assert metrics.aggregate(recs)["avg_duration"] == 600.0
+
+    def test_active_metrics_skip_non_dict_and_non_numeric_cycles(self):
+        recs = [self._rec(cycles=[
+            True,                                       # non-dict element
+            {"duration_seconds": 100, "outcome": "continued"},
+            {"duration_seconds": "bad", "outcome": "clean"},   # non-numeric
+        ])]
+        agg = metrics.aggregate(recs)
+        assert agg["avg_active_cycle_time"] == 100.0   # only the numeric dict
+        assert agg["avg_active_time_per_run"] == 100.0
+        assert agg["avg_cycles_per_run"] == 2.0        # two dict cycles, non-dict skipped
+
     def test_malformed_or_empty_cycles_excluded_without_crash(self):
         # A non-list truthy "cycles" (corrupt/hand-edited record) must not be
         # iterated/len()'d (TypeError); an empty list is "no recorded cycles".

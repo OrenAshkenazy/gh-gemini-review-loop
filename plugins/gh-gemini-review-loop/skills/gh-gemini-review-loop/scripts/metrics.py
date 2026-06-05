@@ -187,16 +187,27 @@ def _avg(values: list[float]) -> float | None:
     return (sum(values) / len(values)) if values else None
 
 
+def _is_number(x: Any) -> bool:
+    """True for a real numeric duration: int/float but not bool.
+
+    Records come from a local JSONL log that can be hand-edited or corrupted,
+    so a duration could be a string, None, or bool. Validating the type keeps
+    aggregation from crashing on summation. ``bool`` is excluded because
+    True/False are not meaningful durations even though they are ``int``.
+    """
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
 def _elapsed_for(records: list[dict[str, Any]], outcomes: tuple[str, ...]) -> float | None:
     """Average duration_seconds over records whose outcome is in ``outcomes``.
 
-    Durations are included with an explicit ``is not None`` check so a valid
-    0-second run is not silently dropped.
+    Durations are validated numeric (an explicit check that also keeps a valid
+    0-second run, which a truthiness test would drop).
     """
     vals = [
         r["duration_seconds"]
         for r in records
-        if r.get("outcome") in outcomes and r.get("duration_seconds") is not None
+        if r.get("outcome") in outcomes and _is_number(r.get("duration_seconds"))
     ]
     return _avg(vals)
 
@@ -206,10 +217,10 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     if n == 0:
         return {"count": 0}
     cycles = [r.get("cycles_used", 0) for r in records]
-    # Explicit None check (not truthiness): a valid 0-second elapsed run must
-    # still count toward the average.
+    # Validate numeric (keeps a valid 0-second run, which a truthiness test
+    # would drop; rejects corrupt string/bool durations that would crash sum()).
     durations = [
-        r["duration_seconds"] for r in records if r.get("duration_seconds") is not None
+        r["duration_seconds"] for r in records if _is_number(r.get("duration_seconds"))
     ]
     judged = [r for r in records if (r.get("judge") or {}).get("enabled")]
     false_pos = sum(
@@ -226,17 +237,27 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     runs_with_cycles = [
         r for r in records if isinstance(r.get("cycles"), list) and r["cycles"]
     ]
-    all_cycles = [c for r in runs_with_cycles for c in r["cycles"]]
+    # Cycle entries can be corrupt too: keep only dicts, and only numeric
+    # durations, so a malformed entry never crashes aggregation.
+    all_cycles = [
+        c for r in runs_with_cycles for c in r["cycles"] if isinstance(c, dict)
+    ]
     cycle_durations = [
         c["duration_seconds"]
         for c in all_cycles
-        if c.get("duration_seconds") is not None
+        if _is_number(c.get("duration_seconds"))
     ]
     run_active_totals = [
-        sum(c.get("duration_seconds") or 0 for c in r["cycles"])
+        sum(
+            c["duration_seconds"]
+            for c in r["cycles"]
+            if isinstance(c, dict) and _is_number(c.get("duration_seconds"))
+        )
         for r in runs_with_cycles
     ]
-    cycle_counts = [len(r["cycles"]) for r in runs_with_cycles]
+    cycle_counts = [
+        sum(1 for c in r["cycles"] if isinstance(c, dict)) for r in runs_with_cycles
+    ]
 
     return {
         "count": n,

@@ -654,6 +654,18 @@ class TestRunTracking:
         assert [c["duration_seconds"] for c in cycles] == [120, 180]
         assert [c["outcome"] for c in cycles] == ["continued", "clean"]
 
+    def test_record_cycle_tolerates_corrupt_state(self, tmp_path, monkeypatch):
+        # A corrupt/hand-edited state (run is a string, or cycles is an int)
+        # must not crash record_cycle's dict()/list() casts.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        from fetch_gemini_threads import save_sticky_state, _state_key
+        save_sticky_state({_state_key(pr): {"run": "corrupt-not-a-dict"}})
+        cycle = record_cycle(pr, started_at="2026-06-05T09:00:00Z",
+                             finished_at="2026-06-05T09:01:00Z", finding_count=1, outcome="clean")
+        assert cycle["duration_seconds"] == 60
+        assert read_run_tracking(pr)["cycles"] == [cycle]  # reset cleanly, appended
+
     def test_record_cycle_cli_warns_and_exits_zero_on_io_error(
         self, tmp_path, monkeypatch, capsys
     ):
