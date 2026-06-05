@@ -110,6 +110,85 @@ def _detect_go(root: Path) -> dict[str, Any]:
     }
 
 
+def _required(check: dict[str, Any]) -> dict[str, Any]:
+    """A copy of ``check`` forced to required=True.
+
+    v1 has a single gating tier: every check in a saved profile is required.
+    Detection may mark a check optional (e.g. mypy); when it becomes a gate we
+    normalize it to required so persistence and run_profile gate on it.
+    """
+    return {"name": check["name"], "command": check["command"], "required": True}
+
+
+def _commands_label(checks: list[dict[str, Any]]) -> str:
+    return " + ".join(c["command"] for c in checks)
+
+
+def build_presets(candidate_checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build the explicit ordered preset menu from detector candidate checks.
+
+    Pure function. Returns a list of preset dicts, each shaped::
+
+        {"label": str, "checks": list[check], "source": str | None,
+         "customize": bool}
+
+    Rules:
+    - Empty candidates (unknown stack) -> ``[]``; the caller shows no menu and
+      falls back to ad-hoc verification.
+    - "All detected" -> every candidate check, each required=True,
+      ``source="confirmed"``. Always present.
+    - A narrower option appears only for multi-check repos (omitted when it
+      would duplicate "All detected"): "Tests only" when a check named ``tests``
+      exists, else "First check only" (the first candidate). ``source="customized"``.
+    - "Skip - use ad-hoc verification" -> ``source="skipped"``, no checks.
+    - "Customize manually" -> escape option (``customize=True``, ``source=None``,
+      no checks); the caller hands off to the free-form NL customize path.
+
+    Every option is emitted here. Nothing relies on the prompt tool auto-adding
+    an "Other"/escape option.
+    """
+    if not candidate_checks:
+        return []
+    all_checks = [_required(c) for c in candidate_checks]
+    presets: list[dict[str, Any]] = [
+        {
+            "label": f"All detected — {_commands_label(all_checks)}",
+            "checks": all_checks,
+            "source": "confirmed",
+            "customize": False,
+        }
+    ]
+    if len(candidate_checks) > 1:
+        tests = next((c for c in candidate_checks if c["name"] == "tests"), None)
+        narrow = _required(tests if tests is not None else candidate_checks[0])
+        label_prefix = "Tests only" if tests is not None else "First check only"
+        presets.append(
+            {
+                "label": f"{label_prefix} — {narrow['command']}",
+                "checks": [narrow],
+                "source": "customized",
+                "customize": False,
+            }
+        )
+    presets.append(
+        {
+            "label": "Skip — use ad-hoc verification",
+            "checks": [],
+            "source": "skipped",
+            "customize": False,
+        }
+    )
+    presets.append(
+        {
+            "label": "Customize manually",
+            "checks": [],
+            "source": None,
+            "customize": True,
+        }
+    )
+    return presets
+
+
 def detect(repo_root: Path | str) -> dict[str, Any]:
     """Return {stack, confidence, reasons, candidate_checks} for ``repo_root``.
 
@@ -144,7 +223,9 @@ def detect(repo_root: Path | str) -> dict[str, Any]:
 
 def main(argv: list[str]) -> int:
     root = argv[1] if len(argv) > 1 else "."
-    print(json.dumps(detect(root), indent=2))
+    result = detect(root)
+    result["presets"] = build_presets(result["candidate_checks"])
+    print(json.dumps(result, indent=2))
     return 0
 
 

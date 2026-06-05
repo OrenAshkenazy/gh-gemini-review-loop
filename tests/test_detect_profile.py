@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 
-from detect_profile import detect
+from detect_profile import build_presets, detect, main
 
 
 def _names(result):
     return [c["name"] for c in result["candidate_checks"]]
+
+
+def _labels(presets):
+    return [p["label"] for p in presets]
 
 
 def test_python_pyproject_with_optional_tools(tmp_path):
@@ -160,3 +164,88 @@ def test_python_read_error_degrades_without_crash(tmp_path, monkeypatch):
     result = detect(tmp_path)
     assert result["stack"] == "python"
     assert _names(result) == ["tests"]  # ruff/mypy skipped: read failed safely
+
+
+def test_build_presets_empty_candidates_returns_no_menu():
+    assert build_presets([]) == []
+
+
+def test_build_presets_single_check_has_no_narrower_option():
+    candidates = [{"name": "tests", "command": "cargo test", "required": True}]
+    presets = build_presets(candidates)
+    assert _labels(presets) == [
+        "All detected — cargo test",
+        "Skip — use ad-hoc verification",
+        "Customize manually",
+    ]
+
+
+def test_build_presets_multi_check_with_tests_offers_tests_only():
+    candidates = [
+        {"name": "tests", "command": "pytest", "required": True},
+        {"name": "lint", "command": "ruff check .", "required": True},
+    ]
+    presets = build_presets(candidates)
+    assert _labels(presets) == [
+        "All detected — pytest + ruff check .",
+        "Tests only — pytest",
+        "Skip — use ad-hoc verification",
+        "Customize manually",
+    ]
+
+
+def test_build_presets_multi_check_without_tests_offers_first_check_only():
+    candidates = [
+        {"name": "lint", "command": "npm run lint", "required": True},
+        {"name": "typecheck", "command": "npm run typecheck", "required": False},
+    ]
+    presets = build_presets(candidates)
+    assert _labels(presets) == [
+        "All detected — npm run lint + npm run typecheck",
+        "First check only — npm run lint",
+        "Skip — use ad-hoc verification",
+        "Customize manually",
+    ]
+
+
+def test_build_presets_forces_required_true_on_all_gating_checks():
+    candidates = [
+        {"name": "tests", "command": "pytest", "required": True},
+        {"name": "typecheck", "command": "mypy .", "required": False},
+    ]
+    presets = build_presets(candidates)
+    all_detected = presets[0]
+    assert all_detected["source"] == "confirmed"
+    assert all(c["required"] is True for c in all_detected["checks"])
+
+
+def test_build_presets_sources_and_customize_flag():
+    candidates = [
+        {"name": "tests", "command": "pytest", "required": True},
+        {"name": "lint", "command": "ruff check .", "required": True},
+    ]
+    by_label = {p["label"]: p for p in build_presets(candidates)}
+    assert by_label["All detected — pytest + ruff check ."]["source"] == "confirmed"
+    assert by_label["Tests only — pytest"]["source"] == "customized"
+    skip = by_label["Skip — use ad-hoc verification"]
+    assert skip["source"] == "skipped" and skip["checks"] == []
+    customize = by_label["Customize manually"]
+    assert customize["customize"] is True and customize["source"] is None
+
+
+def test_main_output_includes_presets_key(tmp_path, capsys):
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\ndependencies = ['ruff']\n"
+    )
+    (tmp_path / "tests").mkdir()
+    rc = main(["detect_profile.py", str(tmp_path)])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stack"] == "python"
+    assert payload["candidate_checks"]
+    assert [p["label"] for p in payload["presets"]] == [
+        "All detected — pytest + ruff check .",
+        "Tests only — pytest",
+        "Skip — use ad-hoc verification",
+        "Customize manually",
+    ]
