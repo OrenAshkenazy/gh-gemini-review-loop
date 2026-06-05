@@ -281,6 +281,7 @@ def save_profile(
             f"source must be one of {sorted(PROFILE_SOURCES)}; got {source!r}."
         )
     prefs = load_preferences()
+    prefs["schema_version"] = PREFS_SCHEMA_VERSION
     profile: dict[str, t.Any] = {
         "source": source,
         "updated_at": _dt.datetime.now(_dt.timezone.utc).strftime(

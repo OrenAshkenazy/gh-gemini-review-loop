@@ -116,7 +116,7 @@ Persist via `save_preferences()`. Mapping:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "judge_mode": "off",
   "judge_tip_shown": true,
   "max_rereview_requests": 3
@@ -144,7 +144,7 @@ from pathlib import Path
 
 path = Path.home() / ".config" / "gh-gemini-review-loop" / "preferences.json"
 prefs = json.loads(path.read_text()) if path.exists() else {}
-prefs["schema_version"] = 1
+prefs["schema_version"] = 2
 prefs["max_rereview_requests"] = 4
 path.write_text(json.dumps(prefs, indent=2, sort_keys=True) + "\n")
 PY
@@ -154,7 +154,7 @@ Or edit the JSON directly:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "max_rereview_requests": 4
 }
 ```
@@ -193,8 +193,11 @@ returns `None`:
 ### Subsequent runs
 
 A profile (including a `skipped` one) exists → **no prompt**. If `source` is
-`confirmed` or `customized`, run the checks via `run_profile.py`; on `skipped`
-or unknown stack, use today's ad-hoc "narrowest meaningful checks".
+`confirmed` or `customized`, run `run_profile.py <owner/repo> <repo_root>` — it
+prints `to_details()` JSON and exits non-zero if a required check failed; feed
+its `verification` into `--verification` and the JSON into
+`--verification-details`. On `skipped` or unknown stack, use today's ad-hoc
+"narrowest meaningful checks".
 
 ### Customizing / un-skipping
 
@@ -398,8 +401,11 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
    - Make each change traceable to a feedback cluster.
 
 9. Verify.
-   - If a `confirmed`/`customized` profile exists for this repo, run it with
-     `run_profile.py` and apply the required-gate (see "Verification Profile").
+   - If a `confirmed`/`customized` profile exists for this repo, run
+     `run_profile.py <owner/repo> <repo_root>` — it prints `to_details()` JSON
+     and exits non-zero if a required check failed; feed its `verification` into
+     `--verification` and the JSON into `--verification-details`
+     (see "Verification Profile").
    - Otherwise (no profile, `skipped`, or unknown stack): run the narrowest
      meaningful checks first; broaden when shared logic or user-facing behavior
      changes.

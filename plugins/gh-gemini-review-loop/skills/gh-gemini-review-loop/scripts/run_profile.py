@@ -9,8 +9,10 @@ failures are recorded but non-gating.
 from __future__ import annotations
 
 import dataclasses
+import json
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -80,3 +82,35 @@ def run_profile(profile: dict[str, Any], repo_root: Path | str) -> ProfileRunRes
     ]
     verification = "failed" if failed_required else "passed"
     return ProfileRunResult(verification, results, failed_required)
+
+
+def main(argv: list[str]) -> int:
+    """CLI: run_profile.py <owner/repo> <repo_root>.
+
+    Loads the saved profile for the repo, runs it, prints to_details() JSON,
+    and exits 0 if verification passed / 1 if it failed. A missing, skipped,
+    or empty profile prints a 'skipped' result and exits 0 (the loop falls
+    back to ad-hoc verification).
+    """
+    if len(argv) < 3:
+        print("usage: run_profile.py <owner/repo> <repo_root>", file=sys.stderr)
+        return 2
+    repo, repo_root = argv[1], argv[2]
+    try:
+        from judge import get_profile  # noqa: PLC0415
+    except ImportError:
+        print(json.dumps({"verification": "skipped",
+                          "reason": "judge module unavailable"}))
+        return 0
+    profile = get_profile(repo)
+    if not profile or profile.get("source") == "skipped" or not profile.get("checks"):
+        print(json.dumps({"verification": "skipped",
+                          "reason": "no runnable profile"}))
+        return 0
+    result = run_profile(profile, repo_root)
+    print(json.dumps(result.to_details(), indent=2))
+    return 0 if result.verification == "passed" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
