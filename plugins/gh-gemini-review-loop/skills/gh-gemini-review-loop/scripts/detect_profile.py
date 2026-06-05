@@ -8,6 +8,7 @@ persistence and prose-reconciliation happen in the agent/judge layers.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -34,12 +35,17 @@ def _detect_python(root: Path) -> dict[str, Any]:
     deps_text = ""
     if has_pyproject:
         try:
-            deps_text = pyproject.read_text(encoding="utf-8")
-        except OSError:
+            # errors="replace" + catching ValueError so invalid UTF-8 bytes
+            # (UnicodeDecodeError is a ValueError, not OSError) degrade rather
+            # than crash the detection loop.
+            deps_text = pyproject.read_text(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
             deps_text = ""
-    if "ruff" in deps_text:
+    # Word-boundary match so a dependency like "gruff" does not false-positive
+    # as "ruff".
+    if re.search(r"\bruff\b", deps_text):
         checks.append(_check("lint", "ruff check .", True))
-    if "mypy" in deps_text:
+    if re.search(r"\bmypy\b", deps_text):
         checks.append(_check("typecheck", "mypy .", False))
     return {
         "stack": "python",
@@ -51,8 +57,12 @@ def _detect_python(root: Path) -> dict[str, Any]:
 
 def _detect_node(root: Path) -> dict[str, Any]:
     try:
-        data = json.loads((root / "package.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        # errors="replace" guards invalid UTF-8 (UnicodeDecodeError is a
+        # ValueError, not OSError/JSONDecodeError); ValueError also covers
+        # json.JSONDecodeError (its subclass) for malformed content.
+        text = (root / "package.json").read_text(encoding="utf-8", errors="replace")
+        data = json.loads(text)
+    except (OSError, ValueError):
         data = {}
     raw_scripts = data.get("scripts", {}) if isinstance(data, dict) else {}
     # `scripts` can be any JSON type in a hand-edited/corrupt package.json; a

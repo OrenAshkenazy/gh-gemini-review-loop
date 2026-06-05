@@ -82,6 +82,40 @@ def test_node_non_dict_scripts_is_safe(tmp_path):
     assert result["candidate_checks"] == []
 
 
+def test_python_pyproject_invalid_utf8_is_safe(tmp_path):
+    # Invalid UTF-8 bytes -> read_text(encoding="utf-8") would raise
+    # UnicodeDecodeError (a ValueError subclass, not OSError). Must degrade,
+    # not crash. errors="replace" makes the read succeed; the garbage bytes
+    # carry no tool names, so only the base "tests" check remains.
+    (tmp_path / "pyproject.toml").write_bytes(b"\xff\xfe\x80\x81\x82 binary junk")
+    result = detect(tmp_path)
+    assert result["stack"] == "python"
+    assert _names(result) == ["tests"]
+
+
+def test_node_package_json_invalid_utf8_is_safe(tmp_path):
+    (tmp_path / "package.json").write_bytes(b"\xff\xfe not utf8")
+    result = detect(tmp_path)
+    assert result["stack"] == "node"
+    assert result["candidate_checks"] == []
+
+
+def test_python_ruff_substring_does_not_false_positive(tmp_path):
+    # "gruff" contains "ruff" but is not the ruff tool; word-boundary match
+    # must not add a lint check.
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.poetry.dependencies]\ngruff = "^1.0"\n'
+    )
+    assert "lint" not in _names(detect(tmp_path))
+
+
+def test_python_ruff_word_is_detected(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.ruff]\nline-length = 88\n"
+    )
+    assert "lint" in _names(detect(tmp_path))
+
+
 def test_strong_marker_beats_bare_tests_dir(tmp_path):
     # A node repo that also has a tests/ dir must detect as node, not python:
     # tests/ is a weak signal common to many languages (Gemini review #30).
