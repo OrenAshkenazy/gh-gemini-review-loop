@@ -692,6 +692,64 @@ class TestJudgeAccumulation:
         }
 
 
+class TestRecordRunIntegration:
+    """Drive main() --record-run with the GitHub seams stubbed, proving the
+    eval accumulated across cycles lands in the record at terminal 'clean'.
+
+    No real network/gh calls — every GitHub-touching function is monkeypatched.
+    """
+
+    def test_clean_record_run_reports_accumulated_eval(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+        from metrics import runs_log_path
+
+        pr = PullRequest(owner="o", repo="r", number=7)
+
+        # Cycle 1: fetched two findings and judged them; verdicts persisted.
+        update_run_tracking(pr, [("t1", "a.py"), ("t2", "b.py")])
+        accumulate_judge_results(pr, {
+            "t1": {"verdict": "valid_actionable", "recommended_action": "fix"},
+            "t2": {"verdict": "false_positive", "recommended_action": "ignore"},
+        })
+
+        # Terminal pass: the PR is now clean (both findings resolved). Stub the
+        # GitHub seams so filter_threads yields zero actionable threads.
+        monkeypatch.setattr(fgt, "resolve_pr", lambda spec: pr)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda p: {"stub": True})
+        monkeypatch.setattr(fgt, "filter_threads", lambda *a, **k: [])
+        monkeypatch.setattr(fgt, "sort_by_severity", lambda threads: threads)
+        monkeypatch.setattr(fgt, "rereview_requests", lambda *a, **k: ["c1"])
+        monkeypatch.setattr(fgt, "addressed_by_reply_threads", lambda *a, **k: [])
+        monkeypatch.setattr(fgt, "pagination_warnings", lambda pull_request: [])
+
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py", "--record-run",
+            "--judge-mode", "off",  # no OpenAI: the eval comes from accumulation
+            "--no-agent-filter",
+            "--no-resolve-outdated", "--no-resolve-addressed-by-reply",
+            "--fixed-count", "2", "--verification", "passed", "--outcome", "clean",
+        ])
+
+        rc = fgt.main()
+        assert rc == 0
+
+        out = capsys.readouterr().out
+        assert "Ignored by judge: 1" in out      # false_positive counts as ignored
+        assert "Needs human (judge): 0" in out
+
+        record = json.loads(runs_log_path().read_text().strip().splitlines()[-1])
+        assert record["judge"]["enabled"] is True
+        assert record["judge"]["verdicts"]["valid_actionable"] == 1
+        assert record["judge"]["verdicts"]["false_positive"] == 1
+        assert record["findings_fetched"] == 2
+        assert record["observed_fixed_count"] == 2     # both resolved this run
+        # run state is cleared at record end -> no leakage into the next run
+        assert read_run_tracking(pr) == {}
+
+
 class TestDeriveRecordFields:
     def test_observed_fixed_and_findings_and_needs_human(self):
         # baseline saw t1,t2,t3,t4; now t1 still actionable, t2 addressed-by-reply,
