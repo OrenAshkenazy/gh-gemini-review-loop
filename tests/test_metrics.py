@@ -132,17 +132,38 @@ class TestFormatRunSummary:
         base.update(over)
         return base
 
-    def test_judge_off_omits_judge_lines(self):
+    def test_judge_off_default_receipt(self):
+        # observed_fixed_count == fixed_count, so no "Observed fixed" line.
         out = metrics.format_run_summary(self._rec())
         assert out.splitlines() == [
             "[loop] Summary",
             "Findings fetched: 7",
             "Fixed: 4",
+            "Remaining actionable: 1",
             "Needs human: 1",
             "Cycles used: 2/3",
             "Verification: passed",
+            "Outcome: clean",
             "Time to clean PR: 12m",
         ]
+
+    def test_observed_fixed_shown_when_differs_from_fixed(self):
+        out = metrics.format_run_summary(
+            self._rec(fixed_count=2, observed_fixed_count=1)
+        ).splitlines()
+        assert out[2] == "Fixed: 2"
+        assert out[3] == "Observed fixed: 1"
+
+    def test_observed_fixed_omitted_when_equal_to_fixed(self):
+        assert "Observed fixed" not in metrics.format_run_summary(self._rec())
+
+    def test_outcome_line_present(self):
+        assert "Outcome: clean" in metrics.format_run_summary(self._rec())
+
+    def test_time_label_is_spent_when_outcome_not_clean(self):
+        out = metrics.format_run_summary(self._rec(outcome="human"))
+        assert "Time spent: 12m" in out
+        assert "Time to clean PR" not in out
 
     def test_addressed_by_reply_line_omitted_when_zero(self):
         assert "Addressed by reply" not in metrics.format_run_summary(self._rec())
@@ -151,7 +172,22 @@ class TestFormatRunSummary:
         out = metrics.format_run_summary(self._rec(addressed_by_reply=2))
         assert "Addressed by reply: 2" in out
 
-    def test_judge_on_inserts_two_judge_lines_after_fixed(self):
+    def test_failed_check_line_shown_when_verification_failed(self):
+        out = metrics.format_run_summary(
+            self._rec(
+                verification="failed",
+                verification_details={"failed_check": "lint"},
+                outcome="verification_failed",
+            )
+        ).splitlines()
+        i = out.index("Verification: failed")
+        assert out[i + 1] == "Failed check: lint"
+        assert out[i + 2] == "Outcome: verification_failed"
+
+    def test_failed_check_line_omitted_when_verification_passed(self):
+        assert "Failed check" not in metrics.format_run_summary(self._rec())
+
+    def test_judge_on_inserts_renamed_lines_after_fixed(self):
         judge = {
             "enabled": True,
             "verdicts": {
@@ -163,8 +199,18 @@ class TestFormatRunSummary:
         out = metrics.format_run_summary(self._rec(judge=judge)).splitlines()
         assert out[2] == "Fixed: 4"
         assert out[3] == "Ignored by judge: 3"   # false_positive+duplicate+already_addressed+explanation_only
-        assert out[4] == "Needs human (judge): 1"
-        assert out[5] == "Needs human: 1"
+        assert out[4] == "Needs human by judge: 1"
+        assert out[5] == "Remaining actionable: 1"
+
+    def test_judge_lines_omitted_when_zero(self):
+        judge = {
+            "enabled": True,
+            "verdicts": {v: 0 for v in metrics.JUDGE_VERDICTS},
+            "recommended_actions": {a: 0 for a in metrics.JUDGE_ACTIONS},
+        }
+        out = metrics.format_run_summary(self._rec(judge=judge))
+        assert "Ignored by judge" not in out
+        assert "Needs human by judge" not in out
 
 
 class TestAggregate:
