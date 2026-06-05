@@ -102,3 +102,18 @@ def test_directory_named_package_json_is_not_node(tmp_path):
     (tmp_path / "package.json").mkdir()
     result = detect(tmp_path)
     assert result["stack"] == "unknown"
+
+
+def test_python_read_error_degrades_without_crash(tmp_path, monkeypatch):
+    # is_file() True but read_text raises OSError (permissions/broken symlink):
+    # detection must not crash; it degrades to the base pytest check.
+    (tmp_path / "pyproject.toml").write_text("[project]\ndependencies=['ruff']\n")
+    import detect_profile
+
+    def boom(*a, **k):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(detect_profile.Path, "read_text", boom)
+    result = detect(tmp_path)
+    assert result["stack"] == "python"
+    assert _names(result) == ["tests"]  # ruff/mypy skipped: read failed safely

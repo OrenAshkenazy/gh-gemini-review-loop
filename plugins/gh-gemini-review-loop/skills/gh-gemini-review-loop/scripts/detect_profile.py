@@ -28,7 +28,15 @@ def _detect_python(root: Path) -> dict[str, Any]:
     if (root / "tests").is_dir():
         reasons.append("tests/")
     checks = [_check("tests", "pytest", True)]
-    deps_text = pyproject.read_text(encoding="utf-8") if has_pyproject else ""
+    # is_file() can still be followed by an OSError on read (permissions, broken
+    # symlink); degrade to no optional-tool detection rather than crash, matching
+    # the guarded read in _detect_node.
+    deps_text = ""
+    if has_pyproject:
+        try:
+            deps_text = pyproject.read_text(encoding="utf-8")
+        except OSError:
+            deps_text = ""
     if "ruff" in deps_text:
         checks.append(_check("lint", "ruff check .", True))
     if "mypy" in deps_text:
