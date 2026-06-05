@@ -221,7 +221,11 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     # Active-cycle metrics: only runs that recorded per-cycle timing. Legacy
     # records without a "cycles" list are excluded from active metrics (but
     # still contribute to the elapsed metrics above).
-    runs_with_cycles = [r for r in records if r.get("cycles")]
+    # Require a non-empty list: a non-list truthy value (corrupt record) would
+    # TypeError on iteration/len(); an empty list means "no recorded cycles".
+    runs_with_cycles = [
+        r for r in records if isinstance(r.get("cycles"), list) and r["cycles"]
+    ]
     all_cycles = [c for r in runs_with_cycles for c in r["cycles"]]
     cycle_durations = [
         c["duration_seconds"]

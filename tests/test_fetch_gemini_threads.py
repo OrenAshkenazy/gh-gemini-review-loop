@@ -654,6 +654,27 @@ class TestRunTracking:
         assert [c["duration_seconds"] for c in cycles] == [120, 180]
         assert [c["outcome"] for c in cycles] == ["continued", "clean"]
 
+    def test_record_cycle_cli_warns_and_exits_zero_on_io_error(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # A failed metrics write must not break the loop: warn, exit 0.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+
+        def _boom(*a, **k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(fgt, "save_sticky_state", _boom)
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py",
+            "--pr", "https://github.com/o/r/pull/9",
+            "--record-cycle", "--cycle-started-at", "2026-06-05T09:00:00Z",
+            "--finding-count", "2", "--cycle-outcome", "continued",
+        ])
+        rc = fgt.main()
+        assert rc == 0
+        assert "could not record cycle timing" in capsys.readouterr().err
+
 
 class TestJudgeAccumulation:
     def _pr(self):

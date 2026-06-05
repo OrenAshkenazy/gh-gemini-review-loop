@@ -306,6 +306,19 @@ class TestAggregate:
         assert agg["avg_active_time_per_run"] is None
         assert agg["avg_cycles_per_run"] is None
 
+    def test_malformed_or_empty_cycles_excluded_without_crash(self):
+        # A non-list truthy "cycles" (corrupt/hand-edited record) must not be
+        # iterated/len()'d (TypeError); an empty list is "no recorded cycles".
+        recs = [
+            self._rec(cycles=True),      # non-list truthy
+            self._rec(cycles="oops"),    # non-list truthy
+            self._rec(cycles=[]),        # empty -> excluded
+        ]
+        agg = metrics.aggregate(recs)    # must not raise
+        assert agg["avg_active_cycle_time"] is None
+        assert agg["avg_active_time_per_run"] is None
+        assert agg["avg_cycles_per_run"] is None
+
     def test_active_cycle_time_skips_none_cycle_duration(self):
         recs = [self._rec(cycles=[
             {"duration_seconds": None, "finding_count": 1, "outcome": "continued"},

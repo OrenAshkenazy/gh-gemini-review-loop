@@ -1380,8 +1380,11 @@ def main() -> int:
                 outcome=args.cycle_outcome,
             )
         except OSError as exc:
+            # Metrics state I/O is best-effort: warn and exit 0 so a failed
+            # write never breaks the loop. Return here (do not fall through to
+            # the success print, which would reference an unbound `cycle`).
             print(f"warning: could not record cycle timing: {exc}", file=sys.stderr)
-            return 1
+            return 0
         print(
             f"[loop] recorded cycle: {metrics.format_duration(cycle['duration_seconds'])} "
             f"active ({cycle['finding_count']} finding(s), outcome={cycle['outcome']})."
