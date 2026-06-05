@@ -192,7 +192,18 @@ See [SKILL.md -> Optional Judge Eval](plugins/gh-gemini-review-loop/skills/gh-ge
 
 ### Verification profiles
 
-The loop can detect a per-repo **verification profile** on first run — the exact checks to run at the verify step (pytest/ruff, npm scripts, cargo, go test, or custom). Detection is automatic: on the first cycle with actionable findings, the agent scans the repo for signals (pyproject.toml, package.json, Cargo.toml, go.mod), proposes a set of required and optional checks, and asks you to confirm, customize, or skip. The profile is stored under `profiles["owner/repo"]` in `~/.config/gh-gemini-review-loop/preferences.json`. Subsequent runs skip the prompt and run the saved profile. Required checks gate the loop (`--verification failed`); optional failures are recorded in details but do not block. Say "set up a verification profile for this repo" to force re-detection, or "skip verification profile" to opt out and stay on ad-hoc checks.
+The loop can detect a per-repo **verification profile** on first run — the exact
+checks to run at the verify step (pytest/ruff, npm scripts, cargo, go test). On
+the first cycle with actionable findings, the agent scans the repo for signals
+(pyproject.toml, package.json, Cargo.toml, go.mod) and presents a short **preset
+menu**: *All detected*, a narrower *Tests only* / *First check only* (multi-check
+repos), *Skip — use ad-hoc verification*, and *Customize manually*. Picking a
+preset persists it under `profiles["owner/repo"]` in
+`~/.config/gh-gemini-review-loop/preferences.json`; later runs skip the prompt and
+run the saved checks. In v1 every saved check is a required gate — failure flips
+the verify step to `--verification failed`. **Skip is remembered**: it suppresses
+the automatic prompt and stays on ad-hoc checks, but saying *"set up a
+verification profile for this repo"* re-runs detection and overrides it.
 
 Example profile entry in `preferences.json`:
 
@@ -207,7 +218,7 @@ Example profile entry in `preferences.json`:
       "checks": [
         {"name": "tests", "command": "pytest", "required": true},
         {"name": "lint", "command": "ruff check .", "required": true},
-        {"name": "typecheck", "command": "mypy .", "required": false}
+        {"name": "typecheck", "command": "mypy .", "required": true}
       ]
     }
   }
