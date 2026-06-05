@@ -763,6 +763,52 @@ def merge_judge_results(
     return merged
 
 
+def record_cycle(
+    pr: PullRequest,
+    started_at: str,
+    finding_count: int,
+    outcome: str,
+    finished_at: str | None = None,
+) -> dict[str, Any]:
+    """Append one active-cycle timing entry to the run accumulator.
+
+    A *cycle* is one active remediation attempt — fetch, analyze, edit, verify,
+    prepare/post the response. It measures active work only: the agent passes
+    ``started_at`` as the moment active work for this cycle began, so waits
+    between cycles (ScheduleWakeup, polling, rate-limit sleeps, idle time) are
+    excluded by construction. ``outcome`` is "continued" for a non-terminal
+    cycle or the terminal outcome label for the last one. Returns the entry.
+    """
+    finished_at = finished_at or _now_iso()
+    duration = metrics._duration_seconds(started_at, finished_at)
+    cycle = {
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_seconds": duration,
+        "finding_count": int(finding_count),
+        "outcome": outcome,
+    }
+    state = load_sticky_state()
+    # The state file can be hand-edited or corrupt; verify each level is the
+    # expected type before use (a non-dict state would AttributeError on .get,
+    # and dict()/list() on a string/int would raise), mirroring
+    # accumulate_judge_results.
+    state = state if isinstance(state, dict) else {}
+    key = _state_key(pr)
+    entry = state.get(key)
+    entry = dict(entry) if isinstance(entry, dict) else {}
+    run = entry.get("run")
+    run = dict(run) if isinstance(run, dict) else {}
+    cycles = run.get("cycles")
+    cycles = list(cycles) if isinstance(cycles, list) else []
+    cycles.append(cycle)
+    run["cycles"] = cycles
+    entry["run"] = run
+    state[key] = entry
+    save_sticky_state(state)
+    return cycle
+
+
 def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1259,6 +1305,32 @@ def main() -> int:
     )
     parser.add_argument("--outcome-reason", default=None, help="One-line reason for --outcome.")
     parser.add_argument(
+        "--record-cycle",
+        action="store_true",
+        help=(
+            "Append one active-cycle timing entry to the run accumulator and exit. "
+            "Pass --cycle-started-at (when active work for the cycle began), "
+            "--finding-count, and --cycle-outcome. Measures active work only; waits "
+            "between cycles are excluded. Does not touch runs.jsonl."
+        ),
+    )
+    parser.add_argument(
+        "--cycle-started-at",
+        default=None,
+        help="ISO-8601 UTC timestamp (YYYY-MM-DDThh:mm:ssZ) when this cycle's active work began.",
+    )
+    parser.add_argument(
+        "--finding-count",
+        type=int,
+        default=0,
+        help="Number of actionable findings handled in this cycle.",
+    )
+    parser.add_argument(
+        "--cycle-outcome",
+        default="continued",
+        help="Cycle outcome: 'continued' for a non-terminal cycle, else the terminal label.",
+    )
+    parser.add_argument(
         "--stats",
         action="store_true",
         help="Print local Gemini-loop stats for this repo from runs.jsonl and exit.",
@@ -1297,6 +1369,34 @@ def main() -> int:
             print(json.dumps({"repo": repo_full, "stats": agg, "skipped": skipped}, indent=2, sort_keys=True))
         else:
             print(metrics.format_stats(repo_full, agg, skipped=skipped))
+        return 0
+
+    if args.record_cycle:
+        if not args.cycle_started_at:
+            print("error: --record-cycle requires --cycle-started-at.", file=sys.stderr)
+            return 1
+        try:
+            pr = resolve_pr(args.pr)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        try:
+            cycle = record_cycle(
+                pr,
+                started_at=args.cycle_started_at,
+                finding_count=args.finding_count,
+                outcome=args.cycle_outcome,
+            )
+        except OSError as exc:
+            # Metrics state I/O is best-effort: warn and exit 0 so a failed
+            # write never breaks the loop. Return here (do not fall through to
+            # the success print, which would reference an unbound `cycle`).
+            print(f"warning: could not record cycle timing: {exc}", file=sys.stderr)
+            return 0
+        print(
+            f"[loop] recorded cycle: {metrics.format_duration(cycle['duration_seconds'])} "
+            f"active ({cycle['finding_count']} finding(s), outcome={cycle['outcome']})."
+        )
         return 0
 
     try:
@@ -1553,6 +1653,7 @@ def main() -> int:
                 started_at=run.get("started_at"),
                 finding_paths=finding_paths,
                 judge=metrics.build_judge_block(judge_ran, merged_judge_results),
+                cycles=run.get("cycles", []),
                 **derived,
             )
             # --cycle-summary is read-only: print the block but never append a

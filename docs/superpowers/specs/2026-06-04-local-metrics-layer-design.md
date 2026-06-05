@@ -64,6 +64,10 @@ line never poisons the file and appends need no rewrite.
   "outcome_reason": "0 actionable threads remaining",
   "started_at": "2026-06-04T18:10:11Z",
   "duration_seconds": 720,
+  "cycles": [
+    { "started_at": "2026-06-04T18:10:11Z", "finished_at": "2026-06-04T18:18:25Z",
+      "duration_seconds": 494, "finding_count": 3, "outcome": "continued" }
+  ],
   "finding_areas": ["tests", "src"],
   "finding_paths": ["tests/test_auth.py", "src/auth/login.py"],
   "judge": { "enabled": false }
@@ -104,6 +108,9 @@ Judge block when judge mode ran:
   or no verification command available is not a regression).
 - `outcome_reason` — one-line human-readable explanation of the terminal `outcome`, derived
   by the script from the stop condition (e.g. `"1 finding requires human decision"`).
+- `cycles` — list of per-cycle active-work timing entries (`started_at`, `finished_at`,
+  `duration_seconds`, `finding_count`, `outcome`). Empty on legacy runs and any run that did
+  not record cycle timing. Powers the "active" metrics (distinct from wall-clock `duration_seconds`).
 - `judge` — `{ "enabled": false }` when off; full verdict/action breakdown when on.
 
 **Field ownership.**
@@ -181,7 +188,13 @@ Gemini loop stats — OrenAshkenazy/gh-gemini-review-loop
 Last 10 runs
 
 Average cycles used: 1.8
-Average time to clean PR: 9m
+Average elapsed time to terminal outcome: 9m
+Average elapsed time to clean PR: 7m
+Average elapsed time to capped run: 31m
+Average elapsed time to failed run: 4m
+Average active cycle time: 3m
+Average active time per run: 6m
+Average cycles per run: 1.5
 Findings fixed: 32 of 41
 Human decisions needed: 6
 Addressed by reply: 9
@@ -190,10 +203,32 @@ Most common provider: gemini-code-assist
 Most repeated finding area: tests
 ```
 
+**Elapsed vs. active (amendment 2026-06-05).** The summary distinguishes two kinds of time:
+
+- **Elapsed** = user-visible wall-clock latency from the run's `started_at` to the terminal
+  record. It includes review-bot latency, polling, ScheduleWakeup waits, rate-limit sleeps,
+  and idle time. Still useful as product latency, so it is kept — but renamed from the
+  misleading "time to clean PR" to **"elapsed time to terminal outcome"**, and split by
+  terminal outcome (`clean` / `capped` / `failed`, where failed = `verification_failed` +
+  `regression`). Each split line appears only when at least one matching run has a duration.
+- **Active** = agent/loop processing time, excluding waits. Built from a per-cycle `cycles`
+  list in the run accumulator (each entry: `started_at`, `finished_at`, `duration_seconds`,
+  `finding_count`, `outcome`), populated by `record_cycle()` / the `--record-cycle` CLI. The
+  agent passes the timestamp at which active work for a cycle began, so inter-cycle waits are
+  excluded by construction. Active metrics are computed only over runs that recorded cycles;
+  legacy records (no `cycles`) are excluded from them and their lines are omitted.
+
 **Mapping to records.**
-- Average cycles → mean of `cycles_used`.
-- Average time → mean `duration_seconds`; runs with `duration_seconds: 0` excluded from the
-  average; formatted compact.
+- Average cycles used → mean of `cycles_used` (re-review count).
+- Average elapsed time to terminal outcome → mean `duration_seconds` across all runs, with an
+  explicit `is not None` filter (a valid `duration_seconds: 0` run is **kept**, not dropped);
+  formatted compact.
+- Average elapsed time to {clean,capped,failed} → mean `duration_seconds` over runs whose
+  `outcome` matches; line omitted when no matching run.
+- Average active cycle time → mean `duration_seconds` across all recorded cycles.
+- Average active time per run → mean, over runs with cycles, of the per-run sum of cycle
+  durations.
+- Average cycles per run → mean, over runs with cycles, of the recorded cycle count.
 - Findings fixed: X of Y → Σ`observed_fixed_count` of Σ`findings_fetched` (observed
   denominator).
 - Human decisions needed → Σ top-level `needs_human`.

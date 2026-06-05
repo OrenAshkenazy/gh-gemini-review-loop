@@ -34,6 +34,8 @@ VALID_OUTCOMES = (
     "verification_failed",
 )
 VALID_VERIFICATION = ("passed", "failed", "skipped")
+# Terminal outcomes counted as a "failed run" in the elapsed-by-outcome split.
+FAILED_OUTCOMES = ("verification_failed", "regression")
 
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -180,22 +182,111 @@ def _mode(items: list[Any]) -> Any | None:
     return Counter(items).most_common(1)[0][0]
 
 
+def _avg(values: list[float]) -> float | None:
+    """Mean of values, or None when empty. Values are pre-filtered by caller."""
+    return (sum(values) / len(values)) if values else None
+
+
+def _is_number(x: Any) -> bool:
+    """True for a real numeric duration: int/float but not bool.
+
+    Records come from a local JSONL log that can be hand-edited or corrupted,
+    so a duration could be a string, None, or bool. Validating the type keeps
+    aggregation from crashing on summation. ``bool`` is excluded because
+    True/False are not meaningful durations even though they are ``int``.
+    """
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def _elapsed_for(records: list[dict[str, Any]], outcomes: tuple[str, ...]) -> float | None:
+    """Average duration_seconds over records whose outcome is in ``outcomes``.
+
+    Durations are validated numeric (an explicit check that also keeps a valid
+    0-second run, which a truthiness test would drop).
+    """
+    vals = [
+        r["duration_seconds"]
+        for r in records
+        if r.get("outcome") in outcomes and _is_number(r.get("duration_seconds"))
+    ]
+    return _avg(vals)
+
+
 def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     n = len(records)
     if n == 0:
         return {"count": 0}
-    cycles = [r.get("cycles_used", 0) for r in records]
-    durations = [r["duration_seconds"] for r in records if r.get("duration_seconds")]
-    judged = [r for r in records if (r.get("judge") or {}).get("enabled")]
-    false_pos = sum(
-        (r["judge"].get("verdicts", {}) or {}).get("false_positive", 0) for r in judged
-    )
-    providers = [r.get("provider") for r in records if r.get("provider")]
-    areas = [a for r in records for a in (r.get("finding_areas") or [])]
+    # Every field below is type-validated: records come from a local,
+    # hand-editable JSONL log, so a corrupt scalar/list must be skipped rather
+    # than crash summation or iteration.
+    cycles = [
+        r["cycles_used"] if _is_number(r.get("cycles_used")) else 0 for r in records
+    ]
+    # Validate numeric (keeps a valid 0-second run, which a truthiness test
+    # would drop; rejects corrupt string/bool durations that would crash sum()).
+    durations = [
+        r["duration_seconds"] for r in records if _is_number(r.get("duration_seconds"))
+    ]
+    judged = [
+        r for r in records
+        if isinstance(r.get("judge"), dict) and r["judge"].get("enabled")
+    ]
+    false_pos = 0
+    for r in judged:
+        verdicts = r["judge"].get("verdicts")
+        if isinstance(verdicts, dict) and _is_number(verdicts.get("false_positive")):
+            false_pos += verdicts["false_positive"]
+    providers = [r.get("provider") for r in records if isinstance(r.get("provider"), str)]
+    areas = [
+        a
+        for r in records
+        if isinstance(r.get("finding_areas"), list)
+        for a in r["finding_areas"]
+        if isinstance(a, str)
+    ]
+
+    # Active-cycle metrics: only runs that recorded per-cycle timing. Legacy
+    # records without a "cycles" list are excluded from active metrics (but
+    # still contribute to the elapsed metrics above).
+    # Require a non-empty list: a non-list truthy value (corrupt record) would
+    # TypeError on iteration/len(); an empty list means "no recorded cycles".
+    runs_with_cycles = [
+        r for r in records if isinstance(r.get("cycles"), list) and r["cycles"]
+    ]
+    # Cycle entries can be corrupt too: keep only dicts, and only numeric
+    # durations, so a malformed entry never crashes aggregation.
+    all_cycles = [
+        c for r in runs_with_cycles for c in r["cycles"] if isinstance(c, dict)
+    ]
+    cycle_durations = [
+        c["duration_seconds"]
+        for c in all_cycles
+        if _is_number(c.get("duration_seconds"))
+    ]
+    run_active_totals = [
+        sum(
+            c["duration_seconds"]
+            for c in r["cycles"]
+            if isinstance(c, dict) and _is_number(c.get("duration_seconds"))
+        )
+        for r in runs_with_cycles
+    ]
+    cycle_counts = [
+        sum(1 for c in r["cycles"] if isinstance(c, dict)) for r in runs_with_cycles
+    ]
+
     return {
         "count": n,
         "avg_cycles": sum(cycles) / n,
-        "avg_duration": (sum(durations) / len(durations)) if durations else None,
+        # Elapsed (wall-clock) metrics — user-visible latency.
+        "avg_duration": _avg(durations),
+        "avg_duration_clean": _elapsed_for(records, ("clean",)),
+        "avg_duration_capped": _elapsed_for(records, ("capped",)),
+        "avg_duration_failed": _elapsed_for(records, FAILED_OUTCOMES),
+        # Active-cycle metrics — agent/loop processing efficiency.
+        "avg_active_cycle_time": _avg(cycle_durations),
+        "avg_active_time_per_run": _avg(run_active_totals),
+        "avg_cycles_per_run": _avg(cycle_counts),
         "total_fetched": sum(r.get("findings_fetched", 0) for r in records),
         "total_fixed": sum(r.get("observed_fixed_count", 0) for r in records),
         "needs_human": sum(r.get("needs_human", 0) for r in records),
@@ -218,10 +309,34 @@ def format_stats(repo: str, stats: dict[str, Any], skipped: int = 0) -> str:
         return msg
     lines = [f"Gemini loop stats — {repo}", f"Last {stats['count']} runs", ""]
     lines.append(f"Average cycles used: {stats['avg_cycles']:.1f}")
-    if stats["avg_duration"] is not None:
+
+    def _elapsed_line(label: str, key: str) -> None:
+        val = stats.get(key)
+        if val is not None:
+            lines.append(f"{label}: {format_duration(round(val))}")
+
+    # Elapsed (wall-clock) latency — what the user waited, including review
+    # latency, polling, and idle gaps. Split by terminal outcome.
+    _elapsed_line("Average elapsed time to terminal outcome", "avg_duration")
+    _elapsed_line("Average elapsed time to clean PR", "avg_duration_clean")
+    _elapsed_line("Average elapsed time to capped run", "avg_duration_capped")
+    _elapsed_line("Average elapsed time to failed run", "avg_duration_failed")
+
+    # Active-cycle time — agent/loop processing efficiency, excluding waits.
+    # Absent on legacy records (pre-cycle-tracking); omitted then.
+    if stats.get("avg_active_cycle_time") is not None:
         lines.append(
-            f"Average time to clean PR: {format_duration(round(stats['avg_duration']))}"
+            f"Average active cycle time: "
+            f"{format_duration(round(stats['avg_active_cycle_time']))}"
         )
+    if stats.get("avg_active_time_per_run") is not None:
+        lines.append(
+            f"Average active time per run: "
+            f"{format_duration(round(stats['avg_active_time_per_run']))}"
+        )
+    if stats.get("avg_cycles_per_run") is not None:
+        lines.append(f"Average cycles per run: {stats['avg_cycles_per_run']:.1f}")
+
     lines.append(f"Findings fixed: {stats['total_fixed']} of {stats['total_fetched']}")
     lines.append(f"Human decisions needed: {stats['needs_human']}")
     if stats["addressed_by_reply"]:
@@ -261,6 +376,7 @@ def build_record(
     started_at: str | None,
     finding_paths: list[str],
     judge: dict[str, Any] | None,
+    cycles: list[dict[str, Any]] | None = None,
     ts: str | None = None,
 ) -> dict[str, Any]:
     ts = ts or now_iso()
@@ -290,6 +406,10 @@ def build_record(
         "outcome_reason": outcome_reason,
         "started_at": started_at,
         "duration_seconds": duration,
+        # Per-cycle active-work timing (excludes waits/idle). Empty on legacy
+        # runs and any run that did not record cycle timing. Guard the type: a
+        # corrupt accumulator value must not crash list().
+        "cycles": list(cycles) if isinstance(cycles, list) else [],
         "finding_areas": [top_dir(p) for p in paths],
         "finding_paths": paths,
         "judge": judge or {"enabled": False},
