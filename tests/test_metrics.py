@@ -117,6 +117,11 @@ class TestBuildRecord:
             rec = metrics.build_record(**self._kwargs(outcome=outcome))
             assert rec["outcome"] == outcome
 
+    def test_non_list_cycles_coerced_to_empty(self):
+        # A non-list `cycles` (corrupt accumulator) must not crash list().
+        rec = metrics.build_record(**self._kwargs(cycles=5))
+        assert rec["cycles"] == []
+
 
 class TestFormatRunSummary:
     def _rec(self, **over):
@@ -305,6 +310,21 @@ class TestAggregate:
         assert agg["avg_active_cycle_time"] is None
         assert agg["avg_active_time_per_run"] is None
         assert agg["avg_cycles_per_run"] is None
+
+    def test_aggregate_tolerates_corrupt_scalar_fields(self):
+        # Hand-edited record: cycles_used non-numeric, judge not a dict,
+        # finding_areas/provider wrong types. Must not crash.
+        recs = [
+            self._rec(cycles_used="x", judge=True, finding_areas=5, provider=123,
+                      duration_seconds=600),
+            self._rec(cycles_used=2, duration_seconds=300),  # default judge/area/provider
+        ]
+        agg = metrics.aggregate(recs)            # must not raise
+        assert agg["avg_cycles"] == 1.0          # "x" -> 0, plus 2, over 2 records
+        assert agg["avg_duration"] == 450.0
+        assert agg["judged_count"] == 0          # judge=True is not a dict
+        assert agg["top_provider"] == "gemini-code-assist"  # 123 excluded
+        assert agg["top_area"] == "tests"        # 5 excluded
 
     def test_elapsed_ignores_non_numeric_duration(self):
         # A corrupt/hand-edited record with a non-numeric (or bool) duration

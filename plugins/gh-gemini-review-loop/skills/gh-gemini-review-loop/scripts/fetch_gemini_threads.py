@@ -789,10 +789,12 @@ def record_cycle(
         "outcome": outcome,
     }
     state = load_sticky_state()
-    key = _state_key(pr)
     # The state file can be hand-edited or corrupt; verify each level is the
-    # expected type before casting (dict()/list() on a string/int would raise),
-    # mirroring accumulate_judge_results.
+    # expected type before use (a non-dict state would AttributeError on .get,
+    # and dict()/list() on a string/int would raise), mirroring
+    # accumulate_judge_results.
+    state = state if isinstance(state, dict) else {}
+    key = _state_key(pr)
     entry = state.get(key)
     entry = dict(entry) if isinstance(entry, dict) else {}
     run = entry.get("run")

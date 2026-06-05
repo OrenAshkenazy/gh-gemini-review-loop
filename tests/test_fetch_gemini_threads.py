@@ -666,6 +666,20 @@ class TestRunTracking:
         assert cycle["duration_seconds"] == 60
         assert read_run_tracking(pr)["cycles"] == [cycle]  # reset cleanly, appended
 
+    def test_record_cycle_tolerates_non_dict_state(self, tmp_path, monkeypatch):
+        # load_sticky_state returning a non-dict (corrupt state.json) must not
+        # AttributeError on state.get(key).
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+        monkeypatch.setattr(fgt, "load_sticky_state", lambda: ["not", "a", "dict"])
+        captured = {}
+        monkeypatch.setattr(fgt, "save_sticky_state", lambda s: captured.update(state=s))
+        cycle = fgt.record_cycle(self._pr(), started_at="2026-06-05T09:00:00Z",
+                                 finished_at="2026-06-05T09:01:00Z",
+                                 finding_count=1, outcome="clean")
+        assert cycle["duration_seconds"] == 60
+        assert isinstance(captured["state"], dict)  # rebuilt clean, not crashed
+
     def test_record_cycle_cli_warns_and_exits_zero_on_io_error(
         self, tmp_path, monkeypatch, capsys
     ):

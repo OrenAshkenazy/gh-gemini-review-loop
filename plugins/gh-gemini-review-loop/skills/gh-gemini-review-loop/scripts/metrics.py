@@ -216,18 +216,34 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     n = len(records)
     if n == 0:
         return {"count": 0}
-    cycles = [r.get("cycles_used", 0) for r in records]
+    # Every field below is type-validated: records come from a local,
+    # hand-editable JSONL log, so a corrupt scalar/list must be skipped rather
+    # than crash summation or iteration.
+    cycles = [
+        r["cycles_used"] if _is_number(r.get("cycles_used")) else 0 for r in records
+    ]
     # Validate numeric (keeps a valid 0-second run, which a truthiness test
     # would drop; rejects corrupt string/bool durations that would crash sum()).
     durations = [
         r["duration_seconds"] for r in records if _is_number(r.get("duration_seconds"))
     ]
-    judged = [r for r in records if (r.get("judge") or {}).get("enabled")]
-    false_pos = sum(
-        (r["judge"].get("verdicts", {}) or {}).get("false_positive", 0) for r in judged
-    )
-    providers = [r.get("provider") for r in records if r.get("provider")]
-    areas = [a for r in records for a in (r.get("finding_areas") or [])]
+    judged = [
+        r for r in records
+        if isinstance(r.get("judge"), dict) and r["judge"].get("enabled")
+    ]
+    false_pos = 0
+    for r in judged:
+        verdicts = r["judge"].get("verdicts")
+        if isinstance(verdicts, dict) and _is_number(verdicts.get("false_positive")):
+            false_pos += verdicts["false_positive"]
+    providers = [r.get("provider") for r in records if isinstance(r.get("provider"), str)]
+    areas = [
+        a
+        for r in records
+        if isinstance(r.get("finding_areas"), list)
+        for a in r["finding_areas"]
+        if isinstance(a, str)
+    ]
 
     # Active-cycle metrics: only runs that recorded per-cycle timing. Legacy
     # records without a "cycles" list are excluded from active metrics (but
@@ -391,8 +407,9 @@ def build_record(
         "started_at": started_at,
         "duration_seconds": duration,
         # Per-cycle active-work timing (excludes waits/idle). Empty on legacy
-        # runs and any run that did not record cycle timing.
-        "cycles": list(cycles or []),
+        # runs and any run that did not record cycle timing. Guard the type: a
+        # corrupt accumulator value must not crash list().
+        "cycles": list(cycles) if isinstance(cycles, list) else [],
         "finding_areas": [top_dir(p) for p in paths],
         "finding_paths": paths,
         "judge": judge or {"enabled": False},
