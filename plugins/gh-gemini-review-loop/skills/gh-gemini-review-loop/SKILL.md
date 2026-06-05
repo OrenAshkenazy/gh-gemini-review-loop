@@ -207,7 +207,14 @@ python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_t
     --verification <passed|failed|skipped>
 ```
 
-`--cycle-summary` builds the record from the **accumulated** run state (findings and judge verdicts unioned across cycles so far) and prints the same `[loop] Summary` block — but it does **not** append to `runs.jsonl` and does **not** clear the accumulator. It is read-only and safe to call every cycle. Emit it right after the verify step of each cycle (see the Progress Narration table). At the true terminal state, still call `--record-run` exactly once to persist the run.
+`--cycle-summary` builds the record from the **accumulated** run state (findings and judge verdicts unioned across cycles so far) and prints the same `[loop] Summary` block — but it does **not** append to `runs.jsonl` and does **not** clear the accumulator. It is read-only and safe to call every cycle.
+
+**Emit a receipt at the end of every cycle.** Which command depends on whether the cycle is also terminal:
+
+- **Non-terminal cycle** (the loop will push, re-review, and continue): run `--cycle-summary` right after the verify step. This is REQUIRED on every such cycle — do not skip it because fixes were small or verification was skipped.
+- **Terminal cycle** (this cycle hits a [stopping condition](#stopping-conditions) — clean, capped, human decision, regression, or no-progress): do **not** call `--cycle-summary`. The single `--record-run` call you make at loop end already prints the receipt for this cycle. Calling both would print two near-identical receipts back-to-back.
+
+So a clean two-cycle run prints two receipts: one from `--cycle-summary` at the end of cycle 1, one from `--record-run` at loop end. A run that stops on cycle 1 (like a human-decision deferral) prints exactly one receipt — from `--record-run`. Never emit two receipts on the same cycle.
 
 Do not call `--record-run` more than once per loop: each call clears the accumulator, so a second call would undercount `findings_fetched` and reset the duration. Use `--cycle-summary` for all mid-loop visibility.
 
@@ -237,10 +244,10 @@ Required narration points:
 | After verify | `[loop] cycle N/<cap> — verified (<test summary>).` |
 | Before push | `[loop] cycle N/<cap> — committing and pushing <commit-sha>...` |
 | After push, before re-review | `[loop] cycle N/<cap> — pushed. Requesting Gemini re-review (cycle N consumed).` |
-| **End of each cycle** | **`[loop] Summary` block (from `--cycle-summary`)** — see [Per-cycle summary](#per-cycle-summary-block) |
+| **End of each non-terminal cycle** | **`[loop] Summary` block (from `--cycle-summary`)** — REQUIRED on every cycle that will continue looping; see [Per-cycle summary](#per-cycle-summary-block) |
 | Stop condition triggered | `[loop] STOP — <stop-condition>: <one-line explanation>.` |
 | Loop complete (all clean) | `[loop] DONE — 0 actionable threads remaining. Cycles used: N/<cap>.` |
-| Loop complete / stopped (after DONE/STOP) | `[loop] Summary` block (from `--record-run`) |
+| Loop complete / stopped (after DONE/STOP) | `[loop] Summary` block (from `--record-run`) — this is also the terminal cycle's receipt; do not also emit `--cycle-summary` on that cycle |
 
 Skip narration only when running in pure non-interactive batch mode (e.g. `gh pr create` chained into a script that captures output for later — but in Claude Code interactive sessions, never skip).
 
@@ -374,6 +381,9 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
     - Default comment:
       - `@gemini-code-assist please review the latest changes.`
     - If the repository uses a different Gemini trigger phrase, use the repo-specific phrase when known.
+    - If the loop will continue after this push (the cycle is **not** terminal), emit the per-cycle receipt now, before looping back to step 3:
+      `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --cycle-summary --fixed-count <n-this-cycle> --verification <passed|failed|skipped>`
+      then show the printed `[loop] Summary` block to the user. This is read-only — it does not write `runs.jsonl`. Skip it only when this cycle is itself terminal (the `--record-run` receipt below covers that cycle).
    - After the loop reaches a terminal state, record the run exactly once:
      `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --record-run --fixed-count <n> --verification <passed|failed|skipped> [--outcome <state>]`
      then show the printed `[loop] Summary` block to the user.
