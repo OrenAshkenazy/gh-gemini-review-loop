@@ -733,11 +733,20 @@ def accumulate_judge_results(
         return
     state = load_sticky_state()
     key = _state_key(pr)
-    entry = state.get(key, {})
-    run = entry.get("run", {})
-    stored = dict(run.get("judge_results", {}))
-    stored.update(judge_results)
-    run["judge_results"] = stored
+    entry = state.get(key)
+    if not isinstance(entry, dict):
+        entry = {}
+    else:
+        entry = dict(entry)
+    run = entry.get("run")
+    if not isinstance(run, dict):
+        run = {}
+    else:
+        run = dict(run)
+    stored = run.get("judge_results")
+    stored_dict = dict(stored) if isinstance(stored, dict) else {}
+    stored_dict.update(judge_results)
+    run["judge_results"] = stored_dict
     run["judge_ran"] = True
     entry["run"] = run
     state[key] = entry
