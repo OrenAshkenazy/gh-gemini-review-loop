@@ -15,10 +15,12 @@ from fetch_gemini_threads import (
     PAGE_LIMIT_THREAD_COMMENTS,
     STICKY_RECEIPT_MARKER,
     PullRequest,
+    accumulate_judge_results,
     addressed_by_reply_threads,
     _derive_outcome,
     clear_run_tracking,
     derive_record_fields,
+    merge_judge_results,
     effective_rereview_limit,
     filter_by_min_severity,
     filter_threads,
@@ -623,6 +625,129 @@ class TestRunTracking:
         clear_run_tracking(pr)
         assert read_run_tracking(pr) == {}
         assert load_sticky_state()[_state_key(pr)]["commentId"] == 42
+
+
+class TestJudgeAccumulation:
+    def _pr(self):
+        return PullRequest(owner="o", repo="r", number=1)
+
+    def test_accumulate_persists_verdicts_and_flag(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        accumulate_judge_results(pr, {"t1": {"verdict": "valid_actionable"}})
+        run = read_run_tracking(pr)
+        assert run["judge_ran"] is True
+        assert run["judge_results"] == {"t1": {"verdict": "valid_actionable"}}
+
+    def test_accumulate_unions_and_later_cycle_supersedes(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        accumulate_judge_results(pr, {"t1": {"verdict": "needs_human"},
+                                      "t2": {"verdict": "valid_actionable"}})
+        # A later cycle re-judges t1 -> the newer verdict wins; t2 preserved.
+        accumulate_judge_results(pr, {"t1": {"verdict": "valid_actionable"}})
+        run = read_run_tracking(pr)
+        assert run["judge_results"]["t1"] == {"verdict": "valid_actionable"}
+        assert run["judge_results"]["t2"] == {"verdict": "valid_actionable"}
+
+    def test_accumulate_empty_is_noop(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        accumulate_judge_results(pr, {})
+        assert read_run_tracking(pr) == {}  # no run entry created
+
+    def test_accumulate_preserves_findings(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")])
+        started = read_run_tracking(pr)["started_at"]
+        accumulate_judge_results(pr, {"t1": {"verdict": "valid_actionable"}})
+        run = read_run_tracking(pr)
+        assert run["finding_ids"] == ["t1"]       # findings preserved
+        assert run["started_at"] == started        # started_at preserved
+        assert run["judge_results"]["t1"]["verdict"] == "valid_actionable"
+
+    def test_clear_removes_accumulated_judge_results(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        accumulate_judge_results(pr, {"t1": {"verdict": "valid_actionable"}})
+        clear_run_tracking(pr)
+        assert read_run_tracking(pr) == {}
+
+    def test_merge_current_supersedes_accumulated(self):
+        accumulated = {"t1": {"verdict": "needs_human"},
+                       "t2": {"verdict": "valid_actionable"}}
+        current = {"t1": {"verdict": "valid_actionable"}}
+        merged = merge_judge_results(accumulated, current)
+        assert merged["t1"] == {"verdict": "valid_actionable"}  # current wins
+        assert merged["t2"] == {"verdict": "valid_actionable"}  # accumulated kept
+
+    def test_merge_handles_none_and_empty(self):
+        assert merge_judge_results(None, None) == {}
+        assert merge_judge_results({"t1": {"verdict": "valid_actionable"}}, None) == {
+            "t1": {"verdict": "valid_actionable"}
+        }
+        assert merge_judge_results(None, {"t2": {"verdict": "duplicate"}}) == {
+            "t2": {"verdict": "duplicate"}
+        }
+
+
+class TestRecordRunIntegration:
+    """Drive main() --record-run with the GitHub seams stubbed, proving the
+    eval accumulated across cycles lands in the record at terminal 'clean'.
+
+    No real network/gh calls — every GitHub-touching function is monkeypatched.
+    """
+
+    def test_clean_record_run_reports_accumulated_eval(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+        from metrics import runs_log_path
+
+        pr = PullRequest(owner="o", repo="r", number=7)
+
+        # Cycle 1: fetched two findings and judged them; verdicts persisted.
+        update_run_tracking(pr, [("t1", "a.py"), ("t2", "b.py")])
+        accumulate_judge_results(pr, {
+            "t1": {"verdict": "valid_actionable", "recommended_action": "fix"},
+            "t2": {"verdict": "false_positive", "recommended_action": "ignore"},
+        })
+
+        # Terminal pass: the PR is now clean (both findings resolved). Stub the
+        # GitHub seams so filter_threads yields zero actionable threads.
+        monkeypatch.setattr(fgt, "resolve_pr", lambda spec: pr)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda p: {"stub": True})
+        monkeypatch.setattr(fgt, "filter_threads", lambda *a, **k: [])
+        monkeypatch.setattr(fgt, "sort_by_severity", lambda threads: threads)
+        monkeypatch.setattr(fgt, "rereview_requests", lambda *a, **k: ["c1"])
+        monkeypatch.setattr(fgt, "addressed_by_reply_threads", lambda *a, **k: [])
+        monkeypatch.setattr(fgt, "pagination_warnings", lambda pull_request: [])
+
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py", "--record-run",
+            "--judge-mode", "off",  # no OpenAI: the eval comes from accumulation
+            "--no-agent-filter",
+            "--no-resolve-outdated", "--no-resolve-addressed-by-reply",
+            "--fixed-count", "2", "--verification", "passed", "--outcome", "clean",
+        ])
+
+        rc = fgt.main()
+        assert rc == 0
+
+        out = capsys.readouterr().out
+        assert "Ignored by judge: 1" in out      # false_positive counts as ignored
+        assert "Needs human (judge): 0" in out
+
+        record = json.loads(runs_log_path().read_text().strip().splitlines()[-1])
+        assert record["judge"]["enabled"] is True
+        assert record["judge"]["verdicts"]["valid_actionable"] == 1
+        assert record["judge"]["verdicts"]["false_positive"] == 1
+        assert record["findings_fetched"] == 2
+        assert record["observed_fixed_count"] == 2     # both resolved this run
+        # run state is cleared at record end -> no leakage into the next run
+        assert read_run_tracking(pr) == {}
 
 
 class TestDeriveRecordFields:
