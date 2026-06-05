@@ -241,9 +241,20 @@ class TestAggregate:
         assert agg["top_provider"] == "gemini-code-assist"
         assert agg["top_area"] == "tests"
 
-    def test_duration_zero_excluded_from_average(self):
+    def test_duration_zero_included_in_average(self):
+        # A valid 0-second run must NOT be silently dropped (explicit None check,
+        # not truthiness).
         recs = [self._rec(duration_seconds=0), self._rec(duration_seconds=600)]
-        assert metrics.aggregate(recs)["avg_duration"] == 600.0
+        assert metrics.aggregate(recs)["avg_duration"] == 300.0
+
+    def test_duration_none_excluded_but_zero_kept(self):
+        recs = [
+            self._rec(duration_seconds=None),
+            self._rec(duration_seconds=0),
+            self._rec(duration_seconds=900),
+        ]
+        # None dropped; 0 and 900 averaged.
+        assert metrics.aggregate(recs)["avg_duration"] == 450.0
 
     def test_false_positives_only_over_judged_runs(self):
         judged = self._rec(judge={"enabled": True, "verdicts": {"false_positive": 3}})
@@ -251,6 +262,58 @@ class TestAggregate:
         agg = metrics.aggregate([judged, unjudged])
         assert agg["judged_count"] == 1
         assert agg["false_positives_avoided"] == 3
+
+    def test_elapsed_split_by_outcome(self):
+        recs = [
+            self._rec(outcome="clean", duration_seconds=600),
+            self._rec(outcome="clean", duration_seconds=200),
+            self._rec(outcome="capped", duration_seconds=1000),
+            self._rec(outcome="verification_failed", duration_seconds=300),
+            self._rec(outcome="regression", duration_seconds=500),
+            self._rec(outcome="human", duration_seconds=999),
+        ]
+        agg = metrics.aggregate(recs)
+        assert agg["avg_duration"] == (600 + 200 + 1000 + 300 + 500 + 999) / 6
+        assert agg["avg_duration_clean"] == 400.0           # (600+200)/2
+        assert agg["avg_duration_capped"] == 1000.0
+        assert agg["avg_duration_failed"] == 400.0          # (300+500)/2, regression+verification_failed
+        # human is in the overall average but not in any named split.
+
+    def test_elapsed_split_none_when_no_matching_outcome(self):
+        agg = metrics.aggregate([self._rec(outcome="clean", duration_seconds=600)])
+        assert agg["avg_duration_clean"] == 600.0
+        assert agg["avg_duration_capped"] is None
+        assert agg["avg_duration_failed"] is None
+
+    def test_active_cycle_metrics(self):
+        recs = [
+            self._rec(cycles=[
+                {"duration_seconds": 100, "finding_count": 3, "outcome": "continued"},
+                {"duration_seconds": 200, "finding_count": 1, "outcome": "clean"},
+            ]),
+            self._rec(cycles=[
+                {"duration_seconds": 400, "finding_count": 2, "outcome": "capped"},
+            ]),
+        ]
+        agg = metrics.aggregate(recs)
+        assert agg["avg_active_cycle_time"] == (100 + 200 + 400) / 3   # over all cycles
+        assert agg["avg_active_time_per_run"] == (300 + 400) / 2       # run totals averaged
+        assert agg["avg_cycles_per_run"] == 1.5                        # (2 + 1) / 2
+
+    def test_active_metrics_none_without_cycle_data(self):
+        agg = metrics.aggregate([self._rec(), self._rec()])  # no "cycles" key
+        assert agg["avg_active_cycle_time"] is None
+        assert agg["avg_active_time_per_run"] is None
+        assert agg["avg_cycles_per_run"] is None
+
+    def test_active_cycle_time_skips_none_cycle_duration(self):
+        recs = [self._rec(cycles=[
+            {"duration_seconds": None, "finding_count": 1, "outcome": "continued"},
+            {"duration_seconds": 300, "finding_count": 1, "outcome": "clean"},
+        ])]
+        agg = metrics.aggregate(recs)
+        assert agg["avg_active_cycle_time"] == 300.0   # None cycle skipped
+        assert agg["avg_cycles_per_run"] == 2.0        # both cycles still counted
 
 
 class TestFormatStats:
@@ -269,7 +332,7 @@ class TestFormatStats:
         out = metrics.format_stats("OrenAshkenazy/gh-gemini-review-loop", agg)
         assert "Last 10 runs" in out
         assert "Average cycles used: 1.8" in out
-        assert "Average time to clean PR: 9m" in out
+        assert "Average elapsed time to terminal outcome: 9m" in out
         assert "Findings fixed: 32 of 41" in out
         assert "False positives avoided: 14   (across 6 of 10 judged runs)" in out
         assert "Most repeated finding area: tests" in out
@@ -284,7 +347,64 @@ class TestFormatStats:
         }
         out = metrics.format_stats("o/r", agg)
         assert "False positives avoided" not in out
-        assert "Average time to clean PR" not in out  # avg_duration is None
+        assert "Average elapsed time to terminal outcome" not in out  # avg_duration None
+
+    def test_elapsed_split_lines_rendered(self):
+        agg = {
+            "count": 5, "avg_cycles": 2.0, "avg_duration": 700.0,
+            "avg_duration_clean": 600.0, "avg_duration_capped": 1000.0,
+            "avg_duration_failed": 300.0,
+            "total_fixed": 5, "total_fetched": 8, "needs_human": 0,
+            "addressed_by_reply": 0, "judged_count": 0,
+            "false_positives_avoided": 0, "top_provider": None, "top_area": None,
+        }
+        out = metrics.format_stats("o/r", agg)
+        assert "Average elapsed time to terminal outcome: 11m" in out   # 700s floors to 11m
+        assert "Average elapsed time to clean PR: 10m" in out           # 600s
+        assert "Average elapsed time to capped run: 16m" in out         # 1000s floors to 16m
+        assert "Average elapsed time to failed run: 5m" in out          # 300s
+
+    def test_elapsed_split_lines_omitted_when_none(self):
+        agg = {
+            "count": 1, "avg_cycles": 1.0, "avg_duration": 600.0,
+            "avg_duration_clean": 600.0, "avg_duration_capped": None,
+            "avg_duration_failed": None,
+            "total_fixed": 1, "total_fetched": 1, "needs_human": 0,
+            "addressed_by_reply": 0, "judged_count": 0,
+            "false_positives_avoided": 0, "top_provider": None, "top_area": None,
+        }
+        out = metrics.format_stats("o/r", agg)
+        assert "Average elapsed time to clean PR: 10m" in out
+        assert "Average elapsed time to capped run" not in out
+        assert "Average elapsed time to failed run" not in out
+
+    def test_active_metrics_rendered(self):
+        agg = {
+            "count": 3, "avg_cycles": 2.0, "avg_duration": 600.0,
+            "avg_active_cycle_time": 233.0, "avg_active_time_per_run": 350.0,
+            "avg_cycles_per_run": 1.5,
+            "total_fixed": 3, "total_fetched": 4, "needs_human": 0,
+            "addressed_by_reply": 0, "judged_count": 0,
+            "false_positives_avoided": 0, "top_provider": None, "top_area": None,
+        }
+        out = metrics.format_stats("o/r", agg)
+        assert "Average active cycle time: 3m" in out
+        assert "Average active time per run: 5m" in out
+        assert "Average cycles per run: 1.5" in out
+
+    def test_active_metrics_omitted_and_legacy_renders_safely(self):
+        # An agg dict from older records (no active-metric keys at all) must
+        # render without KeyError and without the active lines.
+        agg = {
+            "count": 2, "avg_cycles": 1.0, "avg_duration": 300.0,
+            "total_fixed": 1, "total_fetched": 2, "needs_human": 0,
+            "addressed_by_reply": 0, "judged_count": 0,
+            "false_positives_avoided": 0, "top_provider": None, "top_area": None,
+        }
+        out = metrics.format_stats("o/r", agg)  # must not raise
+        assert "Average active cycle time" not in out
+        assert "Average active time per run" not in out
+        assert "Average cycles per run" not in out
 
     def test_skipped_footnote(self):
         agg = {

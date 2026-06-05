@@ -34,6 +34,8 @@ VALID_OUTCOMES = (
     "verification_failed",
 )
 VALID_VERIFICATION = ("passed", "failed", "skipped")
+# Terminal outcomes counted as a "failed run" in the elapsed-by-outcome split.
+FAILED_OUTCOMES = ("verification_failed", "regression")
 
 _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -180,22 +182,70 @@ def _mode(items: list[Any]) -> Any | None:
     return Counter(items).most_common(1)[0][0]
 
 
+def _avg(values: list[float]) -> float | None:
+    """Mean of values, or None when empty. Values are pre-filtered by caller."""
+    return (sum(values) / len(values)) if values else None
+
+
+def _elapsed_for(records: list[dict[str, Any]], outcomes: tuple[str, ...]) -> float | None:
+    """Average duration_seconds over records whose outcome is in ``outcomes``.
+
+    Durations are included with an explicit ``is not None`` check so a valid
+    0-second run is not silently dropped.
+    """
+    vals = [
+        r["duration_seconds"]
+        for r in records
+        if r.get("outcome") in outcomes and r.get("duration_seconds") is not None
+    ]
+    return _avg(vals)
+
+
 def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     n = len(records)
     if n == 0:
         return {"count": 0}
     cycles = [r.get("cycles_used", 0) for r in records]
-    durations = [r["duration_seconds"] for r in records if r.get("duration_seconds")]
+    # Explicit None check (not truthiness): a valid 0-second elapsed run must
+    # still count toward the average.
+    durations = [
+        r["duration_seconds"] for r in records if r.get("duration_seconds") is not None
+    ]
     judged = [r for r in records if (r.get("judge") or {}).get("enabled")]
     false_pos = sum(
         (r["judge"].get("verdicts", {}) or {}).get("false_positive", 0) for r in judged
     )
     providers = [r.get("provider") for r in records if r.get("provider")]
     areas = [a for r in records for a in (r.get("finding_areas") or [])]
+
+    # Active-cycle metrics: only runs that recorded per-cycle timing. Legacy
+    # records without a "cycles" list are excluded from active metrics (but
+    # still contribute to the elapsed metrics above).
+    runs_with_cycles = [r for r in records if r.get("cycles")]
+    all_cycles = [c for r in runs_with_cycles for c in r["cycles"]]
+    cycle_durations = [
+        c["duration_seconds"]
+        for c in all_cycles
+        if c.get("duration_seconds") is not None
+    ]
+    run_active_totals = [
+        sum(c.get("duration_seconds") or 0 for c in r["cycles"])
+        for r in runs_with_cycles
+    ]
+    cycle_counts = [len(r["cycles"]) for r in runs_with_cycles]
+
     return {
         "count": n,
         "avg_cycles": sum(cycles) / n,
-        "avg_duration": (sum(durations) / len(durations)) if durations else None,
+        # Elapsed (wall-clock) metrics — user-visible latency.
+        "avg_duration": _avg(durations),
+        "avg_duration_clean": _elapsed_for(records, ("clean",)),
+        "avg_duration_capped": _elapsed_for(records, ("capped",)),
+        "avg_duration_failed": _elapsed_for(records, FAILED_OUTCOMES),
+        # Active-cycle metrics — agent/loop processing efficiency.
+        "avg_active_cycle_time": _avg(cycle_durations),
+        "avg_active_time_per_run": _avg(run_active_totals),
+        "avg_cycles_per_run": _avg(cycle_counts),
         "total_fetched": sum(r.get("findings_fetched", 0) for r in records),
         "total_fixed": sum(r.get("observed_fixed_count", 0) for r in records),
         "needs_human": sum(r.get("needs_human", 0) for r in records),
@@ -218,10 +268,34 @@ def format_stats(repo: str, stats: dict[str, Any], skipped: int = 0) -> str:
         return msg
     lines = [f"Gemini loop stats — {repo}", f"Last {stats['count']} runs", ""]
     lines.append(f"Average cycles used: {stats['avg_cycles']:.1f}")
-    if stats["avg_duration"] is not None:
+
+    def _elapsed_line(label: str, key: str) -> None:
+        val = stats.get(key)
+        if val is not None:
+            lines.append(f"{label}: {format_duration(round(val))}")
+
+    # Elapsed (wall-clock) latency — what the user waited, including review
+    # latency, polling, and idle gaps. Split by terminal outcome.
+    _elapsed_line("Average elapsed time to terminal outcome", "avg_duration")
+    _elapsed_line("Average elapsed time to clean PR", "avg_duration_clean")
+    _elapsed_line("Average elapsed time to capped run", "avg_duration_capped")
+    _elapsed_line("Average elapsed time to failed run", "avg_duration_failed")
+
+    # Active-cycle time — agent/loop processing efficiency, excluding waits.
+    # Absent on legacy records (pre-cycle-tracking); omitted then.
+    if stats.get("avg_active_cycle_time") is not None:
         lines.append(
-            f"Average time to clean PR: {format_duration(round(stats['avg_duration']))}"
+            f"Average active cycle time: "
+            f"{format_duration(round(stats['avg_active_cycle_time']))}"
         )
+    if stats.get("avg_active_time_per_run") is not None:
+        lines.append(
+            f"Average active time per run: "
+            f"{format_duration(round(stats['avg_active_time_per_run']))}"
+        )
+    if stats.get("avg_cycles_per_run") is not None:
+        lines.append(f"Average cycles per run: {stats['avg_cycles_per_run']:.1f}")
+
     lines.append(f"Findings fixed: {stats['total_fixed']} of {stats['total_fetched']}")
     lines.append(f"Human decisions needed: {stats['needs_human']}")
     if stats["addressed_by_reply"]:
@@ -261,6 +335,7 @@ def build_record(
     started_at: str | None,
     finding_paths: list[str],
     judge: dict[str, Any] | None,
+    cycles: list[dict[str, Any]] | None = None,
     ts: str | None = None,
 ) -> dict[str, Any]:
     ts = ts or now_iso()
@@ -290,6 +365,9 @@ def build_record(
         "outcome_reason": outcome_reason,
         "started_at": started_at,
         "duration_seconds": duration,
+        # Per-cycle active-work timing (excludes waits/idle). Empty on legacy
+        # runs and any run that did not record cycle timing.
+        "cycles": list(cycles or []),
         "finding_areas": [top_dir(p) for p in paths],
         "finding_paths": paths,
         "judge": judge or {"enabled": False},

@@ -31,6 +31,7 @@ from fetch_gemini_threads import (
     pagination_warnings,
     parse_pr_url,
     read_run_tracking,
+    record_cycle,
     render_receipt,
     rereview_requests,
     save_sticky_state,
@@ -625,6 +626,33 @@ class TestRunTracking:
         clear_run_tracking(pr)
         assert read_run_tracking(pr) == {}
         assert load_sticky_state()[_state_key(pr)]["commentId"] == 42
+
+    def test_record_cycle_appends_timed_entry(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")])
+        cycle = record_cycle(
+            pr,
+            started_at="2026-06-05T09:12:10Z",
+            finished_at="2026-06-05T09:20:24Z",
+            finding_count=3,
+            outcome="continued",
+        )
+        assert cycle["duration_seconds"] == 494   # 8m14s of active work
+        run = read_run_tracking(pr)
+        assert run["cycles"] == [cycle]
+        assert run["started_at"]  # cycle recording preserves run start
+
+    def test_record_cycle_accumulates_across_cycles(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        record_cycle(pr, started_at="2026-06-05T09:00:00Z",
+                     finished_at="2026-06-05T09:02:00Z", finding_count=2, outcome="continued")
+        record_cycle(pr, started_at="2026-06-05T09:10:00Z",
+                     finished_at="2026-06-05T09:13:00Z", finding_count=1, outcome="clean")
+        cycles = read_run_tracking(pr)["cycles"]
+        assert [c["duration_seconds"] for c in cycles] == [120, 180]
+        assert [c["outcome"] for c in cycles] == ["continued", "clean"]
 
 
 class TestJudgeAccumulation:
