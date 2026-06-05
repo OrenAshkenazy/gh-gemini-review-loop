@@ -382,6 +382,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
 6. Acknowledge what needs to be fixed.
    - Before editing, briefly summarize the actionable Gemini findings grouped by file or behavior.
    - If there are no actionable unresolved threads, say so and stop after reporting the clean result.
+   - On the first run for this repo with no saved profile, set up the verification profile now (detect → propose → confirm/customize/skip) before applying fixes. See the **Verification Profile** section.
 
 7. Classify comments.
    - Group by file and behavioral area.
