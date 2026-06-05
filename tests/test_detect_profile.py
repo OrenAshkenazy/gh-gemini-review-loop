@@ -73,6 +73,15 @@ def test_node_malformed_package_json_is_safe(tmp_path):
     assert result["candidate_checks"] == []
 
 
+def test_node_non_dict_scripts_is_safe(tmp_path):
+    # A hand-edited package.json where "scripts" is not an object must not
+    # crash the `script_key in scripts` membership check with a TypeError.
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": 5}))
+    result = detect(tmp_path)
+    assert result["stack"] == "node"
+    assert result["candidate_checks"] == []
+
+
 def test_strong_marker_beats_bare_tests_dir(tmp_path):
     # A node repo that also has a tests/ dir must detect as node, not python:
     # tests/ is a weak signal common to many languages (Gemini review #30).

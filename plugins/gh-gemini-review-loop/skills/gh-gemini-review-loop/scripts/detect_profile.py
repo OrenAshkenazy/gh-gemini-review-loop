@@ -54,7 +54,10 @@ def _detect_node(root: Path) -> dict[str, Any]:
         data = json.loads((root / "package.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         data = {}
-    scripts = data.get("scripts", {}) if isinstance(data, dict) else {}
+    raw_scripts = data.get("scripts", {}) if isinstance(data, dict) else {}
+    # `scripts` can be any JSON type in a hand-edited/corrupt package.json; a
+    # non-dict would make `script_key in scripts` raise TypeError below.
+    scripts = raw_scripts if isinstance(raw_scripts, dict) else {}
     mapping = [
         ("test", "tests", "npm test", True),
         ("lint", "lint", "npm run lint", True),
