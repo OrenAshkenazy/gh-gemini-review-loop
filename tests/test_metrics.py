@@ -215,6 +215,23 @@ class TestFormatRunSummary:
         assert out[4] == "Needs human by judge: 1"
         assert out[5] == "Remaining actionable: 1"
 
+    def test_partial_record_renders_defaults_without_keyerror(self):
+        # format_run_summary may receive records loaded from runs.jsonl, where
+        # load_records validates schema_version but not field presence. A record
+        # missing fields must degrade to defaults, not raise KeyError.
+        out = metrics.format_run_summary({}).splitlines()
+        assert out == [
+            "[loop] Summary",
+            "Findings fetched: 0",
+            "Fixed: 0",
+            "Remaining actionable: 0",
+            "Needs human: 0",
+            "Cycles used: 0/0",
+            "Verification: skipped",
+            "Outcome: unknown",
+            "Time spent: 0s",
+        ]
+
     def test_judge_lines_omitted_when_zero(self):
         judge = {
             "enabled": True,

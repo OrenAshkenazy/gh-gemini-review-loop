@@ -136,13 +136,20 @@ def format_run_summary(record: dict[str, Any]) -> str:
     appear only when they carry signal (observed != fixed, judge verdicts > 0,
     addressed-by-reply > 0, a named failed check).
     """
+    # Every record field is read with .get() and a sensible default: this
+    # function may receive partial/legacy records loaded from runs.jsonl
+    # (load_records validates schema_version, not field presence), so it must
+    # degrade gracefully rather than raise KeyError. The falsy checks below
+    # (addressed_by_reply, failed_check) are intentional omission rules, not
+    # oversights — `is not None` there would render unwanted zero/empty lines.
+    fixed = record.get("fixed_count", 0)
     lines = [
         "[loop] Summary",
-        f"Findings fetched: {record['findings_fetched']}",
-        f"Fixed: {record['fixed_count']}",
+        f"Findings fetched: {record.get('findings_fetched', 0)}",
+        f"Fixed: {fixed}",
     ]
     observed = record.get("observed_fixed_count")
-    if observed is not None and observed != record["fixed_count"]:
+    if observed is not None and observed != fixed:
         lines.append(f"Observed fixed: {observed}")
     judge = record.get("judge") or {}
     if judge.get("enabled"):
@@ -157,20 +164,24 @@ def format_run_summary(record: dict[str, Any]) -> str:
             lines.append(f"Ignored by judge: {ignored}")
         if verdicts.get("needs_human", 0):
             lines.append(f"Needs human by judge: {verdicts['needs_human']}")
-    lines.append(f"Remaining actionable: {record['remaining_actionable']}")
-    lines.append(f"Needs human: {record['needs_human']}")
+    lines.append(f"Remaining actionable: {record.get('remaining_actionable', 0)}")
+    lines.append(f"Needs human: {record.get('needs_human', 0)}")
     if record.get("addressed_by_reply"):
         lines.append(f"Addressed by reply: {record['addressed_by_reply']}")
-    lines.append(f"Cycles used: {record['cycles_used']}/{record['cycle_cap']}")
-    lines.append(f"Verification: {record['verification']}")
-    if record["verification"] == "failed":
+    lines.append(
+        f"Cycles used: {record.get('cycles_used', 0)}/{record.get('cycle_cap', 0)}"
+    )
+    verification = record.get("verification", "skipped")
+    lines.append(f"Verification: {verification}")
+    if verification == "failed":
         details = record.get("verification_details")
         failed_check = details.get("failed_check") if isinstance(details, dict) else None
         if failed_check:
             lines.append(f"Failed check: {failed_check}")
-    lines.append(f"Outcome: {record['outcome']}")
-    label = "Time to clean PR" if record["outcome"] == "clean" else "Time spent"
-    lines.append(f"{label}: {format_duration(record['duration_seconds'])}")
+    outcome = record.get("outcome", "unknown")
+    lines.append(f"Outcome: {outcome}")
+    label = "Time to clean PR" if outcome == "clean" else "Time spent"
+    lines.append(f"{label}: {format_duration(record.get('duration_seconds', 0))}")
     return "\n".join(lines)
 
 
