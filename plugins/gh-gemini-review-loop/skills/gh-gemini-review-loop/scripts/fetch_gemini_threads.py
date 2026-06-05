@@ -1024,7 +1024,16 @@ def first_value(thread: dict[str, Any], key: str) -> Any:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=(
+            "Verification profiles: the loop detects a per-repo check profile on "
+            "first run (pytest/ruff, npm scripts, cargo, go) and stores it in "
+            "preferences.json. Say \"set up a verification profile for this repo\" "
+            "to configure, or \"skip verification profile\" to opt out."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--pr", help="PR URL or OWNER/REPO#NUMBER. Defaults to current branch PR.")
     parser.add_argument("--author", default=DEFAULT_AUTHOR, help=f"Review author login. Default: {DEFAULT_AUTHOR}")
     parser.add_argument("--format", choices=["markdown", "json"], default="markdown")

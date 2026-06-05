@@ -190,6 +190,30 @@ python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/judge_doctor.p
 
 See [SKILL.md -> Optional Judge Eval](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md) for the full flow and verdict schema.
 
+### Verification profiles
+
+The loop can detect a per-repo **verification profile** on first run — the exact checks to run at the verify step (pytest/ruff, npm scripts, cargo, go test, or custom). Detection is automatic: on the first cycle with actionable findings, the agent scans the repo for signals (pyproject.toml, package.json, Cargo.toml, go.mod), proposes a set of required and optional checks, and asks you to confirm, customize, or skip. The profile is stored under `profiles["owner/repo"]` in `~/.config/gh-gemini-review-loop/preferences.json`. Subsequent runs skip the prompt and run the saved profile. Required checks gate the loop (`--verification failed`); optional failures are recorded in details but do not block. Say "set up a verification profile for this repo" to force re-detection, or "skip verification profile" to opt out and stay on ad-hoc checks.
+
+Example profile entry in `preferences.json`:
+
+```json
+{
+  "profiles": {
+    "owner/repo": {
+      "detected_stack": "python",
+      "source": "confirmed",
+      "working_directory": ".",
+      "timeout_seconds": 300,
+      "checks": [
+        {"name": "tests", "command": "pytest", "required": true},
+        {"name": "lint", "command": "ruff check .", "required": true},
+        {"name": "typecheck", "command": "mypy .", "required": false}
+      ]
+    }
+  }
+}
+```
+
 ### Run metrics & local stats
 
 Every completed loop run prints a one-screen summary and appends a local record. The `--stats` flag aggregates those records per repo.
