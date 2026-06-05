@@ -718,6 +718,42 @@ def clear_run_tracking(pr: PullRequest) -> None:
         save_sticky_state(state)
 
 
+def accumulate_judge_results(
+    pr: PullRequest, judge_results: dict[str, dict[str, Any]]
+) -> None:
+    """Persist this cycle's judge verdicts into the run accumulator.
+
+    Verdicts are keyed by thread id so a later cycle's re-judgement of the same
+    thread supersedes an earlier one. Stored alongside the run's finding ids /
+    paths so the terminal ``--record-run`` can build a complete judge block even
+    after the findings themselves have been resolved. A no-op when there are no
+    results, so a run that never judged keeps no ``judge_ran`` flag.
+    """
+    if not judge_results:
+        return
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key, {})
+    run = entry.get("run", {})
+    stored = dict(run.get("judge_results", {}))
+    stored.update(judge_results)
+    run["judge_results"] = stored
+    run["judge_ran"] = True
+    entry["run"] = run
+    state[key] = entry
+    save_sticky_state(state)
+
+
+def merge_judge_results(
+    accumulated: dict[str, dict[str, Any]] | None,
+    current: dict[str, dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    """Union accumulated and current verdicts; current supersedes per thread id."""
+    merged = dict(accumulated or {})
+    merged.update(current or {})
+    return merged
+
+
 def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1422,6 +1458,14 @@ def main() -> int:
                 }
         # --------------------------------------------------------------------
 
+        # Persist this cycle's verdicts into the run accumulator so the terminal
+        # --record-run can report the eval even after findings are resolved.
+        if not args.record_run and not args.stats and judge_results:
+            try:
+                accumulate_judge_results(pr, judge_results)
+            except OSError as exc:
+                print(f"warning: could not persist judge results: {exc}", file=sys.stderr)
+
         rereviews = rereview_requests(pull_request, agent_login)
         if len(rereviews) >= args.max_rereview_requests:
             print(
@@ -1442,7 +1486,14 @@ def main() -> int:
             addressed_by_reply_ids = {
                 t["id"] for t in addressed_by_reply_threads(pull_request, args.author)
             }
-            judge_ran = bool(judge_status.get("ran"))
+            # Merge verdicts accumulated across cycles with this invocation's,
+            # so the record reflects the whole run even when the terminal pass
+            # has no live findings to re-judge. Current invocation supersedes.
+            accumulated_results = run.get("judge_results", {})
+            if not isinstance(accumulated_results, dict):
+                accumulated_results = {}
+            merged_judge_results = merge_judge_results(accumulated_results, judge_results)
+            judge_ran = bool(run.get("judge_ran")) or bool(judge_status.get("ran"))
             cap_reached = len(rereviews) >= args.max_rereview_requests
             outcome = args.outcome or _derive_outcome(
                 len(current_actionable_ids), args.verification, cap_reached
@@ -1453,7 +1504,7 @@ def main() -> int:
                 addressed_by_reply_ids=addressed_by_reply_ids,
                 outcome=outcome,
                 judge_ran=judge_ran,
-                judge_results=judge_results,
+                judge_results=merged_judge_results,
             )
             verification_details: dict[str, Any] = {}
             if args.verification_details:
@@ -1477,7 +1528,7 @@ def main() -> int:
                 outcome_reason=args.outcome_reason or f"outcome: {outcome}",
                 started_at=run.get("started_at"),
                 finding_paths=finding_paths,
-                judge=metrics.build_judge_block(judge_ran, judge_results),
+                judge=metrics.build_judge_block(judge_ran, merged_judge_results),
                 **derived,
             )
             try:
