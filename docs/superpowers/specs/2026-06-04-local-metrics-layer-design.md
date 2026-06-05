@@ -98,7 +98,9 @@ Judge block when judge mode ran:
 - `verification` — `passed | failed | skipped`, agent-supplied.
 - `verification_details` — optional agent-supplied object with structured context about the
   verification step (e.g. `{ "command": "pytest", "passed": 42, "failed": 0 }`). Empty `{}`
-  when the agent has nothing structured to add. Free-form; not aggregated in v1.
+  when the agent has nothing structured to add. Free-form; not aggregated in v1. One key is
+  read by the receipt: when `verification: "failed"`, a `failed_check` string (e.g.
+  `{ "failed_check": "lint" }`) renders the `Failed check: <name>` line in `format_run_summary`.
 - `outcome` ∈ `clean | capped | human | regression | no_progress | verification_failed`.
   `verification_failed` is separate from `regression` (env failure, missing dep, flaky test,
   or no verification command available is not a regression).
@@ -141,28 +143,43 @@ python3 .../fetch_gemini_threads.py --record-run --fixed-count 4 --verification 
 `--record-run` does the final fetch, computes derived fields, folds in the flags, appends,
 and prints the block.
 
-**Rendered output (judge off — judge lines omitted):**
+**Rendered output (judge off, clean run — receipt core only):**
 
 ```text
 [loop] Summary
 Findings fetched: 7
 Fixed: 4
+Remaining actionable: 1
 Needs human: 1
 Cycles used: 2/3
 Verification: passed
+Outcome: clean
 Time to clean PR: 12m
 ```
 
-**With judge on**, two lines insert after "Fixed":
+The summary is a **receipt, not a dashboard** (amendment 2026-06-05): a small always-on
+core, plus optional lines that appear only when they carry signal. The always-on core is
+the eight lines above (`Findings fetched`, `Fixed`, `Remaining actionable`, `Needs human`,
+`Cycles used`, `Verification`, `Outcome`, and the duration line).
+
+**With judge on**, up to two lines insert after `Fixed` (and after `Observed fixed` if that
+is present), each only when its count is `> 0`:
 
 ```text
-Ignored by judge: 2      # false_positive + duplicate + already_addressed + explanation_only
-Needs human (judge): 1   # judge's needs_human verdict, distinct from the loop's line
+Ignored by judge: 2        # false_positive + duplicate + already_addressed + explanation_only
+Needs human by judge: 1    # judge's needs_human verdict, distinct from the loop's line
 ```
 
 **Omission rules.**
-- Judge disabled → both judge lines omitted.
+- Judge disabled → both judge lines omitted. Judge enabled but a count is `0` → that
+  specific judge line omitted.
+- `Observed fixed` shown only when it differs from `Fixed` (e.g. a fix that didn't resolve
+  the thread); omitted when equal.
 - `addressed_by_reply: 0` → that line omitted.
+- `Failed check: <name>` shown only when `Verification: failed` and
+  `verification_details.failed_check` is set; placed directly under the `Verification` line.
+- `Outcome` is always shown. The duration line is labelled `Time to clean PR` when
+  `Outcome: clean`, otherwise `Time spent`.
 - "Needs human" line is driven by the **top-level** `needs_human` (loop's pending-decision
   count); the judge's `needs_human` verdict appears only in the judge block / its own line.
 - Duration formatted compactly: `48s`, `12m`, `1h 4m`.
