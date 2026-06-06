@@ -10,25 +10,25 @@ Built for solo builders and small teams who want review feedback handled while t
 
 [Gemini Code Assist](https://github.com/apps/gemini-code-assist) gives you review comments. This plugin turns those comments into an interactive fix loop inside Claude Code: no dashboard hopping, no manual comment triage, no heavy process to adopt.
 
-### 🛡️ Verification Profiles — *the loop that checks its own work* 🧪✅🤖
+### Verification Profiles — the loop that checks its own work
 
-The loop doesn't just *hope* its fixes are right — it **proves** it, gating every fix on your repo's own tests and linters. One menu pick to set up. Then it disappears. 🪄
+The loop doesn't assume its fixes are correct — it verifies them, gating every change on your repository's own tests and linters before it pushes. Setup is a single menu pick; after that it runs silently.
 
 ```text
 ┌───────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────┐
-│ ⚡ Zero setup                 │ One menu pick. No config files, no schema to learn.                                       │
+│ Zero setup                    │ A single menu pick on the first run. No config files and no schema to learn.              │
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
-│ 🎯 Knows your repo            │ Auto-detects Python, Node, Rust, Go — and respects your own pinned commands.              │
+│ Repo-aware                    │ Auto-detects Python, Node, Rust, and Go — and respects your own pinned commands.          │
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
-│ 🛑 Won't ship a regression    │ Every fix is gated on your tests and linters before it's pushed.                          │
+│ Regression-proof              │ Every fix is gated on your own tests and linters before it is pushed.                     │
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
-│ 🤫 Asks once, then disappears │ Set it and forget it. Returning runs are silent and deterministic.                        │
+│ Set once, then silent         │ Returning runs are prompt-free and deterministic.                                         │
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
-│ 🔒 Safe by design             │ Checks run shell-free with timeouts. Nothing pinned in docs is saved without your say-so.  │
+│ Secure by design              │ Checks run shell-free with timeouts; pinned commands are saved only on confirmation.      │
 └───────────────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-> 🚀 First run in a repo, you'll get a quick menu — **All detected · Tests only · Skip · Customize** — pick one and you're done. Jump to [Verification profiles](#verification-profiles) for the details.
+On the first run in a repository, you choose from a short menu — **All detected · Tests only · Skip · Customize** — and you're set. See [Verification profiles](#verification-profiles) for details.
 
 ---
 
