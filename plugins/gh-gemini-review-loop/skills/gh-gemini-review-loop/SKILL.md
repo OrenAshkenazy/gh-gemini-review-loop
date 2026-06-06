@@ -116,7 +116,7 @@ Persist via `save_preferences()`. Mapping:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "judge_mode": "off",
   "judge_tip_shown": true,
   "max_rereview_requests": 3
@@ -144,7 +144,7 @@ from pathlib import Path
 
 path = Path.home() / ".config" / "gh-gemini-review-loop" / "preferences.json"
 prefs = json.loads(path.read_text()) if path.exists() else {}
-prefs["schema_version"] = 1
+prefs["schema_version"] = 2
 prefs["max_rereview_requests"] = 4
 path.write_text(json.dumps(prefs, indent=2, sort_keys=True) + "\n")
 PY
@@ -154,7 +154,7 @@ Or edit the JSON directly:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "max_rereview_requests": 4
 }
 ```
@@ -162,6 +162,66 @@ Or edit the JSON directly:
 ### Cost framing
 
 `gpt-4o-mini` ≈ $0.001 per finding. `on_complete` ≈ $0.005 max per PR. `on_cycle` worst case depends on the configured cap (default: ≈ $0.015 for 3 cycles × 5 findings).
+
+## Verification Profile
+
+Each repo can have an opinionated, code-derived **verification profile**: the
+checks the loop runs at its verify step. Stored in
+`~/.config/gh-gemini-review-loop/preferences.json` under `profiles["owner/repo"]`.
+
+### First run (detect → preset menu → save)
+
+Run detection **after fetching findings, before the first fix attempt**, so the
+verification strategy is fixed before any edits. If `get_profile(owner/repo)`
+returns `None`:
+
+1. Run `detect_profile.py <repo_root>`. It returns `{stack, confidence, reasons,
+   candidate_checks, presets}`. `presets` is an explicit, ordered, code-built
+   option list — do **not** hand-roll the menu or rely on `AskUserQuestion`
+   auto-adding an option.
+2. If `stack == "unknown"` (empty `candidate_checks`, empty `presets`) → do
+   **not** prompt or persist; use ad-hoc verification.
+3. Reconcile against repo docs (`CLAUDE.md`, `CONTRIBUTING`, `README`). If docs
+   pin a non-standard invocation, surface it as a note beside the menu — *"Repo
+   docs pin `/opt/homebrew/bin/pytest`; pick **Customize manually** to use it."*
+   Never auto-persist an absolute path from prose.
+4. Prompt once with `AskUserQuestion`, using each `presets[i].label` verbatim as
+   an option. Example menu for a multi-check Python repo:
+   *"All detected — pytest + ruff check ." / "Tests only — pytest" / "Skip — use
+   ad-hoc verification" / "Customize manually"*.
+5. Persist the chosen preset via `judge.save_profile(...)`:
+   - Has `customize == true` (**Customize manually**) → run the free-form NL
+     customize path; persist the user's edited checks with `source="customized"`.
+   - Otherwise persist `preset["checks"]` with `source=preset["source"]`
+     (`confirmed` for All detected, `customized` for a narrower preset, `skipped`
+     for Skip). Every persisted check is `required: true`.
+
+### Subsequent runs
+
+A profile (including a `skipped` one) exists → **no prompt**. If `source` is
+`confirmed` or `customized`, run `run_profile.py <owner/repo> <repo_root>` — it
+prints `to_details()` JSON and exits non-zero if a required check failed; feed
+its `verification` into `--verification` and the JSON into
+`--verification-details`. On `skipped` or unknown stack, use today's ad-hoc
+"narrowest meaningful checks".
+
+### Customizing / un-skipping
+
+`source="skipped"` suppresses **automatic** detection prompts only. Explicit user
+intent always overrides it:
+
+- *"add mypy to this repo's verification profile"* / *"change the checks to X"* →
+  edit the profile via `save_profile(..., source="customized")`.
+- *"set up a verification profile for this repo"* → re-enter the detect → preset
+  menu → save flow and overwrite the profile, **even if** a `skipped` marker
+  exists.
+
+### Gate semantics
+
+The verify step **fails iff any `required` check fails or times out**.
+Non-required failures are recorded in `--verification-details` but do not flip
+`--verification` to `failed`. Feed `ProfileRunResult.to_details()` into
+`--verification-details` and its `verification` field into `--verification`.
 
 ## Run Metrics
 
@@ -284,6 +344,9 @@ When the user phrases the request differently, dispatch to the right flag combin
 | **Default loop with saved judge mode** | (no special phrasing — agent reads saved prefs) | `--judge-phase cycle` per cycle; `--judge-phase complete` at final invocation. Script obeys saved mode. |
 | **History investigation** | "show me all Gemini threads ever, including resolved" | `--include-resolved --include-outdated --include-addressed-by-reply --no-resolve-outdated --no-resolve-addressed-by-reply` |
 | **Local stats** | "show Gemini loop stats" / "loop stats for this repo" / "how's the loop doing here" | `--stats` |
+| **Set up verification profile** | "set up a verification profile for this repo" / "configure checks for this repo" | Run `detect_profile.py`, show preset menu, then persist the chosen preset |
+| **Customize profile** | "add mypy to this repo's checks" / "change the verification checks to X" | Edit checks, `save_profile(..., source="customized")` |
+| **Skip profile** | "skip verification profile" / "use ad-hoc checks for this repo" | `save_profile(repo, source="skipped")` — suppress automatic re-prompt |
 
 Run metrics and `--stats` are local-only — stored under `~/.config/gh-gemini-review-loop/`, never posted to GitHub, and contain no identity.
 
@@ -355,6 +418,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
 6. Acknowledge what needs to be fixed.
    - Before editing, briefly summarize the actionable Gemini findings grouped by file or behavior.
    - If there are no actionable unresolved threads, say so and stop after reporting the clean result.
+   - On the first run for this repo with no saved profile, set up the verification profile now (detect → preset menu → save) before applying fixes. See the **Verification Profile** section.
 
 7. Classify comments.
    - Group by file and behavioral area.
@@ -370,8 +434,14 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
    - Make each change traceable to a feedback cluster.
 
 9. Verify.
-   - Run the narrowest meaningful checks first.
-   - Broaden tests when shared logic or user-facing behavior changes.
+   - If a `confirmed`/`customized` profile exists for this repo, run
+     `run_profile.py <owner/repo> <repo_root>` — it prints `to_details()` JSON
+     and exits non-zero if a required check failed; feed its `verification` into
+     `--verification` and the JSON into `--verification-details`
+     (see "Verification Profile").
+   - Otherwise (no profile, `skipped`, or unknown stack): run the narrowest
+     meaningful checks first; broaden when shared logic or user-facing behavior
+     changes.
    - If checks cannot run, report why and what remains unverified.
 
 10. Commit, push, and request re-review.

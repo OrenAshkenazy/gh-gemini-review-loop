@@ -22,15 +22,18 @@ from judge import (  # noqa: E402
     DEFAULT_MAX_REREVIEW_REQUESTS,
     DEFAULT_MODEL,
     PREFS_SCHEMA_VERSION,
+    PROFILE_SOURCES,
     VALID_VERDICTS,
     JudgeClient,
     JudgeError,
     build_user_prompt,
+    get_profile,
     load_preferences,
     looks_like_placeholder_key,
     mark_tip_shown,
     prefs_path,
     save_preferences,
+    save_profile,
     should_judge_run,
 )
 
@@ -98,7 +101,7 @@ class TestPreferences:
     def test_unknown_mode_in_file_falls_back_to_off(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         (tmp_path / "preferences.json").write_text(
-            json.dumps({"schema_version": 1, "judge_mode": "wat", "judge_model": "x"})
+            json.dumps({"schema_version": 2, "judge_mode": "wat", "judge_model": "x"})
         )
         prefs = load_preferences()
         assert prefs["judge_mode"] == "off"
@@ -174,7 +177,7 @@ class TestPreferences:
     def test_loads_saved_max_rereview_requests(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         (tmp_path / "preferences.json").write_text(
-            json.dumps({"schema_version": 1, "max_rereview_requests": 5})
+            json.dumps({"schema_version": 2, "max_rereview_requests": 5})
         )
         assert load_preferences()["max_rereview_requests"] == 5
 
@@ -182,24 +185,66 @@ class TestPreferences:
     def test_invalid_max_rereview_requests_falls_back(self, tmp_path, monkeypatch, value):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         (tmp_path / "preferences.json").write_text(
-            json.dumps({"schema_version": 1, "max_rereview_requests": value})
+            json.dumps({"schema_version": 2, "max_rereview_requests": value})
         )
         assert load_preferences()["max_rereview_requests"] == DEFAULT_MAX_REREVIEW_REQUESTS
 
     def test_string_max_rereview_requests_is_accepted(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         (tmp_path / "preferences.json").write_text(
-            json.dumps({"schema_version": 1, "max_rereview_requests": " 6 "})
+            json.dumps({"schema_version": 2, "max_rereview_requests": " 6 "})
         )
         assert load_preferences()["max_rereview_requests"] == 6
 
     def test_save_preserves_max_rereview_requests(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         (tmp_path / "preferences.json").write_text(
-            json.dumps({"schema_version": 1, "max_rereview_requests": 4})
+            json.dumps({"schema_version": 2, "max_rereview_requests": 4})
         )
         save_preferences("on_complete")
         assert load_preferences()["max_rereview_requests"] == 4
+
+    def test_default_prefs_include_empty_profiles(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        prefs = load_preferences()
+        assert prefs["profiles"] == {}
+        assert prefs["schema_version"] == 2
+
+    def test_save_preferences_preserves_profiles(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        path = tmp_path / "preferences.json"
+        path.write_text(json.dumps({
+            "schema_version": 2,
+            "judge_mode": "off",
+            "profiles": {"o/r": {"source": "confirmed", "checks": []}},
+        }))
+        # Saving an unrelated judge setting must not wipe profiles.
+        save_preferences("on_complete")
+        saved = json.loads(path.read_text())
+        assert saved["profiles"] == {"o/r": {"source": "confirmed", "checks": []}}
+
+    def test_load_coerces_non_dict_profiles_to_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "preferences.json").write_text(json.dumps({
+            "schema_version": 2, "judge_mode": "off", "profiles": "garbage",
+        }))
+        assert load_preferences()["profiles"] == {}
+
+    def test_mark_tip_shown_preserves_profiles(self, tmp_path, monkeypatch):
+        """mark_tip_shown uses a mutate-and-write path; it must not clobber profiles."""
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        path = tmp_path / "preferences.json"
+        profiles_entry = {"o/r": {"source": "confirmed", "checks": []}}
+        path.write_text(json.dumps({
+            "schema_version": 2,
+            "judge_mode": "off",
+            "judge_tip_shown": False,
+            "profiles": profiles_entry,
+        }))
+        mark_tip_shown()
+        saved = json.loads(path.read_text())
+        assert saved["profiles"] == profiles_entry
+        assert saved["judge_tip_shown"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -696,3 +741,53 @@ class TestJudgeInvariant:
             assert forbidden not in src, (
                 f"judge.py imports/uses {forbidden!r} — judge must be read-only."
             )
+
+
+# ---------------------------------------------------------------------------
+# Profile persistence helpers
+# ---------------------------------------------------------------------------
+
+
+class TestProfiles:
+    def test_get_profile_missing_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        assert get_profile("o/r") is None
+
+    def test_save_and_get_roundtrip(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        checks = [{"name": "tests", "command": "pytest", "required": True}]
+        save_profile("o/r", source="confirmed", checks=checks,
+                     detected_stack="python")
+        prof = get_profile("o/r")
+        assert prof["source"] == "confirmed"
+        assert prof["detected_stack"] == "python"
+        assert prof["checks"] == checks
+        assert prof["working_directory"] == "."
+        assert prof["timeout_seconds"] == 300
+        assert prof["updated_at"]  # non-empty ISO timestamp
+
+    def test_save_skipped_omits_checks(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_profile("o/r", source="skipped")
+        prof = get_profile("o/r")
+        assert prof["source"] == "skipped"
+        assert "checks" not in prof
+
+    def test_save_invalid_source_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        with pytest.raises(ValueError):
+            save_profile("o/r", source="bogus", checks=[])
+
+    def test_save_profile_preserves_judge_mode(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_preferences("on_complete")
+        save_profile("o/r", source="confirmed", checks=[])
+        assert load_preferences()["judge_mode"] == "on_complete"
+
+    def test_two_repos_coexist(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_profile("o/a", source="confirmed", checks=[])
+        save_profile("o/b", source="skipped")
+        assert get_profile("o/a")["source"] == "confirmed"
+        assert get_profile("o/a")["checks"] == []
+        assert get_profile("o/b")["source"] == "skipped"

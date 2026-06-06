@@ -1,0 +1,251 @@
+from __future__ import annotations
+
+import json
+
+from detect_profile import build_presets, detect, main
+
+
+def _names(result):
+    return [c["name"] for c in result["candidate_checks"]]
+
+
+def _labels(presets):
+    return [p["label"] for p in presets]
+
+
+def test_python_pyproject_with_optional_tools(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\ndependencies = ['ruff', 'mypy']\n"
+    )
+    (tmp_path / "tests").mkdir()
+    result = detect(tmp_path)
+    assert result["stack"] == "python"
+    assert result["confidence"] == "high"
+    assert "pyproject.toml" in result["reasons"]
+    assert _names(result) == ["tests", "lint", "typecheck"]
+    tests_check = result["candidate_checks"][0]
+    assert tests_check["command"] == "pytest"
+    assert tests_check["required"] is True
+    assert result["candidate_checks"][2]["required"] is False  # typecheck optional
+
+
+def test_python_without_optional_tools_only_pytest(tmp_path):
+    (tmp_path / "setup.py").write_text("from setuptools import setup\n")
+    result = detect(tmp_path)
+    assert result["stack"] == "python"
+    assert _names(result) == ["tests"]
+
+
+def test_node_only_emits_existing_scripts(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({
+        "scripts": {"test": "jest", "lint": "eslint ."}
+    }))
+    result = detect(tmp_path)
+    assert result["stack"] == "node"
+    assert _names(result) == ["tests", "lint"]  # no typecheck script -> absent
+    assert result["candidate_checks"][0]["command"] == "npm test"
+    assert result["candidate_checks"][1]["command"] == "npm run lint"
+
+
+def test_rust_cargo(tmp_path):
+    (tmp_path / "Cargo.toml").write_text("[package]\nname='x'\n")
+    result = detect(tmp_path)
+    assert result["stack"] == "rust"
+    assert result["candidate_checks"][0]["command"] == "cargo test"
+    assert result["candidate_checks"][1]["required"] is False  # clippy optional
+
+
+def test_go_mod(tmp_path):
+    (tmp_path / "go.mod").write_text("module x\n")
+    result = detect(tmp_path)
+    assert result["stack"] == "go"
+    assert result["candidate_checks"][0]["command"] == "go test ./..."
+
+
+def test_unknown_stack_low_confidence_no_checks(tmp_path):
+    (tmp_path / "README.md").write_text("# hi\n")
+    result = detect(tmp_path)
+    assert result["stack"] == "unknown"
+    assert result["confidence"] == "low"
+    assert result["candidate_checks"] == []
+
+
+def test_node_malformed_package_json_is_safe(tmp_path):
+    (tmp_path / "package.json").write_text("{ this is not valid json")
+    result = detect(tmp_path)
+    assert result["stack"] == "node"
+    assert result["candidate_checks"] == []
+
+
+def test_node_non_dict_scripts_is_safe(tmp_path):
+    # A hand-edited package.json where "scripts" is not an object must not
+    # crash the `script_key in scripts` membership check with a TypeError.
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": 5}))
+    result = detect(tmp_path)
+    assert result["stack"] == "node"
+    assert result["candidate_checks"] == []
+
+
+def test_python_pyproject_invalid_utf8_is_safe(tmp_path):
+    # Invalid UTF-8 bytes -> read_text(encoding="utf-8") would raise
+    # UnicodeDecodeError (a ValueError subclass, not OSError). Must degrade,
+    # not crash. errors="replace" makes the read succeed; the garbage bytes
+    # carry no tool names, so only the base "tests" check remains.
+    (tmp_path / "pyproject.toml").write_bytes(b"\xff\xfe\x80\x81\x82 binary junk")
+    result = detect(tmp_path)
+    assert result["stack"] == "python"
+    assert _names(result) == ["tests"]
+
+
+def test_node_package_json_invalid_utf8_is_safe(tmp_path):
+    (tmp_path / "package.json").write_bytes(b"\xff\xfe not utf8")
+    result = detect(tmp_path)
+    assert result["stack"] == "node"
+    assert result["candidate_checks"] == []
+
+
+def test_python_ruff_substring_does_not_false_positive(tmp_path):
+    # "gruff" contains "ruff" but is not the ruff tool; word-boundary match
+    # must not add a lint check.
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.poetry.dependencies]\ngruff = "^1.0"\n'
+    )
+    assert "lint" not in _names(detect(tmp_path))
+
+
+def test_python_ruff_word_is_detected(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.ruff]\nline-length = 88\n"
+    )
+    assert "lint" in _names(detect(tmp_path))
+
+
+def test_strong_marker_beats_bare_tests_dir(tmp_path):
+    # A node repo that also has a tests/ dir must detect as node, not python:
+    # tests/ is a weak signal common to many languages (Gemini review #30).
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"test": "jest"}}))
+    (tmp_path / "tests").mkdir()
+    result = detect(tmp_path)
+    assert result["stack"] == "node"
+
+
+def test_bare_tests_dir_falls_back_to_python(tmp_path):
+    # With no strong marker, a tests/ dir still falls back to python.
+    (tmp_path / "tests").mkdir()
+    result = detect(tmp_path)
+    assert result["stack"] == "python"
+    assert result["confidence"] == "medium"
+
+
+def test_directory_named_like_marker_is_ignored(tmp_path):
+    # A *directory* named pyproject.toml must not be treated as the file marker
+    # (would crash read_text with IsADirectoryError) nor classify as python.
+    (tmp_path / "pyproject.toml").mkdir()
+    result = detect(tmp_path)
+    assert result["stack"] == "unknown"
+
+
+def test_directory_named_package_json_is_not_node(tmp_path):
+    (tmp_path / "package.json").mkdir()
+    result = detect(tmp_path)
+    assert result["stack"] == "unknown"
+
+
+def test_python_read_error_degrades_without_crash(tmp_path, monkeypatch):
+    # is_file() True but read_text raises OSError (permissions/broken symlink):
+    # detection must not crash; it degrades to the base pytest check.
+    (tmp_path / "pyproject.toml").write_text("[project]\ndependencies=['ruff']\n")
+    import detect_profile
+
+    def boom(*a, **k):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(detect_profile.Path, "read_text", boom)
+    result = detect(tmp_path)
+    assert result["stack"] == "python"
+    assert _names(result) == ["tests"]  # ruff/mypy skipped: read failed safely
+
+
+def test_build_presets_empty_candidates_returns_no_menu():
+    assert build_presets([]) == []
+
+
+def test_build_presets_single_check_has_no_narrower_option():
+    candidates = [{"name": "tests", "command": "cargo test", "required": True}]
+    presets = build_presets(candidates)
+    assert _labels(presets) == [
+        "All detected — cargo test",
+        "Skip — use ad-hoc verification",
+        "Customize manually",
+    ]
+
+
+def test_build_presets_multi_check_with_tests_offers_tests_only():
+    candidates = [
+        {"name": "tests", "command": "pytest", "required": True},
+        {"name": "lint", "command": "ruff check .", "required": True},
+    ]
+    presets = build_presets(candidates)
+    assert _labels(presets) == [
+        "All detected — pytest + ruff check .",
+        "Tests only — pytest",
+        "Skip — use ad-hoc verification",
+        "Customize manually",
+    ]
+
+
+def test_build_presets_multi_check_without_tests_offers_first_check_only():
+    candidates = [
+        {"name": "lint", "command": "npm run lint", "required": True},
+        {"name": "typecheck", "command": "npm run typecheck", "required": False},
+    ]
+    presets = build_presets(candidates)
+    assert _labels(presets) == [
+        "All detected — npm run lint + npm run typecheck",
+        "First check only — npm run lint",
+        "Skip — use ad-hoc verification",
+        "Customize manually",
+    ]
+
+
+def test_build_presets_forces_required_true_on_all_gating_checks():
+    candidates = [
+        {"name": "tests", "command": "pytest", "required": True},
+        {"name": "typecheck", "command": "mypy .", "required": False},
+    ]
+    presets = build_presets(candidates)
+    all_detected = presets[0]
+    assert all_detected["source"] == "confirmed"
+    assert all(c["required"] is True for c in all_detected["checks"])
+
+
+def test_build_presets_sources_and_customize_flag():
+    candidates = [
+        {"name": "tests", "command": "pytest", "required": True},
+        {"name": "lint", "command": "ruff check .", "required": True},
+    ]
+    by_label = {p["label"]: p for p in build_presets(candidates)}
+    assert by_label["All detected — pytest + ruff check ."]["source"] == "confirmed"
+    assert by_label["Tests only — pytest"]["source"] == "customized"
+    skip = by_label["Skip — use ad-hoc verification"]
+    assert skip["source"] == "skipped" and skip["checks"] == []
+    customize = by_label["Customize manually"]
+    assert customize["customize"] is True and customize["source"] is None
+
+
+def test_main_output_includes_presets_key(tmp_path, capsys):
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\ndependencies = ['ruff']\n"
+    )
+    (tmp_path / "tests").mkdir()
+    rc = main(["detect_profile.py", str(tmp_path)])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stack"] == "python"
+    assert payload["candidate_checks"]
+    assert [p["label"] for p in payload["presets"]] == [
+        "All detected — pytest + ruff check .",
+        "Tests only — pytest",
+        "Skip — use ad-hoc verification",
+        "Customize manually",
+    ]

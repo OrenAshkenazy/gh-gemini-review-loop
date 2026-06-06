@@ -551,11 +551,12 @@ def _direct_preferences_path() -> Path:
 # read any documented key (``judge_mode``, ``judge_model``, etc.) without
 # guarding against KeyError when the optional ``judge`` module is missing.
 _FALLBACK_PREFS_DEFAULTS: dict[str, Any] = {
-    "schema_version": 1,
+    "schema_version": 2,
     "judge_mode": "off",
     "judge_model": "gpt-4o-mini",
     "judge_tip_shown": False,
     "max_rereview_requests": DEFAULT_REREVIEW_LIMIT,
+    "profiles": {},
     "set_at": "",
 }
 
@@ -1114,7 +1115,16 @@ def first_value(thread: dict[str, Any], key: str) -> Any:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=(
+            "Verification profiles: the loop detects a per-repo check profile on "
+            "first run (pytest/ruff, npm scripts, cargo, go) and stores it in "
+            "preferences.json. Say \"set up a verification profile for this repo\" "
+            "to configure, or \"skip verification profile\" to opt out."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--pr", help="PR URL or OWNER/REPO#NUMBER. Defaults to current branch PR.")
     parser.add_argument("--author", default=DEFAULT_AUTHOR, help=f"Review author login. Default: {DEFAULT_AUTHOR}")
     parser.add_argument("--format", choices=["markdown", "json"], default="markdown")

@@ -106,7 +106,7 @@ DEFAULT_MAX_REREVIEW_REQUESTS = 3
 # learn a new var when we drop the SDK dep.
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
-PREFS_SCHEMA_VERSION = 1
+PREFS_SCHEMA_VERSION = 2
 
 SYSTEM_PROMPT = """\
 You are an expert code-review judge. The user is deciding whether to act on \
@@ -209,12 +209,15 @@ def load_preferences() -> dict[str, t.Any]:
     max_rereview_requests = _coerce_max_rereview_requests(
         data.get("max_rereview_requests")
     )
+    raw_profiles = data.get("profiles")
+    profiles = raw_profiles if isinstance(raw_profiles, dict) else {}
     return {
         "schema_version": data.get("schema_version", PREFS_SCHEMA_VERSION),
         "judge_mode": mode,
         "judge_model": data.get("judge_model") or DEFAULT_MODEL,
         "judge_tip_shown": bool(data.get("judge_tip_shown", False)),
         "max_rereview_requests": max_rereview_requests,
+        "profiles": profiles,
         "set_at": data.get("set_at") or "",
     }
 
@@ -232,6 +235,7 @@ def save_preferences(judge_mode: str, *, judge_model: str | None = None) -> dict
         "max_rereview_requests": existing.get(
             "max_rereview_requests", DEFAULT_MAX_REREVIEW_REQUESTS
         ),
+        "profiles": existing.get("profiles", {}),
         "set_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     path = prefs_path()
@@ -249,6 +253,54 @@ def mark_tip_shown() -> None:
     path.write_text(json.dumps(existing, indent=2, sort_keys=True), encoding="utf-8")
 
 
+PROFILE_SOURCES = frozenset({"confirmed", "customized", "skipped"})
+
+
+def get_profile(repo: str) -> dict[str, t.Any] | None:
+    """Return the saved verification profile for ``repo`` (``owner/repo``), or None."""
+    return load_preferences().get("profiles", {}).get(repo)
+
+
+def save_profile(
+    repo: str,
+    *,
+    source: str,
+    checks: list[dict[str, t.Any]] | None = None,
+    detected_stack: str | None = None,
+    working_directory: str = ".",
+    timeout_seconds: int = 300,
+) -> dict[str, t.Any]:
+    """Persist a per-repo verification profile, preserving all other prefs.
+
+    ``source`` must be one of PROFILE_SOURCES. A ``skipped`` profile carries no
+    ``checks`` (the loop falls back to ad-hoc verification but does not re-prompt).
+    Returns the saved profile dict.
+    """
+    if source not in PROFILE_SOURCES:
+        raise ValueError(
+            f"source must be one of {sorted(PROFILE_SOURCES)}; got {source!r}."
+        )
+    prefs = load_preferences()
+    prefs["schema_version"] = PREFS_SCHEMA_VERSION
+    profile: dict[str, t.Any] = {
+        "source": source,
+        "updated_at": _dt.datetime.now(_dt.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+    }
+    if detected_stack is not None:
+        profile["detected_stack"] = detected_stack
+    if source != "skipped":
+        profile["checks"] = checks if checks is not None else []
+        profile["working_directory"] = working_directory
+        profile["timeout_seconds"] = timeout_seconds
+    profiles = dict(prefs.get("profiles", {}))
+    profiles[repo] = profile
+    prefs["profiles"] = profiles
+    _write_prefs(prefs_path(), prefs)
+    return profile
+
+
 def _default_prefs() -> dict[str, t.Any]:
     return {
         "schema_version": PREFS_SCHEMA_VERSION,
@@ -256,6 +308,7 @@ def _default_prefs() -> dict[str, t.Any]:
         "judge_model": DEFAULT_MODEL,
         "judge_tip_shown": False,
         "max_rereview_requests": DEFAULT_MAX_REREVIEW_REQUESTS,
+        "profiles": {},
         "set_at": "",
     }
 
