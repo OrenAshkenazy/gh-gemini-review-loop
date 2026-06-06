@@ -53,17 +53,22 @@ cap, or a prior cycle was interrupted mid-flight.
 
 ### Fix (prose now — `SKILL.md` new "Resuming after the cap" subsection)
 
-At cap, branch on exactly these four cases, in order:
+At cap, evaluate these four cases as a **strict priority order — first match
+wins, top to bottom.** The order is authoritative so "resume" cannot be
+interpreted differently between sessions:
 
-| # | Condition | Action |
-|---|-----------|--------|
-| 1 | User increased the cap (effective `max_rereview_requests` > the cap already consumed) | **Continue** from the next cycle |
+| Priority | Condition | Action |
+|----------|-----------|--------|
+| 1 (highest) | User increased the cap (effective `max_rereview_requests` > the cap already consumed) | **Continue** from the next cycle |
 | 2 | Interrupted local work **not pushed** (local commits/edits exist beyond the remote branch HEAD) | **Finish the push** — no new cycle consumed |
 | 3 | **Pushed** but no re-review request posted for that pushed SHA | **Request review** for that SHA — no new cycle consumed |
-| 4 | No new local work **and** no higher cap | **Hard stop** (today's behavior) |
+| 4 (lowest) | No new local work **and** no higher cap | **Hard stop** (today's behavior) |
 
-Cases 2 and 3 do **not** consume a new cycle — they complete an
-already-started cycle whose final step was interrupted.
+Evaluation is short-circuit: stop at the first matching priority. So a bumped
+cap (priority 1) takes precedence even if there is also unpushed work; the
+higher cap means the loop continues normally and the unpushed work rides along.
+Cases 2 and 3 do **not** consume a new cycle — they complete an already-started
+cycle whose final step was interrupted.
 
 ### Deterministic-detection obligation (follow-up, flagged in spec)
 
@@ -129,8 +134,26 @@ dedup logic in this iteration:
    {"name": "<recipe>", "command": "just <recipe>", "working_directory": ".", "required": true}
    ```
    No recipe-body parsing — `just` itself handles `cd`, flags, and env.
-   **If ≥1 matching recipe exists, emit those recipes and SKIP git-tree
-   discovery entirely.**
+   **If ≥1 emittable recipe exists (name matches AND passes the parameter
+   guard below), emit those recipes and SKIP git-tree discovery entirely.** If
+   every name-matching recipe is guarded out, justfile mode emits nothing and
+   git-tree mode runs as the fallback.
+
+   **Parameter guard.** A `just` recipe can declare parameters
+   (`recipe param:`, `recipe param="default":`, `recipe +req:`, `recipe *opt:`).
+   A recipe that **requires** an argument cannot be invoked as bare
+   `just <recipe>` and must be **skipped** (emitting it would produce a check
+   that always errors with "Recipe … got 0 arguments but takes 1"). The recipe
+   is runnable — and therefore emittable — only when every parameter is
+   zero-arg-safe:
+   - no parameters → runnable
+   - all parameters have defaults (`param="x"`) → runnable
+   - a `*variadic` parameter (accepts zero) → runnable
+   - any required positional parameter, or a `+variadic` (requires ≥1) →
+     **skip the recipe**
+
+   The recipe-name pattern match and the parameter guard are **both** required:
+   a recipe is emitted only if its name matches AND it is zero-arg-runnable.
 
 2. **Git-tree mode (only when no matching justfile recipes exist).**
    `git ls-files` to enumerate tracked files (this naturally skips
@@ -207,6 +230,11 @@ first.
 - emits `just <recipe>` checks with `working_directory: "."`
 - presence of ≥1 matching recipe suppresses git-tree discovery
 - `justfile` / `Justfile` / `.justfile` filename variants
+- **parameter guard**: no-param and all-defaulted (`param="x"`) and `*variadic`
+  recipes are emitted; required-positional (`recipe target:`) and `+variadic`
+  recipes are skipped even when the name matches
+- a justfile whose only name-matching recipes all require parameters → no
+  justfile checks emitted, so git-tree mode runs as the fallback
 
 **`detect_profile` git-tree mode**
 - discovers `tests` / `test` / `__tests__` / `spec(s)` dirs from tracked files
