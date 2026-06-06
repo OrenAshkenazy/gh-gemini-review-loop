@@ -161,3 +161,69 @@ def test_utf8_output_is_decoded(tmp_path):
     result = run_profile(prof, tmp_path)
     assert result.verification == "passed"
     assert result.checks[0].status == "passed"
+
+
+def test_per_check_working_directory_overrides_profile(tmp_path):
+    sub = tmp_path / "backend"
+    sub.mkdir()
+    # marker file only exists in the subdir; the check must run there to find it
+    (sub / "marker.txt").write_text("x")
+    prof = _profile(
+        [
+            {
+                "name": "backend",
+                "command": 'python3 -c "import os,sys; sys.exit(0 if os.path.exists(\'marker.txt\') else 1)"',
+                "working_directory": "backend",
+                "required": True,
+            }
+        ],
+        working_directory=".",
+    )
+    result = run_profile(prof, tmp_path)
+    assert result.verification == "passed"
+
+
+def test_check_without_cwd_falls_back_to_profile_directory(tmp_path):
+    sub = tmp_path / "svc"
+    sub.mkdir()
+    (sub / "marker.txt").write_text("x")
+    prof = _profile(
+        [
+            {
+                "name": "svc",
+                "command": 'python3 -c "import os,sys; sys.exit(0 if os.path.exists(\'marker.txt\') else 1)"',
+                "required": True,
+            }
+        ],
+        working_directory="svc",
+    )
+    result = run_profile(prof, tmp_path)
+    assert result.verification == "passed"
+
+
+def test_mixed_per_check_and_inherited_cwd(tmp_path):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / "marker.txt").write_text("x")
+    (b / "marker.txt").write_text("x")
+    prof = _profile(
+        [
+            {
+                "name": "in_a",
+                "command": 'python3 -c "import os,sys; sys.exit(0 if os.path.exists(\'marker.txt\') else 1)"',
+                "working_directory": "a",
+                "required": True,
+            },
+            {
+                "name": "in_b_inherited",
+                "command": 'python3 -c "import os,sys; sys.exit(0 if os.path.exists(\'marker.txt\') else 1)"',
+                "required": True,
+            },
+        ],
+        working_directory="b",
+    )
+    result = run_profile(prof, tmp_path)
+    assert result.verification == "passed"
+    assert {c.name for c in result.checks} == {"in_a", "in_b_inherited"}
