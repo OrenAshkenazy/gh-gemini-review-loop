@@ -237,13 +237,16 @@ class TestFormatAutoSnapshot:
         base.update(over)
         return base
 
-    def test_auto_snapshot_shape(self):
-        out = metrics.format_auto_snapshot(self._rec()).splitlines()
-        assert out == [
-            "[loop] Summary (auto - agent didn't post one this turn)",
-            "Threads this run: 7 seen, 4 resolved, 1 still open",
-            "Cycles used: 2/3",
-        ]
+    def test_auto_snapshot_is_single_line(self):
+        # One line so Claude Code doesn't collapse it behind "ctrl+o to expand"
+        # — a backstop summary you must expand isn't actually surfaced.
+        assert "\n" not in metrics.format_auto_snapshot(self._rec())
+
+    def test_auto_snapshot_content(self):
+        assert metrics.format_auto_snapshot(self._rec()) == (
+            "[loop] Summary (auto, agent didn't post one): "
+            "7 seen, 4 resolved, 1 open · cycles 2/3"
+        )
 
     def test_auto_snapshot_hides_agent_only_fields(self):
         out = metrics.format_auto_snapshot(self._rec())

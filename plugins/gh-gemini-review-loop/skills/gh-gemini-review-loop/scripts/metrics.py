@@ -140,15 +140,16 @@ def format_auto_snapshot(record: dict[str, Any]) -> str:
     Verification/Outcome, which is what made the full receipt misleading when
     fired without agent inputs.
     """
-    return "\n".join([
-        "[loop] Summary (auto - agent didn't post one this turn)",
-        (
-            f"Threads this run: {record['findings_fetched']} seen, "
-            f"{record.get('observed_fixed_count', 0)} resolved, "
-            f"{record['remaining_actionable']} still open"
-        ),
-        f"Cycles used: {record['cycles_used']}/{record['cycle_cap']}",
-    ])
+    # One line on purpose: Claude Code collapses multi-line hook output behind
+    # "ctrl+o to expand", so a multi-line backstop summary wouldn't actually be
+    # visible to someone watching the chat.
+    return (
+        "[loop] Summary (auto, agent didn't post one): "
+        f"{record['findings_fetched']} seen, "
+        f"{record.get('observed_fixed_count', 0)} resolved, "
+        f"{record['remaining_actionable']} open · "
+        f"cycles {record['cycles_used']}/{record['cycle_cap']}"
+    )
 
 
 def format_run_summary(record: dict[str, Any]) -> str:
