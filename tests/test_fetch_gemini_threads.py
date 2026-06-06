@@ -975,11 +975,11 @@ class TestFindActiveRun:
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         assert find_active_run("o/r") is None
 
-    def test_returns_none_when_run_missing_started_at(self, tmp_path, monkeypatch):
-        # A `run` block with no started_at is not an active loop (it was cleared
-        # or never accumulated a cycle).
+    def test_returns_none_when_run_missing_update_seq(self, tmp_path, monkeypatch):
+        # A `run` block that never bumped update_seq (legacy/pre-feature cruft,
+        # or cleared) is NOT an active loop, even if it has started_at.
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
-        save_sticky_state({"o/r#5": {"run": {"finding_ids": ["x"]}}})
+        save_sticky_state({"o/r#5": {"run": {"started_at": "2026-06-06T10:00:00Z"}}})
         assert find_active_run("o/r") is None
 
     def test_returns_none_when_no_run_block(self, tmp_path, monkeypatch):
@@ -990,26 +990,26 @@ class TestFindActiveRun:
 
     def test_returns_pr_and_run_for_active(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
-        run = {"started_at": "2026-06-06T10:00:00Z", "finding_ids": ["a"]}
+        run = {"started_at": "2026-06-06T10:00:00Z", "update_seq": 1, "finding_ids": ["a"]}
         save_sticky_state({"o/r#7": {"run": run}})
         assert find_active_run("o/r") == (7, run)
 
     def test_ignores_other_repos(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
-        save_sticky_state({"other/repo#1": {"run": {"started_at": "2026-06-06T10:00:00Z"}}})
+        save_sticky_state({"other/repo#1": {"run": {"started_at": "2026-06-06T10:00:00Z", "update_seq": 1}}})
         assert find_active_run("o/r") is None
 
     def test_does_not_prefix_match_similar_repo(self, tmp_path, monkeypatch):
         # "o/r2" must not be treated as belonging to "o/r".
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
-        save_sticky_state({"o/r2#1": {"run": {"started_at": "2026-06-06T10:00:00Z"}}})
+        save_sticky_state({"o/r2#1": {"run": {"started_at": "2026-06-06T10:00:00Z", "update_seq": 1}}})
         assert find_active_run("o/r") is None
 
     def test_picks_most_recently_started_when_multiple_active(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         save_sticky_state({
-            "o/r#1": {"run": {"started_at": "2026-06-06T09:00:00Z"}},
-            "o/r#2": {"run": {"started_at": "2026-06-06T11:00:00Z"}},
+            "o/r#1": {"run": {"started_at": "2026-06-06T09:00:00Z", "update_seq": 1}},
+            "o/r#2": {"run": {"started_at": "2026-06-06T11:00:00Z", "update_seq": 1}},
         })
         num, _ = find_active_run("o/r")
         assert num == 2
@@ -1028,16 +1028,18 @@ class TestAnyActiveRun:
         save_sticky_state({"o/r#1": {"sticky_comment_id": 9}})
         assert any_active_run() is False
 
-    def test_false_when_run_block_lacks_started_at(self, tmp_path, monkeypatch):
+    def test_false_when_run_block_lacks_update_seq(self, tmp_path, monkeypatch):
+        # Legacy/pre-feature run (started_at but no update_seq) is not active —
+        # this is what kept stale cruft from any repo looking "active" forever.
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
-        save_sticky_state({"o/r#1": {"run": {"update_seq": 1}}})
+        save_sticky_state({"o/r#1": {"run": {"started_at": "2026-06-06T10:00:00Z"}}})
         assert any_active_run() is False
 
     def test_true_when_any_active_run_exists(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         save_sticky_state({
             "o/r#1": {"sticky_comment_id": 9},
-            "x/y#3": {"run": {"started_at": "2026-06-06T10:00:00Z"}},
+            "x/y#3": {"run": {"started_at": "2026-06-06T10:00:00Z", "update_seq": 1}},
         })
         assert any_active_run() is True
 

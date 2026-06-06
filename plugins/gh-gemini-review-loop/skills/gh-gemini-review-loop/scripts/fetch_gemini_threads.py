@@ -733,7 +733,11 @@ def any_active_run() -> bool:
         if not isinstance(entry, dict):
             continue
         run = entry.get("run")
-        if isinstance(run, dict) and run.get("started_at"):
+        # "Active" means a fetch bumped update_seq under the current code. A
+        # started_at without update_seq is legacy/pre-feature cruft (or a
+        # cleared run) and must not count, or stale entries from any repo would
+        # look active forever.
+        if isinstance(run, dict) and run.get("update_seq"):
             return True
     return False
 
@@ -758,8 +762,11 @@ def find_active_run(repo_full: str) -> tuple[int, dict[str, Any]] | None:
         except ValueError:
             continue
         run = entry.get("run") if isinstance(entry, dict) else None
-        if isinstance(run, dict) and run.get("started_at"):
-            candidates.append((run["started_at"], number, run))
+        # Active = bumped update_seq under current code (see any_active_run);
+        # a started_at-only run is legacy cruft and is skipped. Order by
+        # started_at so the most recently begun loop wins when several qualify.
+        if isinstance(run, dict) and run.get("update_seq"):
+            candidates.append((run.get("started_at", ""), number, run))
     if not candidates:
         return None
     candidates.sort(key=lambda c: c[0])
