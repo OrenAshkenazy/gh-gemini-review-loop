@@ -693,6 +693,10 @@ def update_run_tracking(pr: PullRequest, findings: list[tuple[str, str | None]])
     run = entry.get("run", {})
     if "started_at" not in run:
         run["started_at"] = _now_iso()
+    # Monotonic counter bumped on every fetch. The loop's Stop-hook backstop
+    # compares it against last_summary_seq to tell whether the run advanced
+    # since the agent last emitted a summary (see summary_is_stale).
+    run["update_seq"] = int(run.get("update_seq", 0)) + 1
     ids = set(run.get("finding_ids", []))
     paths = set(run.get("finding_paths", []))
     for thread_id, path in findings:
@@ -717,6 +721,81 @@ def clear_run_tracking(pr: PullRequest) -> None:
     if key in state and "run" in state[key]:
         del state[key]["run"]
         save_sticky_state(state)
+
+
+def any_active_run() -> bool:
+    """True if any tracked PR (any repo) has an active loop run.
+
+    Repo-agnostic and network-free, so the Stop hook can skip git/repo
+    resolution entirely on the common case of no loop in flight.
+    """
+    for entry in load_sticky_state().values():
+        if not isinstance(entry, dict):
+            continue
+        run = entry.get("run")
+        if isinstance(run, dict) and run.get("started_at"):
+            return True
+    return False
+
+
+def find_active_run(repo_full: str) -> tuple[int, dict[str, Any]] | None:
+    """Return ``(pr_number, run)`` for the active Gemini loop in ``repo_full``.
+
+    A loop is "active" once a cycle has accumulated into its ``run`` block
+    (signalled by ``started_at``); ``--record-run`` clears that block, so a
+    recorded/never-started loop reads as inactive. This is the cheap,
+    network-free gate the loop hooks use to decide whether to spend a GitHub
+    fetch on a summary, so it only reads local state. If several PRs in the
+    repo look active, the most recently started one wins.
+    """
+    candidates: list[tuple[str, int, dict[str, Any]]] = []
+    for key, entry in load_sticky_state().items():
+        prefix, sep, suffix = key.rpartition("#")
+        if not sep or prefix != repo_full:
+            continue
+        try:
+            number = int(suffix)
+        except ValueError:
+            continue
+        run = entry.get("run") if isinstance(entry, dict) else None
+        if isinstance(run, dict) and run.get("started_at"):
+            candidates.append((run["started_at"], number, run))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: c[0])
+    _, number, run = candidates[-1]
+    return number, run
+
+
+def summary_is_stale(run: dict[str, Any]) -> bool:
+    """True when the run has advanced since the last emitted summary.
+
+    ``update_seq`` is bumped on every fetch; ``last_summary_seq`` is stamped
+    when a summary is emitted. A run that fetched but was never summarized
+    (``last_summary_seq`` absent → 0) is stale. A run with ``started_at`` but no
+    fetch yet (``update_seq`` 0) has nothing to show and is not stale.
+    """
+    return int(run.get("update_seq", 0)) > int(run.get("last_summary_seq", 0))
+
+
+def stamp_summary_emitted(pr: PullRequest) -> None:
+    """Record that a summary covering the current run state was just emitted.
+
+    Sets ``last_summary_seq`` to the current ``update_seq`` so the Stop-hook
+    backstop won't re-emit a summary the agent already showed. A no-op when no
+    run is being tracked, so it never resurrects a cleared/absent run block.
+    """
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key)
+    if not isinstance(entry, dict):
+        return
+    run = entry.get("run")
+    if not isinstance(run, dict) or "update_seq" not in run:
+        return
+    run["last_summary_seq"] = int(run["update_seq"])
+    state[key]["run"] = run
+    save_sticky_state(state)
 
 
 def accumulate_judge_results(
@@ -1678,6 +1757,14 @@ def main() -> int:
                         clear_run_tracking(pr)
                     except OSError as exc:
                         print(f"warning: could not clear run tracking: {exc}", file=sys.stderr)
+            else:
+                # --cycle-summary leaves the accumulator intact but stamps that a
+                # summary covering the current run state was emitted, so the
+                # Stop-hook backstop won't duplicate it.
+                try:
+                    stamp_summary_emitted(pr)
+                except OSError as exc:
+                    print(f"warning: could not stamp summary state: {exc}", file=sys.stderr)
             print(metrics.format_run_summary(record))
             return 0
         if args.post_receipt or args.sticky_receipt:

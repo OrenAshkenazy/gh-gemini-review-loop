@@ -172,7 +172,9 @@ checks the loop runs at its verify step. Stored in
 ### First run (detect → preset menu → save)
 
 Run detection **after fetching findings, before the first fix attempt**, so the
-verification strategy is fixed before any edits. If `get_profile(owner/repo)`
+verification strategy is fixed before any edits. This ordering is enforced by a
+`PreToolUse` hook that blocks edits during an active loop until a profile is
+saved (see [Bundled hooks](#bundled-hooks)). If `get_profile(owner/repo)`
 returns `None`:
 
 1. Run `detect_profile.py <repo_root>`. It returns `{stack, confidence, reasons,
@@ -292,7 +294,9 @@ Run metrics and `--stats` are local-only — stored under `~/.config/gh-gemini-r
 
 ## Progress Narration
 
-While the loop is running, the agent MUST emit one-line status updates to the user-facing chat at each phase transition. The format is `[loop] cycle N/<cap> — <phase>`. This is the cheapest user visibility — no code path, just instructions to the agent.
+While the loop is running, the agent MUST emit one-line status updates to the user-facing chat at each phase transition. The format is `[loop] cycle N/<cap> — <phase>`.
+
+**Mechanical backstop (you do not need to rely on remembering this).** A bundled `Stop` hook (`scripts/loop_summary_hook.py`) guarantees the per-cycle/end summary even if the agent forgets it. On every turn end, if a loop advanced (a new fetch bumped the run's `update_seq` in `state.json`) without the agent emitting a `[loop] Summary` since (`last_summary_seq` lags), the hook emits the authoritative `--cycle-summary` itself. It is **dedup-aware**: when the agent *did* run `--cycle-summary`/`--record-run` that turn (those stamp `last_summary_seq`), the hook stays silent — no double summaries. It is network-gated by local state, so it is a free no-op outside an active loop, and it is read-only (never appends a metrics record, never clears the accumulator — the agent still owns the single terminal `--record-run`). So the narration table below is the *intended* cadence; the hook is the floor.
 
 Required narration points:
 
@@ -314,6 +318,21 @@ Skip narration only when running in pure non-interactive batch mode (e.g. `gh pr
 Rationale: in interactive Claude Code sessions, the user is watching the chat. Silent loops feel broken even when they're working. One line per phase is the right cadence — enough to show progress without burying signal.
 
 When the user explicitly wants visibility outside the chat (e.g. they'll step away from the terminal, or other reviewers will look at the PR while the loop runs), pair the chat narration with `--sticky-receipt`. See [Sticky receipt](#sticky-receipt-background-visibility) above.
+
+## Bundled hooks
+
+The plugin ships two hooks (`hooks/hooks.json`) that turn the two most-skipped
+agent obligations — *summarize every cycle* and *set up the profile before
+fixing* — from prose into mechanical guarantees. Both are network-gated by local
+`state.json` (free no-ops outside an active loop) and both fail open: a hook
+error never wedges the session.
+
+| Event | Script | What it guarantees |
+|---|---|---|
+| `Stop` | `loop_summary_hook.py` | If a loop advanced this turn without a `[loop] Summary`, emits the authoritative `--cycle-summary`. Dedup-aware via `update_seq`/`last_summary_seq` — silent when the agent already summarized. Read-only; never records or clears. |
+| `PreToolUse` (`Edit`/`Write`/`MultiEdit`) | `loop_profile_gate.py` | Blocks edits while a loop is active for the repo and no verification profile is saved, so the verify strategy is fixed before any fix. Saving any profile — including `Skip` — clears the gate. |
+
+These mean the agent should still narrate and summarize as documented, but a lapse no longer costs the user visibility or breaks the profile-before-fixes ordering.
 
 ## Variations (user-prompt → flag mapping)
 
@@ -418,7 +437,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
 6. Acknowledge what needs to be fixed.
    - Before editing, briefly summarize the actionable Gemini findings grouped by file or behavior.
    - If there are no actionable unresolved threads, say so and stop after reporting the clean result.
-   - On the first run for this repo with no saved profile, set up the verification profile now (detect → preset menu → save) before applying fixes. See the **Verification Profile** section.
+   - **GATE — verification profile before any edit.** On the first run for this repo with no saved profile, set up the verification profile NOW (detect → preset menu → save) — *before* applying a single fix, so the verify strategy is fixed before edits. See the **Verification Profile** section. This is enforced mechanically: a bundled `PreToolUse` hook (`scripts/loop_profile_gate.py`) blocks `Edit`/`Write`/`MultiEdit` while a loop is active for the repo and no profile is saved. Saving any profile — including a deliberate **Skip** — clears the gate. If an edit is blocked, that is the signal you skipped this step: make the profile decision, then proceed.
 
 7. Classify comments.
    - Group by file and behavioral area.
@@ -428,6 +447,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
    - If comments conflict or could cause a behavioral regression, stop and surface the tradeoff.
 
 8. Implement fixes.
+   - **Do not edit until the step-6 profile gate is satisfied** (a profile is saved, even a `skipped` one). The `PreToolUse` hook will block edits otherwise.
    - Keep changes scoped to the Gemini feedback.
    - Read the relevant code before editing.
    - Preserve unrelated local changes.
