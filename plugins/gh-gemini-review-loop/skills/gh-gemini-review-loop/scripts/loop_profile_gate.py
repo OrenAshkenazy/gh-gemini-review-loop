@@ -60,6 +60,8 @@ BLOCK_MESSAGE = (
 def main() -> int:
     try:
         payload = json.loads(sys.stdin.read() or "{}")
+        if not isinstance(payload, dict):
+            return 0
     except (json.JSONDecodeError, ValueError, OSError):
         return 0  # malformed/unreadable payload -> fail open
 
