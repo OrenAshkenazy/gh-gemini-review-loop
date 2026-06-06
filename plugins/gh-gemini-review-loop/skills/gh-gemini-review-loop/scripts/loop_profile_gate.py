@@ -79,7 +79,6 @@ def main() -> int:
         return 0
 
     if not needs_profile:
-        return 0
 
     # Exit code 2 blocks the tool call; stderr is surfaced to the agent.
     print(BLOCK_MESSAGE.format(repo=repo), file=sys.stderr)
