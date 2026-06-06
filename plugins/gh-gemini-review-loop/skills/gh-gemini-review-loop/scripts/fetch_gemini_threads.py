@@ -807,6 +807,8 @@ def stamp_summary_emitted(pr: PullRequest) -> None:
     run is being tracked, so it never resurrects a cleared/absent run block.
     """
     state = load_sticky_state()
+    if not isinstance(state, dict):
+        return
     key = _state_key(pr)
     entry = state.get(key)
     if not isinstance(entry, dict):
