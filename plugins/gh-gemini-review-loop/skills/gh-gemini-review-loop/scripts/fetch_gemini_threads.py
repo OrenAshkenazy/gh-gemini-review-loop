@@ -1374,6 +1374,16 @@ def main() -> int:
             "every cycle (unlike --record-run, which is terminal and destructive)."
         ),
     )
+    parser.add_argument(
+        "--auto-snapshot",
+        action="store_true",
+        help=(
+            "Render the lean auto-snapshot receipt instead of the full one. For "
+            "the Stop-hook backstop: shows only GitHub-observable state (threads "
+            "seen/resolved/open, cycles) and omits agent-only fields (fixed "
+            "count, verification, outcome) the hook cannot know."
+        ),
+    )
     parser.add_argument("--fixed-count", type=int, default=0, help="Agent-claimed fixes this run.")
     parser.add_argument(
         "--verification",
@@ -1765,7 +1775,10 @@ def main() -> int:
                     stamp_summary_emitted(pr)
                 except OSError as exc:
                     print(f"warning: could not stamp summary state: {exc}", file=sys.stderr)
-            print(metrics.format_run_summary(record))
+            if args.auto_snapshot:
+                print(metrics.format_auto_snapshot(record))
+            else:
+                print(metrics.format_run_summary(record))
             return 0
         if args.post_receipt or args.sticky_receipt:
             sticky = args.sticky_receipt

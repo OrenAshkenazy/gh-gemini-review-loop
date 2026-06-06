@@ -218,6 +218,39 @@ class TestFormatRunSummary:
         assert "Needs human by judge" not in out
 
 
+class TestFormatAutoSnapshot:
+    """The Stop-hook backstop can't know agent-only facts (fixed count,
+    verification, terminal outcome), so its summary must show ONLY
+    GitHub-observable state and be clearly labelled as automatic — never
+    present a guessed Fixed/Verification/Outcome as if authoritative."""
+
+    def _rec(self, **over):
+        base = metrics.build_record(
+            repo="o/r", pr=23, provider="gemini-code-assist",
+            findings_fetched=7, fixed_count=0, observed_fixed_count=4,
+            remaining_actionable=1, needs_human=1, addressed_by_reply=0,
+            cycles_used=2, cycle_cap=3, verification="skipped",
+            verification_details={}, outcome="human", outcome_reason="x",
+            started_at="2026-06-04T18:10:11Z", ts="2026-06-04T18:22:11Z",
+            finding_paths=["tests/x.py"], judge={"enabled": False},
+        )
+        base.update(over)
+        return base
+
+    def test_auto_snapshot_shape(self):
+        out = metrics.format_auto_snapshot(self._rec()).splitlines()
+        assert out == [
+            "[loop] Summary (auto - agent didn't post one this turn)",
+            "Threads this run: 7 seen, 4 resolved, 1 still open",
+            "Cycles used: 2/3",
+        ]
+
+    def test_auto_snapshot_hides_agent_only_fields(self):
+        out = metrics.format_auto_snapshot(self._rec())
+        for jargon in ("Fixed:", "Observed fixed", "Verification:", "Outcome:"):
+            assert jargon not in out
+
+
 class TestAggregate:
     def _rec(self, **over):
         base = dict(

@@ -86,6 +86,7 @@ def main() -> int:
         os.path.join(HERE, "fetch_gemini_threads.py"),
         "--pr", pr_url,
         "--cycle-summary",
+        "--auto-snapshot",
     ]
     try:
         proc = subprocess.run(

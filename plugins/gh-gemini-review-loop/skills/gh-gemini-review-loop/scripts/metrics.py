@@ -131,6 +131,26 @@ def _duration_seconds(started_at: str, ts: str) -> int:
     return max(0, int((end - start).total_seconds()))
 
 
+def format_auto_snapshot(record: dict[str, Any]) -> str:
+    """Lean receipt for the Stop-hook backstop (agent didn't post a summary).
+
+    The hook can't know agent-only facts — fixed count, verification result,
+    terminal outcome — so this shows ONLY GitHub-observable state and is
+    explicitly labelled automatic. It never prints a guessed Fixed/
+    Verification/Outcome, which is what made the full receipt misleading when
+    fired without agent inputs.
+    """
+    return "\n".join([
+        "[loop] Summary (auto - agent didn't post one this turn)",
+        (
+            f"Threads this run: {record['findings_fetched']} seen, "
+            f"{record.get('observed_fixed_count', 0)} resolved, "
+            f"{record['remaining_actionable']} still open"
+        ),
+        f"Cycles used: {record['cycles_used']}/{record['cycle_cap']}",
+    ])
+
+
 def format_run_summary(record: dict[str, Any]) -> str:
     """Human-readable receipt for one loop run.
 
