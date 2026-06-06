@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from detect_profile import build_presets, detect, main
+from detect_profile import build_presets, detect, main, parse_justfile_recipes
 
 
 def _names(result):
@@ -265,3 +265,55 @@ def test_build_presets_preserves_working_directory():
     assert cwds == {"backend": "test-backend", "client": "familia-ai/client"}
     # every persisted check is still forced required
     assert all(c["required"] is True for c in all_detected["checks"])
+
+
+def _write_justfile(tmp_path, body, name="justfile"):
+    (tmp_path / name).write_text(body)
+
+
+def test_justfile_emits_matching_runnable_recipes(tmp_path):
+    _write_justfile(tmp_path, (
+        "build:\n\tcargo build\n\n"
+        "test-backend:\n\tcd test-backend && pytest\n\n"
+        "test-client:\n\tcd client && npm test\n\n"
+        "lint:\n\truff check .\n\n"
+        "deploy:\n\t./deploy.sh\n"
+    ))
+    checks = parse_justfile_recipes(tmp_path)
+    names = [c["name"] for c in checks]
+    assert names == ["test-backend", "test-client", "lint"]
+    assert all(c["command"] == f"just {c['name']}" for c in checks)
+    assert all(c["working_directory"] == "." for c in checks)
+    assert all(c["required"] is True for c in checks)
+
+
+def test_justfile_parameter_guard(tmp_path):
+    _write_justfile(tmp_path, (
+        "test:\n\tpytest\n\n"                  # no params -> emit
+        'test-default target="all":\n\tpytest {{target}}\n\n'  # default -> emit
+        "test-target target:\n\tpytest {{target}}\n\n"          # required -> skip
+        "test-many +paths:\n\tpytest {{paths}}\n\n"             # +variadic -> skip
+        "test-opt *paths:\n\tpytest {{paths}}\n"                # *variadic -> emit
+    ))
+    names = [c["name"] for c in parse_justfile_recipes(tmp_path)]
+    assert names == ["test", "test-default", "test-opt"]
+
+
+def test_justfile_ignores_assignments_and_comments(tmp_path):
+    _write_justfile(tmp_path, (
+        "# test: this is a comment, not a recipe\n"
+        'export TEST_VAR := "x"\n'
+        "checkpoint:\n\techo not-a-check\n"   # name doesn't match 'check' exactly
+        "check:\n\tcargo check\n"
+    ))
+    names = [c["name"] for c in parse_justfile_recipes(tmp_path)]
+    assert names == ["check"]
+
+
+def test_justfile_filename_variants(tmp_path):
+    _write_justfile(tmp_path, "test:\n\tpytest\n", name="Justfile")
+    assert [c["name"] for c in parse_justfile_recipes(tmp_path)] == ["test"]
+
+
+def test_no_justfile_returns_empty(tmp_path):
+    assert parse_justfile_recipes(tmp_path) == []

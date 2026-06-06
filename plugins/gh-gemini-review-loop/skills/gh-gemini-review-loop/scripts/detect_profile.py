@@ -14,6 +14,95 @@ from pathlib import Path
 from typing import Any
 
 
+# Recipe names that indicate a verification step. Anchored, case-insensitive:
+# exact "test"/"check"/"lint"/"typecheck"/"verify", or a hyphenated test
+# variant ("test-backend", "client-tests").
+_VERIFY_RECIPE_RE = re.compile(
+    r"^(test|check|lint|typecheck|verify)$"
+    r"|^test-[\w-]+$"
+    r"|^[\w-]+-tests?$",
+    re.IGNORECASE,
+)
+
+# A recipe header line: name, optional space-separated parameters, then a single
+# ':' that is NOT ':=' (which would be a just assignment). Dependencies appear
+# after the colon and are intentionally not captured.
+_RECIPE_HEADER_RE = re.compile(
+    r"^(?P<name>[A-Za-z_][\w-]*)(?P<params>(?:[ \t]+[^:#\n]+?)?)[ \t]*:(?!=)"
+)
+
+_JUSTFILE_NAMES = ("justfile", "Justfile", ".justfile")
+
+
+def _recipe_name_matches(name: str) -> bool:
+    return bool(_VERIFY_RECIPE_RE.match(name))
+
+
+def _recipe_is_runnable(params: str) -> bool:
+    """True iff every parameter is safe to omit when calling ``just <recipe>``.
+
+    just parameter forms:
+      ``name``            required positional   -> NOT runnable
+      ``name="default"``  defaulted             -> runnable
+      ``+name``           required variadic     -> NOT runnable
+      ``*name``           optional variadic     -> runnable
+
+    Splitting on whitespace can mis-handle a default containing spaces
+    (``p="a b"``); the worst case is a conservative false-skip, never a broken
+    emitted check.
+    """
+    for token in params.split():
+        if token.startswith("*"):
+            continue
+        if token.startswith("+"):
+            return False
+        if "=" in token:
+            continue
+        return False
+    return True
+
+
+def parse_justfile_recipes(root: Path | str) -> list[dict[str, Any]]:
+    """Return emittable verification checks parsed from a repo-root justfile.
+
+    A recipe is emitted only when its name matches a verification pattern AND it
+    is zero-arg-runnable (parameter guard). Returns ``[]`` when no justfile
+    exists, none match, or all matches require arguments.
+    """
+    root = Path(root)
+    text = ""
+    for fname in _JUSTFILE_NAMES:
+        path = root / fname
+        if path.is_file():
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                text = ""
+            break
+    checks: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        # Recipe headers start in column 0; recipe bodies are indented.
+        if not line or line[0].isspace() or line.lstrip().startswith("#"):
+            continue
+        match = _RECIPE_HEADER_RE.match(line)
+        if not match:
+            continue
+        name = match.group("name")
+        if name in seen or not _recipe_name_matches(name):
+            continue
+        if not _recipe_is_runnable(match.group("params")):
+            continue
+        seen.add(name)
+        checks.append({
+            "name": name,
+            "command": f"just {name}",
+            "working_directory": ".",
+            "required": True,
+        })
+    return checks
+
+
 def _check(name: str, command: str, required: bool) -> dict[str, Any]:
     return {"name": name, "command": command, "required": required}
 
