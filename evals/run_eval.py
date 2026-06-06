@@ -159,7 +159,13 @@ def confusion_matrix(rows: list[EvaluatedFinding]) -> dict[str, dict[str, int]]:
         h: {j: 0 for j in VALID_LABELS} for h in VALID_LABELS
     }
     for r in rows:
-        matrix[r.human_label][r.majority_judge_label] += 1
+        h = r.human_label
+        j = r.majority_judge_label
+        # majority_judge_label returns "unknown" for empty judge_labels, which
+        # is not in VALID_LABELS. Guard so a missing/odd label can't KeyError
+        # and crash the whole eval run.
+        if h in matrix and j in matrix[h]:
+            matrix[h][j] += 1
     return matrix
 
 
@@ -255,7 +261,8 @@ def render_summary(rows: list[EvaluatedFinding], m: dict[str, Any]) -> str:
                 f"({', '.join(r.judge_labels)})"
             )
             lines.append(f"  - Finding excerpt: `{r.body_excerpt}`")
-            lines.append(f"  - Judge reason (sample 1): {r.judge_reasons[0]}")
+            reason = r.judge_reasons[0] if r.judge_reasons else "N/A"
+            lines.append(f"  - Judge reason (sample 1): {reason}")
     return "\n".join(lines) + "\n"
 
 
