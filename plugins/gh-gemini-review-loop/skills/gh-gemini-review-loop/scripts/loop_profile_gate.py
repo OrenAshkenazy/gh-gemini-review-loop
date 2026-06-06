@@ -79,6 +79,10 @@ def main() -> int:
         return 0
 
     if not needs_profile:
+<<<<<<< HEAD
+=======
+        return 0
+>>>>>>> 0644a2c (fix: repair loop_profile_gate main() broken by web-applied suggestion)
 
     # Exit code 2 blocks the tool call; stderr is surfaced to the agent.
     print(BLOCK_MESSAGE.format(repo=repo), file=sys.stderr)
