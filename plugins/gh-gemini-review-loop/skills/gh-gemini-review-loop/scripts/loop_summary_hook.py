@@ -74,7 +74,7 @@ def main() -> int:
             return 0
         repo = resolve_current_repo()
         number = select_backstop_pr(repo)
-    except (RuntimeError, OSError, ValueError, TypeError):
+    except (RuntimeError, OSError, ValueError, TypeError, AttributeError):
         # not a gh repo, no remote, or corrupt/hand-edited state.json
         return 0
 
