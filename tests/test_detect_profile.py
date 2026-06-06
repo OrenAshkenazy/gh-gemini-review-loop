@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 
-from detect_profile import build_presets, detect, main, parse_justfile_recipes
+from detect_profile import build_presets, detect, discover_git_tree_checks, main, parse_justfile_recipes
+import subprocess
 
 
 def _names(result):
@@ -317,3 +318,54 @@ def test_justfile_filename_variants(tmp_path):
 
 def test_no_justfile_returns_empty(tmp_path):
     assert parse_justfile_recipes(tmp_path) == []
+
+
+def _git_repo(tmp_path, files):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    for rel in files:
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    return tmp_path
+
+
+def test_git_tree_maps_test_dirs_to_nearest_marker(tmp_path):
+    _git_repo(tmp_path, [
+        "familia-ai/client/package.json",
+        "familia-ai/client/tests/test_app.js",
+        "familia-ai/scraper-svc/package.json",
+        "familia-ai/scraper-svc/src/__tests__/scrape.test.js",
+        "test-backend/pyproject.toml",
+        "test-backend/tests/test_api.py",
+    ])
+    checks = discover_git_tree_checks(tmp_path)
+    by_cwd = {c["working_directory"]: c for c in checks}
+    assert by_cwd["familia-ai/client"]["command"] == "npm test"
+    assert by_cwd["familia-ai/scraper-svc"]["command"] == "npm test"
+    assert by_cwd["test-backend"]["command"] == "pytest"
+    assert all(c["required"] is True for c in checks)
+
+
+def test_git_tree_dedups_one_check_per_marker_dir(tmp_path):
+    _git_repo(tmp_path, [
+        "svc/pyproject.toml",
+        "svc/tests/test_a.py",
+        "svc/spec/test_b.py",  # second test dir under the same marker
+    ])
+    checks = discover_git_tree_checks(tmp_path)
+    cwds = [c["working_directory"] for c in checks]
+    assert cwds == ["svc"]
+
+
+def test_git_tree_skips_test_dir_without_marker(tmp_path):
+    _git_repo(tmp_path, [
+        "orphan/tests/test_x.py",  # no package marker anywhere up-tree
+    ])
+    assert discover_git_tree_checks(tmp_path) == []
+
+
+def test_git_tree_empty_outside_git_repo(tmp_path):
+    # no `git init` -> ls-files fails -> empty
+    (tmp_path / "tests").mkdir()
+    assert discover_git_tree_checks(tmp_path) == []

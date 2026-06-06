@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -98,6 +99,91 @@ def parse_justfile_recipes(root: Path | str) -> list[dict[str, Any]]:
             "name": name,
             "command": f"just {name}",
             "working_directory": ".",
+            "required": True,
+        })
+    return checks
+
+
+_TEST_DIR_NAMES = frozenset({"tests", "test", "__tests__", "spec", "specs"})
+
+# Marker filename -> (runner command, check-name hint). First marker found
+# walking up from a test dir wins.
+_MARKER_RUNNERS: list[tuple[str, str]] = [
+    ("package.json", "npm test"),
+    ("pyproject.toml", "pytest"),
+    ("setup.py", "pytest"),
+    ("Cargo.toml", "cargo test"),
+    ("go.mod", "go test ./..."),
+]
+
+
+def _tracked_files(root: Path) -> list[str]:
+    try:
+        proc = subprocess.run(  # noqa: S603,S607 - fixed argv, no shell
+            ["git", "ls-files"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    return [ln for ln in proc.stdout.splitlines() if ln]
+
+
+def _nearest_marker_dir(root: Path, start: Path) -> tuple[str, str] | None:
+    """Walk up from ``start`` (inclusive) to ``root``; return (cwd, command).
+
+    ``cwd`` is the marker directory relative to ``root`` ('.' for root itself).
+    """
+    current = start
+    while True:
+        for marker, command in _MARKER_RUNNERS:
+            if (current / marker).is_file():
+                rel = current.relative_to(root).as_posix()
+                return (rel if rel != "." else ".", command)
+        if current == root:
+            return None
+        current = current.parent
+
+
+def discover_git_tree_checks(root: Path | str) -> list[dict[str, Any]]:
+    """Discover monorepo test dirs from tracked files; map to runner + cwd.
+
+    One check per nearest-marker directory (deduped). Test dirs with no marker
+    up-tree are skipped. Returns ``[]`` outside a git repo.
+    """
+    root = Path(root)
+    # Collect candidate test directories from tracked file paths.
+    test_dirs: list[Path] = []
+    seen_dirs: set[Path] = set()
+    for rel in _tracked_files(root):
+        parts = Path(rel).parts
+        for i, part in enumerate(parts):
+            if part in _TEST_DIR_NAMES:
+                d = root / Path(*parts[: i + 1])
+                if d not in seen_dirs:
+                    seen_dirs.add(d)
+                    test_dirs.append(d)
+    checks: list[dict[str, Any]] = []
+    seen_cwd: set[str] = set()
+    for test_dir in test_dirs:
+        found = _nearest_marker_dir(root, test_dir)
+        if found is None:
+            continue
+        cwd, command = found
+        if cwd in seen_cwd:
+            continue
+        seen_cwd.add(cwd)
+        name = cwd.replace("/", "-") if cwd != "." else "root"
+        checks.append({
+            "name": name,
+            "command": command,
+            "working_directory": cwd,
             "required": True,
         })
     return checks
