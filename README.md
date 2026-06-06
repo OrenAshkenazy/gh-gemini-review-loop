@@ -12,11 +12,11 @@ Built for solo builders and small teams who want review feedback handled while t
 
 ### Verification Profiles — the loop that checks its own work
 
-The loop doesn't assume its fixes are correct — it verifies them, gating every change on your repository's own tests and linters before it pushes. Setup is a single menu pick; after that it runs silently.
+The loop doesn't assume its fixes are correct; it verifies them, gating every change on your repository's own tests and linters before it pushes. Setup is a single menu pick; after that it runs silently.
 
 ```text
 ┌───────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────┐
-│ Zero setup                    │ A single menu pick on the first run. No config files and no schema to learn.              │
+│ Zero-touch setup              │ A single menu pick on the first run. No config files and no schema to learn.              │
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
 │ Repo-aware                    │ Auto-detects Python, Node, Rust, and Go — and respects your own pinned commands.          │
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
