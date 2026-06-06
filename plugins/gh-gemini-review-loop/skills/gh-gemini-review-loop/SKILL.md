@@ -70,6 +70,12 @@ This stores in macOS Keychain (Touch ID / password-protected), Linux Secret Serv
 
 The script (`fetch_gemini_threads.py`) is the single source of truth. It reads `~/.config/gh-gemini-review-loop/preferences.json` on every invocation and combines the saved mode with the `--judge-phase` the agent supplies.
 
+**Phase is auto-inferred.** You do not need to pass `--judge-phase`: a terminal
+`--record-run` invocation is treated as phase `complete`; every other fetch is
+phase `cycle`. So `on_cycle` runs on every cycle fetch and `on_complete` runs
+only at the terminal record-run, with no per-cycle flag to remember. An explicit
+`--judge-phase` still overrides the inference.
+
 ### Discoverability
 
 Do **not** prompt for judge eval during a normal loop run. Do **not** prompt at session start.
@@ -176,6 +182,16 @@ verification strategy is fixed before any edits. This ordering is enforced by a
 `PreToolUse` hook that blocks edits during an active loop until a profile is
 saved (see [Bundled hooks](#bundled-hooks)). If `get_profile(owner/repo)`
 returns `None`:
+
+Detection precedence (monorepo-aware): if the repo root has a `justfile` with
+verification recipes (`test`, `test-*`, `*-tests`, `check`, `lint`, `typecheck`,
+`verify`) that take no required arguments, those become `just <recipe>` checks.
+Otherwise, test directories discovered in the git tree (`tests`, `__tests__`,
+`spec`, …) are each mapped to their nearest package marker and emitted with a
+per-check `working_directory`. Otherwise, root single-stack detection applies.
+A check may carry its own `working_directory` (relative to the repo root);
+`run_profile` runs it there, falling back to the profile-level
+`working_directory`.
 
 1. Run `detect_profile.py <repo_root>`. It returns `{stack, confidence, reasons,
    candidate_checks, presets}`. `presets` is an explicit, ordered, code-built
@@ -353,14 +369,14 @@ When the user phrases the request differently, dispatch to the right flag combin
 | **Different bot login** | "handle review comments from google-gemini-code-assist" | `--author google-gemini-code-assist` |
 | **Post status without acting** | "leave a status comment without touching anything" | `--post-receipt --no-resolve-outdated --no-resolve-addressed-by-reply` |
 | **Live status comment** | "show me a live status comment on the PR" / "I want background visibility" | `--sticky-receipt --receipt-status running` per cycle; `--sticky-receipt --receipt-status done` at the final invocation |
-| **Loop + judge at completion** | "run the Gemini loop with judge eval at completion" / "with judge eval at completion" | `save_preferences("on_complete")` + `--judge-phase complete` at final invocation. No prompt. |
-| **Loop + judge every cycle** | "run the Gemini loop with judge eval on every cycle" / "with judge eval on every cycle" | `save_preferences("on_cycle")` + `--judge-phase cycle` each cycle. No prompt. |
+| **Loop + judge at completion** | "run the Gemini loop with judge eval at completion" / "with judge eval at completion" | `save_preferences("on_complete")`. Phase is auto-inferred (`complete` at `--record-run`). No prompt. |
+| **Loop + judge every cycle** | "run the Gemini loop with judge eval on every cycle" / "with judge eval on every cycle" | `save_preferences("on_cycle")`. Phase is auto-inferred (`cycle` per fetch, `complete` at `--record-run`). No prompt. |
 | **Judge just this once** | "run judge eval just this once" / "with judge eval just this once" | `--judge-mode once --judge-phase complete`. No save. No prompt. |
 | **Enable judge eval (no mode)** | "enable judge eval" / "use judge eval" / "turn on eval" | Show `AskUserQuestion` prompt; act on answer. |
 | **Explain judge eval** | "what is judge eval?" / "how does judge eval work?" | Explain it. Do not enable it. |
 | **Disable judge for this run** | "skip the judge this time" | `--judge-mode off` |
 | **Change saved preference** | "change my eval preference" / "reset judge mode" | Show `AskUserQuestion` prompt; overwrite prefs file. |
-| **Default loop with saved judge mode** | (no special phrasing — agent reads saved prefs) | `--judge-phase cycle` per cycle; `--judge-phase complete` at final invocation. Script obeys saved mode. |
+| **Default loop with saved judge mode** | (no special phrasing — agent reads saved prefs) | No `--judge-phase` needed — phase is auto-inferred. Script obeys saved mode. |
 | **History investigation** | "show me all Gemini threads ever, including resolved" | `--include-resolved --include-outdated --include-addressed-by-reply --no-resolve-outdated --no-resolve-addressed-by-reply` |
 | **Local stats** | "show Gemini loop stats" / "loop stats for this repo" / "how's the loop doing here" | `--stats` |
 | **Set up verification profile** | "set up a verification profile for this repo" / "configure checks for this repo" | Run `detect_profile.py`, show preset menu, then persist the chosen preset |
@@ -387,13 +403,43 @@ If a thread was deliberately deferred via a substantive reply (state `ADDRESSED_
 
 Do not run more than the configured fix/re-review cap per PR. If the loop stops because the cap is reached, summarize the latest unresolved actionable comments and leave the PR for a human decision.
 
+## Resuming After the Cap
+
+Re-invoking the loop on a PR already at the cap is usually a **resume signal**,
+not an instant stop. Evaluate these cases as a **strict priority order — first
+match wins, top to bottom**:
+
+| Priority | Condition | Action |
+|----------|-----------|--------|
+| 1 (highest) | User increased the cap (effective `max_rereview_requests` > the cap already consumed) | **Continue** from the next cycle |
+| 2 | Interrupted local work **not pushed** (local commits/edits beyond the remote branch HEAD) | **Finish the push** — no new cycle consumed |
+| 3 | **Pushed** but no re-review request posted for that pushed SHA | **Request review** for that SHA — no new cycle consumed |
+| 4 (lowest) | No new local work **and** no higher cap | **Hard stop** (Stopping Condition 1) |
+
+Stop at the first matching priority. A bumped cap (priority 1) wins even if
+unpushed work also exists. Cases 2 and 3 complete an already-started cycle and
+do **not** consume a new cycle.
+
+> **Follow-up (deterministic detection).** Cases 2 and 3 are prose-detected for
+> now and MUST become deterministic so "resume" does not drift between sessions:
+> case 2 needs a local-vs-remote SHA comparison (`git rev-parse HEAD` vs
+> `@{u}`); case 3 needs a GitHub check that the latest pushed SHA has no
+> following agent-posted re-review comment. Tracked in
+> `docs/superpowers/specs/2026-06-06-pr37-followup-design.md`.
+
 ## Recovery: Missed Initial Trigger
 
 The skill is meant to auto-trigger after `gh pr create`. If the agent forgets — e.g., the workflow that created the PR ended the turn at the PR URL without chaining into this skill — the loop must be invoked retroactively at the next opportunity:
 
-- At session start (or whenever the skill is loaded), check if the current branch has an open PR.
-- If yes, AND the latest commit has not been re-reviewed (no Gemini review activity on or after that commit's SHA), AND the agent has posted zero re-review trigger comments (e.g., "@gemini-code-assist please review"), run the loop now as catch-up cycle 0/1.
-- This is a recovery clause only — it should not run silently on every session start in repos that don't use Gemini Code Assist. Skip if `gemini-code-assist` is not a configured reviewer on the repo.
+- **Assume cycle 0 (Gemini's initial automatic review) already happened.** At
+  session start / skill load, check whether the PR has *any* Gemini review
+  activity.
+- If Gemini review activity exists → do **not** wait for an initial review (it
+  is already done); proceed straight to fetching threads and running the cycle.
+- If there is **no** Gemini review activity anywhere on the PR → trigger the
+  first review ourselves (cycle 1) and then wait.
+- This is a recovery clause only — skip entirely if `gemini-code-assist` is not
+  a configured reviewer on the repo.
 
 ## Follow-up Pushes After the Loop Stops
 
