@@ -74,8 +74,15 @@ def main() -> int:
         "--cycle-summary",
     ]
     try:
-        proc = subprocess.run(cmd, text=True, capture_output=True, timeout=120)
-    except (OSError, subprocess.SubprocessError):  # backstop must never block Stop
+        proc = subprocess.run(
+            cmd,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=120,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):  # backstop must never block Stop
         return 0
     out = (proc.stdout or "").strip()
     if out:
