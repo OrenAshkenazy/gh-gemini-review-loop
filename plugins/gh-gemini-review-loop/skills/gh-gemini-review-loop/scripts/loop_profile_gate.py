@@ -74,7 +74,6 @@ def main() -> int:
         if not profile_required_for_repo(repo):
             return 0
     except (RuntimeError, OSError, ValueError, TypeError):
-        # not a gh repo, no remote, or corrupt/hand-edited state.json -> allow
         return 0
 
     # Exit code 2 blocks the tool call; stderr is surfaced to the agent.
