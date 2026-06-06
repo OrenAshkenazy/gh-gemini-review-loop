@@ -17,6 +17,7 @@ agent still owns the single terminal ``--record-run``).
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -44,6 +45,19 @@ def select_backstop_pr(repo_full: str) -> int | None:
         return None
     number, run = active
     return number if summary_is_stale(run) else None
+
+
+def build_hook_output(summary: str) -> str | None:
+    """Wrap the summary as a Stop-hook JSON payload, or None if there's nothing.
+
+    A Stop hook's bare stdout is written to the debug log only — Claude Code
+    does not show it in the chat. The `systemMessage` JSON field is the
+    documented way to surface a message to the user, so the summary rides there.
+    """
+    text = summary.strip()
+    if not text:
+        return None
+    return json.dumps({"systemMessage": text})
 
 
 def main() -> int:
@@ -84,9 +98,11 @@ def main() -> int:
         )
     except (OSError, ValueError, subprocess.SubprocessError):  # backstop must never block Stop
         return 0
-    out = (proc.stdout or "").strip()
-    if out:
-        print(out)
+    payload = build_hook_output(proc.stdout or "")
+    if payload:
+        # Emitted as JSON so Claude Code surfaces the summary to the user via
+        # systemMessage; bare stdout from a Stop hook is debug-log-only.
+        print(payload)
     return 0
 
 

@@ -5,8 +5,10 @@ pure decision — given local state and a repo, which PR (if any) needs a
 backstop summary — without any network or subprocess.
 """
 
+import json
+
 from fetch_gemini_threads import save_sticky_state
-from loop_summary_hook import select_backstop_pr
+from loop_summary_hook import build_hook_output, select_backstop_pr
 
 
 class TestSelectBackstopPr:
@@ -42,3 +44,25 @@ class TestSelectBackstopPr:
             }},
         })
         assert select_backstop_pr("o/r") is None
+
+
+class TestBuildHookOutput:
+    """A Stop hook's bare stdout is NOT shown to the user (debug log only).
+    The summary must be returned as the `systemMessage` JSON field, which
+    Claude Code surfaces in the chat."""
+
+    def test_none_for_empty_summary(self):
+        assert build_hook_output("") is None
+        assert build_hook_output("   \n  ") is None
+
+    def test_wraps_summary_in_system_message_json(self):
+        summary = "[loop] Summary\nFindings fetched: 6\nFixed: 6"
+        out = build_hook_output(summary)
+        parsed = json.loads(out)
+        assert parsed["systemMessage"] == summary
+
+    def test_output_is_valid_json_single_line(self):
+        # Claude Code parses stdout as JSON on exit 0; must be one parseable doc.
+        out = build_hook_output("[loop] Summary\nx: 1")
+        assert "\n" not in out.rstrip("\n")  # newlines only inside the JSON string
+        json.loads(out)  # does not raise
