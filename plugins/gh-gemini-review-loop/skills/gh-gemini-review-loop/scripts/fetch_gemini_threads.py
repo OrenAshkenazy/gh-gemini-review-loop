@@ -867,6 +867,18 @@ def merge_judge_results(
     return merged
 
 
+def resolve_judge_phase(explicit_phase: str | None, *, record_run: bool) -> str:
+    """Infer the judge phase from invocation context when unset.
+
+    The agent need not remember to pass --judge-phase: a terminal --record-run
+    invocation is the loop's completion, everything else is a per-cycle fetch.
+    An explicit flag always wins.
+    """
+    if explicit_phase is not None:
+        return explicit_phase
+    return "complete" if record_run else "cycle"
+
+
 def record_cycle(
     pr: PullRequest,
     started_at: str,
@@ -1642,15 +1654,18 @@ def main() -> int:
                 if args.judge_mode is not None
                 else prefs.get("judge_mode", "off")
             )
+            effective_phase = resolve_judge_phase(
+                args.judge_phase, record_run=bool(args.record_run)
+            )
             judge_results = {}
-            if should_judge_run(mode=effective_mode, phase=args.judge_phase):
+            if should_judge_run(mode=effective_mode, phase=effective_phase):
                 client = JudgeClient(model=args.judge_model or prefs["judge_model"])
                 ready, skip_reason = client.is_ready()
                 if not ready:
                     judge_status = {
                         "ran": False,
                         "mode": effective_mode,
-                        "phase": args.judge_phase,
+                        "phase": effective_phase,
                         "skip_reason": skip_reason,
                     }
                     print(
@@ -1662,7 +1677,7 @@ def main() -> int:
                     judge_status = {
                         "ran": True,
                         "mode": effective_mode,
-                        "phase": args.judge_phase,
+                        "phase": effective_phase,
                         "model": client.model,
                         "judged_count": 0,
                         "errors": 0,
@@ -1692,9 +1707,9 @@ def main() -> int:
                 judge_status = {
                     "ran": False,
                     "mode": effective_mode,
-                    "phase": args.judge_phase,
+                    "phase": effective_phase,
                     "skip_reason": (
-                        f"mode={effective_mode!r} + phase={args.judge_phase!r} → no-op"
+                        f"mode={effective_mode!r} + phase={effective_phase!r} → no-op"
                     ),
                 }
         # --------------------------------------------------------------------

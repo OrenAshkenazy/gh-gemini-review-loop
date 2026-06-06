@@ -1128,3 +1128,19 @@ class TestSummaryStaleness:
         pr = PullRequest(owner="o", repo="r", number=1, url=None)
         stamp_summary_emitted(pr)
         assert read_run_tracking(pr) == {}
+
+
+from fetch_gemini_threads import resolve_judge_phase
+
+
+def test_resolve_judge_phase_infers_complete_for_record_run():
+    assert resolve_judge_phase(None, record_run=True) == "complete"
+
+
+def test_resolve_judge_phase_infers_cycle_for_normal_fetch():
+    assert resolve_judge_phase(None, record_run=False) == "cycle"
+
+
+def test_resolve_judge_phase_explicit_flag_wins():
+    assert resolve_judge_phase("cycle", record_run=True) == "cycle"
+    assert resolve_judge_phase("complete", record_run=False) == "complete"
