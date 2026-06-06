@@ -249,3 +249,19 @@ def test_main_output_includes_presets_key(tmp_path, capsys):
         "Skip — use ad-hoc verification",
         "Customize manually",
     ]
+
+
+def test_build_presets_preserves_working_directory():
+    candidates = [
+        {"name": "backend", "command": "pytest",
+         "working_directory": "test-backend", "required": True},
+        {"name": "client", "command": "npm test",
+         "working_directory": "familia-ai/client", "required": True},
+    ]
+    presets = build_presets(candidates)
+    all_detected = presets[0]
+    assert all_detected["source"] == "confirmed"
+    cwds = {c["name"]: c.get("working_directory") for c in all_detected["checks"]}
+    assert cwds == {"backend": "test-backend", "client": "familia-ai/client"}
+    # every persisted check is still forced required
+    assert all(c["required"] is True for c in all_detected["checks"])

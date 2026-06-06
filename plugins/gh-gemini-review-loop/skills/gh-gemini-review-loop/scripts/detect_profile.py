@@ -111,13 +111,22 @@ def _detect_go(root: Path) -> dict[str, Any]:
 
 
 def _required(check: dict[str, Any]) -> dict[str, Any]:
-    """A copy of ``check`` forced to required=True.
+    """A copy of ``check`` forced to required=True, preserving cwd.
 
     v1 has a single gating tier: every check in a saved profile is required.
     Detection may mark a check optional (e.g. mypy); when it becomes a gate we
-    normalize it to required so persistence and run_profile gate on it.
+    normalize it to required so persistence and run_profile gate on it. A
+    per-check ``working_directory`` (monorepo paths) is carried through.
     """
-    return {"name": check["name"], "command": check["command"], "required": True}
+    out: dict[str, Any] = {
+        "name": check["name"],
+        "command": check["command"],
+        "required": True,
+    }
+    cwd = check.get("working_directory")
+    if isinstance(cwd, str) and cwd:
+        out["working_directory"] = cwd
+    return out
 
 
 def _commands_label(checks: list[dict[str, Any]]) -> str:
