@@ -42,7 +42,7 @@ def profile_required_for_repo(repo_full: str) -> bool:
         return False
     try:
         import judge  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+    except ImportError:
         return False
     return judge.get_profile(repo_full) is None
 
@@ -60,8 +60,8 @@ BLOCK_MESSAGE = (
 def main() -> int:
     try:
         payload = json.loads(sys.stdin.read() or "{}")
-    except Exception:  # noqa: BLE001
-        return 0  # malformed payload -> fail open
+    except (json.JSONDecodeError, ValueError, OSError):
+        return 0  # malformed/unreadable payload -> fail open
 
     tool = payload.get("tool_name", "")
     if tool not in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
@@ -71,7 +71,7 @@ def main() -> int:
         if not any_active_run():
             return 0
         repo = resolve_current_repo()
-    except Exception:  # noqa: BLE001
+    except (RuntimeError, OSError):
         return 0
 
     if not profile_required_for_repo(repo):

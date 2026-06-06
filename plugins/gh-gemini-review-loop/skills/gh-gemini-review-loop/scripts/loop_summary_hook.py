@@ -50,7 +50,7 @@ def main() -> int:
     # Drain the hook payload on stdin; a Stop event carries nothing we need.
     try:
         sys.stdin.read()
-    except Exception:  # noqa: BLE001 - never let hook I/O break the turn
+    except (OSError, ValueError):  # never let hook I/O break the turn
         pass
 
     # Fast path: if no loop is active anywhere, skip the git/repo resolution
@@ -59,7 +59,7 @@ def main() -> int:
         if not any_active_run():
             return 0
         repo = resolve_current_repo()
-    except Exception:  # noqa: BLE001 - not a gh repo, no remote, etc.
+    except (RuntimeError, OSError):  # not a gh repo, no remote, etc.
         return 0
 
     number = select_backstop_pr(repo)
@@ -75,7 +75,7 @@ def main() -> int:
     ]
     try:
         proc = subprocess.run(cmd, text=True, capture_output=True, timeout=120)
-    except Exception:  # noqa: BLE001 - a failed backstop must never block Stop
+    except (OSError, subprocess.SubprocessError):  # backstop must never block Stop
         return 0
     out = (proc.stdout or "").strip()
     if out:
