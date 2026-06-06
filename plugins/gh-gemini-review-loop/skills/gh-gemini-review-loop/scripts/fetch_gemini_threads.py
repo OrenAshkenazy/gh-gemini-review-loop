@@ -669,9 +669,14 @@ def load_sticky_state() -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return {}
+    # state.json must be a JSON object. A valid-but-non-dict payload (a list or
+    # scalar from corruption or hand-editing) would crash callers that do
+    # .values()/.items() on the result. Guard centrally here so every caller —
+    # any_active_run, find_active_run, and the rest — is safe.
+    return data if isinstance(data, dict) else {}
 
 
 def save_sticky_state(state: dict[str, Any]) -> None:

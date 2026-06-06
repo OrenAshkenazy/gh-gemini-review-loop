@@ -546,6 +546,15 @@ class TestStickyReceiptState:
         save_sticky_state({"o/r#1": {"comment_id": 42}})
         assert load_sticky_state() == {"o/r#1": {"comment_id": 42}}
 
+    def test_load_returns_empty_when_valid_json_but_not_dict(
+        self, tmp_path, monkeypatch
+    ):
+        # A valid-but-non-dict payload (list/scalar) from corruption or
+        # hand-editing must not reach callers that do .values()/.items().
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "state.json").write_text("[1, 2, 3]")
+        assert load_sticky_state() == {}
+
     def test_save_creates_parent_dir(self, tmp_path, monkeypatch):
         nested = tmp_path / "nested" / "dir"
         monkeypatch.setenv("GGRL_STATE_DIR", str(nested))
