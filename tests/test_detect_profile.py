@@ -369,3 +369,38 @@ def test_git_tree_empty_outside_git_repo(tmp_path):
     # no `git init` -> ls-files fails -> empty
     (tmp_path / "tests").mkdir()
     assert discover_git_tree_checks(tmp_path) == []
+
+
+def test_detect_prefers_justfile_over_git_tree(tmp_path):
+    _git_repo(tmp_path, [
+        "svc/pyproject.toml",
+        "svc/tests/test_a.py",
+    ])
+    (tmp_path / "justfile").write_text("test:\n\tpytest\n")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    result = detect(tmp_path)
+    assert result["stack"] == "justfile"
+    assert [c["name"] for c in result["candidate_checks"]] == ["test"]
+    assert result["candidate_checks"][0]["command"] == "just test"
+
+
+def test_detect_uses_git_tree_when_no_matching_recipes(tmp_path):
+    _git_repo(tmp_path, [
+        "svc/pyproject.toml",
+        "svc/tests/test_a.py",
+    ])
+    # justfile present but its only recipe doesn't match a verify pattern
+    (tmp_path / "justfile").write_text("build:\n\tcargo build\n")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    result = detect(tmp_path)
+    assert result["stack"] == "monorepo"
+    assert [c["working_directory"] for c in result["candidate_checks"]] == ["svc"]
+    assert result["candidate_checks"][0]["command"] == "pytest"
+
+
+def test_detect_falls_back_to_root_marker(tmp_path):
+    # not a git repo, no justfile -> existing root single-stack detection
+    (tmp_path / "pyproject.toml").write_text("[project]\ndependencies = ['ruff']\n")
+    result = detect(tmp_path)
+    assert result["stack"] == "python"
+    assert [c["name"] for c in result["candidate_checks"]] == ["tests", "lint"]

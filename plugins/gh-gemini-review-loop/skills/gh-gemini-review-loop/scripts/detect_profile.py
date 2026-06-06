@@ -383,6 +383,26 @@ def detect(repo_root: Path | str) -> dict[str, Any]:
     low-confidence empty candidate so the caller falls back to ad-hoc verification.
     """
     root = Path(repo_root)
+    # Precedence 1: emittable justfile verification recipes are authoritative
+    # and suppress git-tree discovery entirely.
+    justfile_checks = parse_justfile_recipes(root)
+    if justfile_checks:
+        return {
+            "stack": "justfile",
+            "confidence": "high",
+            "reasons": ["justfile"],
+            "candidate_checks": justfile_checks,
+        }
+    # Precedence 2: monorepo test dirs discovered from the git tree.
+    git_tree_checks = discover_git_tree_checks(root)
+    if git_tree_checks:
+        return {
+            "stack": "monorepo",
+            "confidence": "high",
+            "reasons": ["git-tree"],
+            "candidate_checks": git_tree_checks,
+        }
+    # Precedence 3: existing root single-stack detection (unchanged below).
     # Strong markers first. Use is_file() so a directory that happens to share a
     # marker name (e.g. a dir literally named pyproject.toml) is not mistaken for
     # the file and does not crash a later read_text().
