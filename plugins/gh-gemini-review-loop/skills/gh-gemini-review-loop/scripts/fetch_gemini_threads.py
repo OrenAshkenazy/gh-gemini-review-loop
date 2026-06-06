@@ -696,7 +696,7 @@ def update_run_tracking(pr: PullRequest, findings: list[tuple[str, str | None]])
     # Monotonic counter bumped on every fetch. The loop's Stop-hook backstop
     # compares it against last_summary_seq to tell whether the run advanced
     # since the agent last emitted a summary (see summary_is_stale).
-    run["update_seq"] = int(run.get("update_seq", 0)) + 1
+    run["update_seq"] = _safe_int(run.get("update_seq", 0)) + 1
     ids = set(run.get("finding_ids", []))
     paths = set(run.get("finding_paths", []))
     for thread_id, path in findings:
