@@ -1044,6 +1044,41 @@ class TestAnyActiveRun:
         assert any_active_run() is True
 
 
+class TestStateCorruptionTolerance:
+    """The hooks read a local state.json that can be corrupted or hand-edited.
+    Reading it must never crash — bad values are treated as "not active /
+    not stale", never raised."""
+
+    def test_summary_is_stale_tolerates_non_numeric_seq(self):
+        assert summary_is_stale({"update_seq": "garbage", "last_summary_seq": 1}) is False
+        assert summary_is_stale({"update_seq": None, "last_summary_seq": None}) is False
+
+    def test_summary_is_stale_still_works_with_one_corrupt_field(self):
+        # Valid update_seq, corrupt last_summary_seq -> treat corrupt as 0.
+        assert summary_is_stale({"update_seq": 5, "last_summary_seq": "x"}) is True
+
+    def test_any_active_run_ignores_non_numeric_update_seq(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({"o/r#1": {"run": {"update_seq": "garbage"}}})
+        assert any_active_run() is False
+
+    def test_find_active_run_tolerates_mixed_started_at_types(self, tmp_path, monkeypatch):
+        # A corrupted non-str started_at must not crash the sort across candidates.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({
+            "o/r#1": {"run": {"started_at": "2026-06-06T09:00:00Z", "update_seq": 1}},
+            "o/r#2": {"run": {"started_at": 12345, "update_seq": 1}},
+        })
+        result = find_active_run("o/r")  # must not raise
+        assert result is not None
+
+    def test_stamp_summary_emitted_tolerates_corrupt_update_seq(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = PullRequest(owner="o", repo="r", number=1, url=None)
+        save_sticky_state({"o/r#1": {"run": {"update_seq": "garbage"}}})
+        stamp_summary_emitted(pr)  # must not raise
+
+
 class TestSummaryStaleness:
     """The loop's Stop-hook backstop fires a summary only when the run has
     advanced (a new fetch bumped update_seq) since the last emitted summary.

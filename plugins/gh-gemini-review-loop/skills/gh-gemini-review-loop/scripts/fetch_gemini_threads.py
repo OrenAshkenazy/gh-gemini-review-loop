@@ -723,6 +723,18 @@ def clear_run_tracking(pr: PullRequest) -> None:
         save_sticky_state(state)
 
 
+def _safe_int(value: Any) -> int:
+    """Coerce a state value to int, returning 0 for missing/corrupt values.
+
+    state.json is local and can be hand-edited or corrupted; the seq fields
+    must never raise from a non-numeric value, so a bad value reads as 0.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def any_active_run() -> bool:
     """True if any tracked PR (any repo) has an active loop run.
 
@@ -737,7 +749,7 @@ def any_active_run() -> bool:
         # started_at without update_seq is legacy/pre-feature cruft (or a
         # cleared run) and must not count, or stale entries from any repo would
         # look active forever.
-        if isinstance(run, dict) and run.get("update_seq"):
+        if isinstance(run, dict) and _safe_int(run.get("update_seq")) > 0:
             return True
     return False
 
@@ -765,8 +777,10 @@ def find_active_run(repo_full: str) -> tuple[int, dict[str, Any]] | None:
         # Active = bumped update_seq under current code (see any_active_run);
         # a started_at-only run is legacy cruft and is skipped. Order by
         # started_at so the most recently begun loop wins when several qualify.
-        if isinstance(run, dict) and run.get("update_seq"):
-            candidates.append((run.get("started_at", ""), number, run))
+        if isinstance(run, dict) and _safe_int(run.get("update_seq")) > 0:
+            # str() the sort key so a corrupted non-str started_at can't
+            # TypeError when sorting candidates of mixed types.
+            candidates.append((str(run.get("started_at", "")), number, run))
     if not candidates:
         return None
     candidates.sort(key=lambda c: c[0])
@@ -782,7 +796,7 @@ def summary_is_stale(run: dict[str, Any]) -> bool:
     (``last_summary_seq`` absent → 0) is stale. A run with ``started_at`` but no
     fetch yet (``update_seq`` 0) has nothing to show and is not stale.
     """
-    return int(run.get("update_seq", 0)) > int(run.get("last_summary_seq", 0))
+    return _safe_int(run.get("update_seq")) > _safe_int(run.get("last_summary_seq"))
 
 
 def stamp_summary_emitted(pr: PullRequest) -> None:
@@ -800,7 +814,10 @@ def stamp_summary_emitted(pr: PullRequest) -> None:
     run = entry.get("run")
     if not isinstance(run, dict) or "update_seq" not in run:
         return
-    run["last_summary_seq"] = int(run["update_seq"])
+    seq = _safe_int(run.get("update_seq"))
+    if seq <= 0:
+        return  # corrupt/non-numeric update_seq — nothing meaningful to stamp
+    run["last_summary_seq"] = seq
     state[key]["run"] = run
     save_sticky_state(state)
 

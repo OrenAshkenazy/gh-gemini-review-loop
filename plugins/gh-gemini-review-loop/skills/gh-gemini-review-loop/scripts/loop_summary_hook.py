@@ -73,10 +73,11 @@ def main() -> int:
         if not any_active_run():
             return 0
         repo = resolve_current_repo()
-    except (RuntimeError, OSError):  # not a gh repo, no remote, etc.
+        number = select_backstop_pr(repo)
+    except (RuntimeError, OSError, ValueError, TypeError):
+        # not a gh repo, no remote, or corrupt/hand-edited state.json
         return 0
 
-    number = select_backstop_pr(repo)
     if number is None:
         return 0
 
