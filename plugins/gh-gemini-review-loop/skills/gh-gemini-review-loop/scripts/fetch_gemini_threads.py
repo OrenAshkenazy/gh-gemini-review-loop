@@ -741,6 +741,45 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
+def detect_no_progress(pr: PullRequest, current_fingerprint: str) -> bool:
+    """True when the actionable thread fingerprint is unchanged from last cycle.
+
+    Call AFTER ``update_run_tracking`` so ``update_seq`` reflects the current
+    fetch. Reads the fingerprint stored by the previous call, stores the new
+    one, and returns True only when both conditions hold:
+
+    - ``update_seq >= 2``: at least two fetches have run (one per-cycle fix
+      attempt has already been made without clearing the set of open threads).
+    - The fingerprint is identical to the one stored on the previous call.
+
+    A True return means no observable code change resolved any of the threads
+    the agent was supposed to fix. The agent should stop with
+    ``--record-run --outcome no_progress``.
+
+    Fails OPEN: any state read/write error allows the push (correctness aid
+    must never wedge the loop).
+    """
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key, {})
+    if not isinstance(entry, dict):
+        entry = {}
+    run = entry.get("run", {})
+    if not isinstance(run, dict):
+        run = {}
+    prev_fingerprint = run.get("thread_fingerprint")
+    update_seq = _safe_int(run.get("update_seq", 0))
+    run["thread_fingerprint"] = current_fingerprint
+    entry["run"] = run
+    state[key] = entry
+    save_sticky_state(state)
+    return bool(
+        prev_fingerprint
+        and prev_fingerprint == current_fingerprint
+        and update_seq >= 2
+    )
+
+
 def any_active_run() -> bool:
     """True if any tracked PR (any repo) has an active loop run.
 
@@ -1732,6 +1771,19 @@ def main() -> int:
         for warning in page_warnings:
             print(f"warning: {warning}", file=sys.stderr)
 
+        # ---- No-progress detection ------------------------------------------
+        # Compare the actionable thread fingerprint to the previous cycle's.
+        # Only runs during a real fetch (not --cycle-summary / --record-run /
+        # --stats), so the comparison reflects actual loop cycles, not
+        # mid-cycle read-only calls.
+        no_progress_flag = False
+        if not args.record_run and not args.cycle_summary and not args.stats:
+            current_fp = thread_fingerprint(threads)
+            try:
+                no_progress_flag = detect_no_progress(pr, current_fp)
+            except OSError as exc:
+                print(f"warning: could not check progress: {exc}", file=sys.stderr)
+
         # ---- Judge (optional, opt-in via prefs file or --judge-mode) -------
         # The script is the single source of truth for whether the judge
         # runs. The agent supplies --judge-phase; we read the saved mode
@@ -1962,6 +2014,7 @@ def main() -> int:
                         "pageLimitWarnings": page_warnings,
                         "dryRun": args.dry_run,
                         "actionableThreadFingerprint": thread_fingerprint(threads),
+                        "noProgressDetected": no_progress_flag,
                         "judge": judge_status,
                     },
                     "judgeResults": judge_results,
@@ -1982,6 +2035,13 @@ def main() -> int:
                 format_judge_verdict_summary(
                     judge_results, judge_status.get("phase", "cycle")
                 ),
+            )
+        if no_progress_flag:
+            print(
+                "[loop] no_progress: actionable thread set is unchanged since the previous "
+                "cycle — no fix landed. Stop with: "
+                "--record-run --outcome no_progress "
+                "--outcome-reason 'no code change resolved any open thread'"
             )
     return 0
 

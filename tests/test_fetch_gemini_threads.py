@@ -20,6 +20,7 @@ from fetch_gemini_threads import (
     _derive_outcome,
     clear_run_tracking,
     derive_record_fields,
+    detect_no_progress,
     format_judge_verdict_summary,
     merge_judge_results,
     any_active_run,
@@ -1305,3 +1306,50 @@ class TestFormatJudgeVerdictSummary:
         results = self._results({"needs_human": 1})
         assert "cycle" in format_judge_verdict_summary(results, "cycle")
         assert "complete" in format_judge_verdict_summary(results, "complete")
+
+
+class TestDetectNoProgress:
+    def _pr(self):
+        return PullRequest(owner="o", repo="r", number=1, url=None)
+
+    def test_false_on_first_call(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        # Seed update_seq = 1 (as if update_run_tracking ran once).
+        save_sticky_state({"o/r#1": {"run": {"started_at": "t", "update_seq": 1}}})
+        assert detect_no_progress(pr, "fp_a") is False
+
+    def test_false_when_fingerprint_changes(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        save_sticky_state({"o/r#1": {"run": {"started_at": "t", "update_seq": 2,
+                                              "thread_fingerprint": "fp_a"}}})
+        assert detect_no_progress(pr, "fp_b") is False
+
+    def test_true_when_fingerprint_unchanged_and_seq_ge_2(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        save_sticky_state({"o/r#1": {"run": {"started_at": "t", "update_seq": 2,
+                                              "thread_fingerprint": "fp_same"}}})
+        assert detect_no_progress(pr, "fp_same") is True
+
+    def test_false_when_seq_is_1_even_if_fingerprint_matches(self, tmp_path, monkeypatch):
+        # update_seq == 1 means only one fetch has run; no prior cycle to compare.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        save_sticky_state({"o/r#1": {"run": {"started_at": "t", "update_seq": 1,
+                                              "thread_fingerprint": "fp_same"}}})
+        assert detect_no_progress(pr, "fp_same") is False
+
+    def test_stores_fingerprint_for_next_call(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        save_sticky_state({"o/r#1": {"run": {"started_at": "t", "update_seq": 1}}})
+        detect_no_progress(pr, "fp_stored")
+        run = read_run_tracking(pr)
+        assert run.get("thread_fingerprint") == "fp_stored"
+
+    def test_false_with_no_active_run(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        assert detect_no_progress(pr, "fp_any") is False

@@ -415,6 +415,12 @@ Stop the loop and report status instead of pushing or asking Gemini again when a
 4. **Test regression** — Tests fail after a fix attempt and the failure is not clearly caused by the latest Gemini-addressing change.
 5. **No progress** — A thread that was UNRESOLVED in the previous cycle is still UNRESOLVED after a fix attempt AND the surrounding code/hunk was not changed AND no substantive maintainer reply (as defined in Thread States) was posted on it. This catches genuine stuckness — distinct from ADDRESSED_BY_REPLY, which is intentional deferral and should not trip this condition.
 
+   The script detects this mechanically: when the actionable thread fingerprint (SHA256 of thread ids + bodies) is identical to the previous cycle's, it prints:
+   ```
+   [loop] no_progress: actionable thread set is unchanged since the previous cycle — no fix landed. Stop with: --record-run --outcome no_progress ...
+   ```
+   When this line appears in script stdout, **stop immediately**: call `--record-run --outcome no_progress --outcome-reason 'no code change resolved any open thread'` and do not push or request another review.
+
 If a thread was deliberately deferred via a substantive reply (state `ADDRESSED_BY_REPLY`), treat it as condition 3 (human decision), not condition 5 (no progress). The loop must not re-try the same fix on the same thread cycle after cycle.
 
 Do not run more than the configured fix/re-review cap per PR. If the loop stops because the cap is reached, summarize the latest unresolved actionable comments and leave the PR for a human decision.
