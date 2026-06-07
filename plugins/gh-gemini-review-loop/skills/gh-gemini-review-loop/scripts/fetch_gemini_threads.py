@@ -746,7 +746,10 @@ def any_active_run() -> bool:
     Repo-agnostic and network-free, so the Stop hook can skip git/repo
     resolution entirely on the common case of no loop in flight.
     """
-    for entry in load_sticky_state().values():
+    state = load_sticky_state()
+    if not isinstance(state, dict):
+        return False
+    for entry in state.values():
         if not isinstance(entry, dict):
             continue
         run = entry.get("run")
