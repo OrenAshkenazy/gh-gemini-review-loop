@@ -310,9 +310,25 @@ Run metrics and `--stats` are local-only — stored under `~/.config/gh-gemini-r
 
 ## Progress Narration
 
+<HARD-GATE>
+DO NOT run `git push` or call `--record-run` until you have:
+1. Called `--cycle-summary` (for a non-terminal cycle) OR confirmed `--record-run` is the terminal call.
+2. Printed the FULL stdout of that script call verbatim in your text response to the user.
+
+This is enforced mechanically: a PreToolUse:Bash hook (`loop_summary_gate.py`) blocks every `git push` while a Gemini loop is active and the summary is stale. The hook does NOT fire for `--record-run` (the terminal receipt is exempt). Trying to push without summarizing first returns exit code 2 and explains the fix.
+
+Violating the letter of this rule violates the spirit.
+</HARD-GATE>
+
 While the loop is running, the agent MUST emit one-line status updates to the user-facing chat at each phase transition. The format is `[loop] cycle N/<cap> — <phase>`.
 
-**Mechanical backstop (you do not need to rely on remembering this).** A bundled `Stop` hook (`scripts/loop_summary_hook.py`) guarantees the per-cycle/end summary even if the agent forgets it. On every turn end, if a loop advanced (a new fetch bumped the run's `update_seq` in `state.json`) without the agent emitting a `[loop] Summary` since (`last_summary_seq` lags), the hook emits the authoritative `--cycle-summary` itself. It is **dedup-aware**: when the agent *did* run `--cycle-summary`/`--record-run` that turn (those stamp `last_summary_seq`), the hook stays silent — no double summaries. It is network-gated by local state, so it is a free no-op outside an active loop, and it is read-only (never appends a metrics record, never clears the accumulator — the agent still owns the single terminal `--record-run`). So the narration table below is the *intended* cadence; the hook is the floor.
+**Mechanical backstop layer (three independent enforcers):**
+
+1. **`loop_summary_gate.py` (PreToolUse:Bash)** — Blocks `git push` when `update_seq > last_summary_seq`. Exit code 2 with an error message tells the agent exactly which `--cycle-summary` command to run first. This is the primary gate: the agent cannot push a new cycle's commits without first emitting the summary.
+
+2. **`loop_summary_hook.py` (Stop)** — On every turn end, if a loop advanced without a summary being emitted, runs `--cycle-summary --auto-snapshot` and surfaces the result via `systemMessage`. Catches the terminal-cycle gap (between `--record-run` output existing in Bash tool output and the agent relaying it to the user).
+
+3. **Memory feedback** — Saved in the session memory to reinforce the rule across future sessions.
 
 Required narration points:
 
@@ -323,11 +339,11 @@ Required narration points:
 | After fix attempt, before verify | `[loop] cycle N/<cap> — fixes applied. Verifying.` |
 | After verify | `[loop] cycle N/<cap> — verified (<test summary>).` |
 | Before push | `[loop] cycle N/<cap> — committing and pushing <commit-sha>...` |
+| **Before push (HARD GATE)** | Run `--cycle-summary` and print its full output. Only then push. |
 | After push, before re-review | `[loop] cycle N/<cap> — pushed. Requesting Gemini re-review (cycle N consumed).` |
-| **End of each non-terminal cycle** | **`[loop] Summary` block (from `--cycle-summary`)** — REQUIRED on every cycle that will continue looping; see [Per-cycle summary](#per-cycle-summary-block) |
 | Stop condition triggered | `[loop] STOP — <stop-condition>: <one-line explanation>.` |
 | Loop complete (all clean) | `[loop] DONE — 0 actionable threads remaining. Cycles used: N/<cap>.` |
-| Loop complete / stopped (after DONE/STOP) | `[loop] Summary` block (from `--record-run`) — this is also the terminal cycle's receipt; do not also emit `--cycle-summary` on that cycle |
+| Loop complete / stopped (after DONE/STOP) | `[loop] Summary` block (from `--record-run`) — print the full stdout; this is the terminal receipt |
 
 Skip narration only when running in pure non-interactive batch mode (e.g. `gh pr create` chained into a script that captures output for later — but in Claude Code interactive sessions, never skip).
 
@@ -337,16 +353,16 @@ When the user explicitly wants visibility outside the chat (e.g. they'll step aw
 
 ## Bundled hooks
 
-The plugin ships two hooks (`hooks/hooks.json`) that turn the two most-skipped
-agent obligations — *summarize every cycle* and *set up the profile before
-fixing* — from prose into mechanical guarantees. Both are network-gated by local
-`state.json` (free no-ops outside an active loop) and both fail open: a hook
+The plugin ships three hooks (`hooks/hooks.json`) that turn the most-skipped
+agent obligations into mechanical guarantees. All are network-gated by local
+`state.json` (free no-ops outside an active loop) and all fail open: a hook
 error never wedges the session.
 
 | Event | Script | What it guarantees |
 |---|---|---|
-| `Stop` | `loop_summary_hook.py` | If a loop advanced this turn without a `[loop] Summary`, emits the authoritative `--cycle-summary`. Dedup-aware via `update_seq`/`last_summary_seq` — silent when the agent already summarized. Read-only; never records or clears. |
+| `PreToolUse` (`Bash`) | `loop_summary_gate.py` | Blocks `git push` while a loop is active and `summary_is_stale()`. Exit code 2 with the exact `--cycle-summary` command to run. Primary gate — the agent physically cannot push without summarizing first. |
 | `PreToolUse` (`Edit`/`Write`/`MultiEdit`) | `loop_profile_gate.py` | Blocks edits while a loop is active for the repo and no verification profile is saved, so the verify strategy is fixed before any fix. Saving any profile — including `Skip` — clears the gate. |
+| `Stop` | `loop_summary_hook.py` | If a loop advanced this turn without a `[loop] Summary`, emits the authoritative `--cycle-summary`. Dedup-aware via `update_seq`/`last_summary_seq` — silent when the agent already summarized. Read-only; never records or clears. |
 
 These mean the agent should still narrate and summarize as documented, but a lapse no longer costs the user visibility or breaks the profile-before-fixes ordering.
 
