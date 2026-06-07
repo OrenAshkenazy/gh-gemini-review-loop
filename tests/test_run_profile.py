@@ -227,3 +227,105 @@ def test_mixed_per_check_and_inherited_cwd(tmp_path):
     result = run_profile(prof, tmp_path)
     assert result.verification == "passed"
     assert {c.name for c in result.checks} == {"in_a", "in_b_inherited"}
+
+
+# --- reason_code, stdout/stderr tail, failed_check in to_details() ----------
+
+def test_reason_code_ok_for_passing_check(tmp_path):
+    prof = _profile([{"name": "ok", "command": "python3 -c \"import sys; sys.exit(0)\"",
+                      "required": True}])
+    result = run_profile(prof, tmp_path)
+    assert result.checks[0].reason_code == "ok"
+
+
+def test_reason_code_no_tests_collected_for_exit_5(tmp_path):
+    # pytest exits 5 when no tests are collected.
+    prof = _profile([{"name": "tests",
+                      "command": "python3 -c \"import sys; sys.exit(5)\"",
+                      "required": True}])
+    result = run_profile(prof, tmp_path)
+    assert result.checks[0].reason_code == "no_tests_collected"
+
+
+def test_reason_code_exit_1_for_test_failure(tmp_path):
+    prof = _profile([{"name": "tests",
+                      "command": "python3 -c \"import sys; sys.exit(1)\"",
+                      "required": True}])
+    result = run_profile(prof, tmp_path)
+    assert result.checks[0].reason_code == "exit_1"
+
+
+def test_reason_code_command_not_found(tmp_path):
+    prof = _profile([{"name": "missing",
+                      "command": "no_such_binary_xyz_abc_123",
+                      "required": True}])
+    result = run_profile(prof, tmp_path)
+    assert result.checks[0].reason_code == "command_not_found"
+
+
+def test_reason_code_timeout(tmp_path):
+    prof = _profile(
+        [{"name": "slow",
+          "command": "python3 -c \"import time; time.sleep(5)\"",
+          "required": True}],
+        timeout_seconds=1,
+    )
+    result = run_profile(prof, tmp_path)
+    assert result.checks[0].reason_code == "timeout"
+
+
+def test_stdout_tail_populated_for_failed_check(tmp_path):
+    # Write known output to stdout on failure.
+    prof = _profile([{"name": "boom",
+                      "command": "python3 -c \"print('failure line'); import sys; sys.exit(1)\"",
+                      "required": True}])
+    result = run_profile(prof, tmp_path)
+    check = result.checks[0]
+    assert check.status == "failed"
+    assert "failure line" in check.stdout_tail
+
+
+def test_stderr_tail_populated_for_failed_check(tmp_path):
+    prof = _profile([{"name": "boom",
+                      "command": "python3 -c \"import sys; print('err line', file=sys.stderr); sys.exit(1)\"",
+                      "required": True}])
+    result = run_profile(prof, tmp_path)
+    assert "err line" in result.checks[0].stderr_tail
+
+
+def test_output_tail_empty_for_passing_check(tmp_path):
+    # Passing checks do not capture output (it's noise).
+    prof = _profile([{"name": "ok",
+                      "command": "python3 -c \"print('lots of output'); import sys; sys.exit(0)\"",
+                      "required": True}])
+    result = run_profile(prof, tmp_path)
+    check = result.checks[0]
+    assert check.stdout_tail == ""
+    assert check.stderr_tail == ""
+
+
+def test_to_details_includes_failed_check_key(tmp_path):
+    prof = _profile([{"name": "tests",
+                      "command": "python3 -c \"import sys; sys.exit(1)\"",
+                      "required": True}])
+    result = run_profile(prof, tmp_path)
+    details = result.to_details()
+    assert details["failed_check"] == "tests"
+
+
+def test_to_details_failed_check_none_when_all_pass(tmp_path):
+    prof = _profile([{"name": "ok",
+                      "command": "python3 -c \"import sys; sys.exit(0)\"",
+                      "required": True}])
+    result = run_profile(prof, tmp_path)
+    assert result.to_details()["failed_check"] is None
+
+
+def test_to_details_checks_include_reason_code(tmp_path):
+    prof = _profile([{"name": "ok",
+                      "command": "python3 -c \"import sys; sys.exit(0)\"",
+                      "required": True}])
+    result = run_profile(prof, tmp_path)
+    import json
+    serialized = json.loads(json.dumps(result.to_details()))
+    assert serialized["checks"][0]["reason_code"] == "ok"

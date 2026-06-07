@@ -404,3 +404,78 @@ def test_detect_falls_back_to_root_marker(tmp_path):
     result = detect(tmp_path)
     assert result["stack"] == "python"
     assert [c["name"] for c in result["candidate_checks"]] == ["tests", "lint"]
+
+
+# --- uv / poetry / nox runner detection -------------------------------------
+
+def test_python_uv_lock_uses_uv_run_pytest(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "uv.lock").write_text("")
+    result = detect(tmp_path)
+    assert result["candidate_checks"][0]["command"] == "uv run pytest"
+    assert "uv.lock" in result["reasons"]
+
+
+def test_python_poetry_lock_uses_poetry_run_pytest(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "poetry.lock").write_text("")
+    result = detect(tmp_path)
+    assert result["candidate_checks"][0]["command"] == "poetry run pytest"
+    assert "poetry.lock" in result["reasons"]
+
+
+def test_python_noxfile_uses_nox_over_uv(tmp_path):
+    # nox takes precedence even when uv.lock is present.
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "uv.lock").write_text("")
+    (tmp_path / "noxfile.py").write_text("")
+    result = detect(tmp_path)
+    assert result["candidate_checks"][0]["command"] == "nox"
+    assert "noxfile.py" in result["reasons"]
+
+
+def test_python_noxfile_uses_nox_over_poetry(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "poetry.lock").write_text("")
+    (tmp_path / "noxfile.py").write_text("")
+    result = detect(tmp_path)
+    assert result["candidate_checks"][0]["command"] == "nox"
+
+
+def test_python_no_lock_file_uses_plain_pytest(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    result = detect(tmp_path)
+    assert result["candidate_checks"][0]["command"] == "pytest"
+    assert "uv.lock" not in result["reasons"]
+    assert "poetry.lock" not in result["reasons"]
+
+
+def test_python_uv_lock_is_not_directory(tmp_path):
+    # A directory named uv.lock must not trigger uv detection.
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "uv.lock").mkdir()
+    result = detect(tmp_path)
+    assert result["candidate_checks"][0]["command"] == "pytest"
+
+
+def test_git_tree_uv_lock_uses_uv_run_pytest(tmp_path):
+    _git_repo(tmp_path, [
+        "svc/pyproject.toml",
+        "svc/uv.lock",
+        "svc/tests/test_a.py",
+    ])
+    result = detect(tmp_path)
+    assert result["stack"] == "monorepo"
+    cmds = [c["command"] for c in result["candidate_checks"]]
+    assert "uv run pytest" in cmds
+
+
+def test_git_tree_noxfile_uses_nox(tmp_path):
+    _git_repo(tmp_path, [
+        "svc/noxfile.py",
+        "svc/tests/test_a.py",
+    ])
+    result = detect(tmp_path)
+    assert result["stack"] == "monorepo"
+    cmds = [c["command"] for c in result["candidate_checks"]]
+    assert "nox" in cmds

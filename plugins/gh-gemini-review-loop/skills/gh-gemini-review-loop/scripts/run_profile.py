@@ -18,6 +18,36 @@ from pathlib import Path
 from typing import Any
 
 
+_TAIL_LINES = 20
+
+
+def _output_tail(text: str) -> str:
+    """Last _TAIL_LINES lines of *text*, stripped of trailing whitespace."""
+    lines = text.rstrip().splitlines()
+    return "\n".join(lines[-_TAIL_LINES:])
+
+
+def _reason_code(status: str, returncode: int | None, stdout: str, stderr: str) -> str:
+    """Classify a check outcome into a short machine-readable reason code."""
+    if status == "timeout":
+        return "timeout"
+    if returncode is None:
+        return "command_not_found"
+    if returncode == 0:
+        return "ok"
+    # pytest exit codes (https://docs.pytest.org/en/stable/reference/exit-codes.html)
+    if returncode == 5:
+        return "no_tests_collected"
+    if returncode == 4:
+        return "usage_error"
+    if returncode == 2:
+        return "interrupted"
+    combined = stdout + stderr
+    if "ImportError" in combined or "ModuleNotFoundError" in combined:
+        return "import_error"
+    return f"exit_{returncode}"
+
+
 @dataclasses.dataclass
 class CheckResult:
     name: str
@@ -26,6 +56,10 @@ class CheckResult:
     status: str  # "passed" | "failed" | "timeout"
     returncode: int | None
     duration_s: float
+    # Populated only for non-passing checks to keep serialised output compact.
+    stdout_tail: str = ""
+    stderr_tail: str = ""
+    reason_code: str = ""
 
 
 @dataclasses.dataclass
@@ -38,6 +72,8 @@ class ProfileRunResult:
         """JSON-serializable shape for --verification-details."""
         return {
             "verification": self.verification,
+            # failed_check: first failed check name — consumed by format_run_summary.
+            "failed_check": self.failed_required[0] if self.failed_required else None,
             "failed_required": self.failed_required,
             "checks": [dataclasses.asdict(c) for c in self.checks],
         }
@@ -48,22 +84,22 @@ def _run_one(check: Any, cwd: Path, timeout: int) -> CheckResult:
     # A profile can be hand-edited or corrupted; never trust the shape.
     if not isinstance(check, dict):
         return CheckResult("<invalid>", repr(check), True, "failed", None,
-                           time.monotonic() - start)
+                           time.monotonic() - start, reason_code="invalid_check")
     name = str(check.get("name", "<unnamed>"))
     command = check.get("command")
     required = bool(check.get("required", True))
     if not isinstance(command, str):
         return CheckResult(name, str(command), required, "failed", None,
-                           time.monotonic() - start)
+                           time.monotonic() - start, reason_code="invalid_command")
     try:
         argv = shlex.split(command)
     except ValueError:
         # Malformed/unclosed quotes in a hand-edited command.
         return CheckResult(name, command, required, "failed", None,
-                           time.monotonic() - start)
+                           time.monotonic() - start, reason_code="invalid_command")
     if not argv:
         return CheckResult(name, command, required, "failed", None,
-                           time.monotonic() - start)
+                           time.monotonic() - start, reason_code="invalid_command")
     try:
         proc = subprocess.run(  # noqa: S603 - command is user-confirmed, no shell
             argv,
@@ -76,15 +112,23 @@ def _run_one(check: Any, cwd: Path, timeout: int) -> CheckResult:
         )
     except subprocess.TimeoutExpired:
         return CheckResult(name, command, required, "timeout", None,
-                           time.monotonic() - start)
+                           time.monotonic() - start, reason_code="timeout")
     except (FileNotFoundError, OSError, ValueError):
         # ValueError covers bad subprocess args and UnicodeDecodeError
         # (a ValueError subclass), which the OSError clause would miss.
         return CheckResult(name, command, required, "failed", None,
-                           time.monotonic() - start)
+                           time.monotonic() - start, reason_code="command_not_found")
     status = "passed" if proc.returncode == 0 else "failed"
-    return CheckResult(name, command, required, status, proc.returncode,
-                       time.monotonic() - start)
+    if status == "passed":
+        return CheckResult(name, command, required, status, proc.returncode,
+                           time.monotonic() - start, reason_code="ok")
+    return CheckResult(
+        name, command, required, status, proc.returncode,
+        time.monotonic() - start,
+        stdout_tail=_output_tail(proc.stdout),
+        stderr_tail=_output_tail(proc.stderr),
+        reason_code=_reason_code(status, proc.returncode, proc.stdout, proc.stderr),
+    )
 
 
 def run_profile(profile: Any, repo_root: Path | str) -> ProfileRunResult:

@@ -35,6 +35,19 @@ _RECIPE_HEADER_RE = re.compile(
 _JUSTFILE_NAMES = ("justfile", "Justfile", ".justfile")
 
 
+def _python_runner(dir: Path) -> str:
+    """Return the pytest invocation for a Python project at *dir*.
+
+    Checks for a uv or poetry lock file to determine the correct wrapper.
+    Plain ``pytest`` is the fallback when no lock file is found.
+    """
+    if (dir / "uv.lock").is_file():
+        return "uv run pytest"
+    if (dir / "poetry.lock").is_file():
+        return "poetry run pytest"
+    return "pytest"
+
+
 def _recipe_name_matches(name: str) -> bool:
     return bool(_VERIFY_RECIPE_RE.match(name))
 
@@ -107,14 +120,20 @@ def parse_justfile_recipes(root: Path | str) -> list[dict[str, Any]]:
 _TEST_DIR_NAMES = frozenset({"tests", "test", "__tests__", "spec", "specs"})
 
 # Marker filename -> (runner command, check-name hint). First marker found
-# walking up from a test dir wins.
+# walking up from a test dir wins. noxfile.py precedes pyproject.toml so a
+# repo that uses nox to orchestrate tests is not misdetected as bare pytest.
 _MARKER_RUNNERS: list[tuple[str, str]] = [
+    ("noxfile.py", "nox"),
     ("package.json", "npm test"),
-    ("pyproject.toml", "pytest"),
-    ("setup.py", "pytest"),
+    ("pyproject.toml", "pytest"),   # command refined by _python_runner below
+    ("setup.py", "pytest"),         # command refined by _python_runner below
     ("Cargo.toml", "cargo test"),
     ("go.mod", "go test ./..."),
 ]
+
+# Python project marker files whose runner command may be overridden by
+# _python_runner (uv run pytest / poetry run pytest / plain pytest).
+_PYTHON_MARKERS = frozenset({"pyproject.toml", "setup.py"})
 
 
 def _tracked_files(root: Path) -> list[str]:
@@ -139,12 +158,16 @@ def _nearest_marker_dir(root: Path, start: Path) -> tuple[str, str] | None:
     """Walk up from ``start`` (inclusive) to ``root``; return (cwd, command).
 
     ``cwd`` is the marker directory relative to ``root`` ('.' for root itself).
+    For Python marker files (pyproject.toml, setup.py), the command is refined
+    by ``_python_runner`` so uv/poetry lock files pick the correct wrapper.
     """
     current = start
     while True:
         for marker, command in _MARKER_RUNNERS:
             if (current / marker).is_file():
                 rel = current.relative_to(root).as_posix()
+                if marker in _PYTHON_MARKERS:
+                    command = _python_runner(current)
                 return (rel if rel != "." else ".", command)
         if current == root:
             return None
@@ -203,7 +226,18 @@ def _detect_python(root: Path) -> dict[str, Any]:
         reasons.append("setup.py")
     if (root / "tests").is_dir():
         reasons.append("tests/")
-    checks = [_check("tests", "pytest", True)]
+    # Nox takes precedence: it orchestrates all test/lint sessions and may
+    # manage the virtualenv, so running bare pytest alongside it is wrong.
+    if (root / "noxfile.py").is_file():
+        reasons.append("noxfile.py")
+        test_command = "nox"
+    else:
+        test_command = _python_runner(root)
+        if (root / "uv.lock").is_file():
+            reasons.append("uv.lock")
+        elif (root / "poetry.lock").is_file():
+            reasons.append("poetry.lock")
+    checks = [_check("tests", test_command, True)]
     # is_file() can still be followed by an OSError on read (permissions, broken
     # symlink); degrade to no optional-tool detection rather than crash, matching
     # the guarded read in _detect_node.
