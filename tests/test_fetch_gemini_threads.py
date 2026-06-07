@@ -21,8 +21,12 @@ from fetch_gemini_threads import (
     clear_run_tracking,
     derive_record_fields,
     merge_judge_results,
+    any_active_run,
     effective_rereview_limit,
     filter_by_min_severity,
+    find_active_run,
+    stamp_summary_emitted,
+    summary_is_stale,
     filter_threads,
     is_addressed_by_reply,
     load_preferences_with_fallback,
@@ -542,6 +546,15 @@ class TestStickyReceiptState:
         save_sticky_state({"o/r#1": {"comment_id": 42}})
         assert load_sticky_state() == {"o/r#1": {"comment_id": 42}}
 
+    def test_load_returns_empty_when_valid_json_but_not_dict(
+        self, tmp_path, monkeypatch
+    ):
+        # A valid-but-non-dict payload (list/scalar) from corruption or
+        # hand-editing must not reach callers that do .values()/.items().
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "state.json").write_text("[1, 2, 3]")
+        assert load_sticky_state() == {}
+
     def test_save_creates_parent_dir(self, tmp_path, monkeypatch):
         nested = tmp_path / "nested" / "dir"
         monkeypatch.setenv("GGRL_STATE_DIR", str(nested))
@@ -960,3 +973,183 @@ class TestSelectStatsRecords:
         recs = [self._rec("o/r", 1), self._rec("x/y", 2), self._rec("o/r", 3)]
         out = select_stats_records(recs, repo="o/r", window=2, all_repos=True)
         assert [r["pr"] for r in out] == [2, 3]
+
+
+class TestFindActiveRun:
+    """find_active_run is the cheap, network-free gate the loop hooks use to
+    decide whether a Gemini loop is in flight for the current repo before
+    spending a GitHub fetch on a summary."""
+
+    def test_returns_none_when_no_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        assert find_active_run("o/r") is None
+
+    def test_returns_none_when_run_missing_update_seq(self, tmp_path, monkeypatch):
+        # A `run` block that never bumped update_seq (legacy/pre-feature cruft,
+        # or cleared) is NOT an active loop, even if it has started_at.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({"o/r#5": {"run": {"started_at": "2026-06-06T10:00:00Z"}}})
+        assert find_active_run("o/r") is None
+
+    def test_returns_none_when_no_run_block(self, tmp_path, monkeypatch):
+        # A sticky-receipt-only entry (no `run`) is not an active loop.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({"o/r#5": {"sticky_comment_id": 123}})
+        assert find_active_run("o/r") is None
+
+    def test_returns_pr_and_run_for_active(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        run = {"started_at": "2026-06-06T10:00:00Z", "update_seq": 1, "finding_ids": ["a"]}
+        save_sticky_state({"o/r#7": {"run": run}})
+        assert find_active_run("o/r") == (7, run)
+
+    def test_ignores_other_repos(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({"other/repo#1": {"run": {"started_at": "2026-06-06T10:00:00Z", "update_seq": 1}}})
+        assert find_active_run("o/r") is None
+
+    def test_does_not_prefix_match_similar_repo(self, tmp_path, monkeypatch):
+        # "o/r2" must not be treated as belonging to "o/r".
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({"o/r2#1": {"run": {"started_at": "2026-06-06T10:00:00Z", "update_seq": 1}}})
+        assert find_active_run("o/r") is None
+
+    def test_picks_most_recently_started_when_multiple_active(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({
+            "o/r#1": {"run": {"started_at": "2026-06-06T09:00:00Z", "update_seq": 1}},
+            "o/r#2": {"run": {"started_at": "2026-06-06T11:00:00Z", "update_seq": 1}},
+        })
+        num, _ = find_active_run("o/r")
+        assert num == 2
+
+
+class TestAnyActiveRun:
+    """Fast, repo-agnostic gate: lets the Stop hook skip git/repo resolution
+    entirely when no loop is in flight anywhere."""
+
+    def test_false_when_no_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        assert any_active_run() is False
+
+    def test_false_when_only_sticky_entries(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({"o/r#1": {"sticky_comment_id": 9}})
+        assert any_active_run() is False
+
+    def test_false_when_run_block_lacks_update_seq(self, tmp_path, monkeypatch):
+        # Legacy/pre-feature run (started_at but no update_seq) is not active —
+        # this is what kept stale cruft from any repo looking "active" forever.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({"o/r#1": {"run": {"started_at": "2026-06-06T10:00:00Z"}}})
+        assert any_active_run() is False
+
+    def test_true_when_any_active_run_exists(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({
+            "o/r#1": {"sticky_comment_id": 9},
+            "x/y#3": {"run": {"started_at": "2026-06-06T10:00:00Z", "update_seq": 1}},
+        })
+        assert any_active_run() is True
+
+
+class TestStateCorruptionTolerance:
+    """The hooks read a local state.json that can be corrupted or hand-edited.
+    Reading it must never crash — bad values are treated as "not active /
+    not stale", never raised."""
+
+    def test_summary_is_stale_tolerates_non_numeric_seq(self):
+        assert summary_is_stale({"update_seq": "garbage", "last_summary_seq": 1}) is False
+        assert summary_is_stale({"update_seq": None, "last_summary_seq": None}) is False
+
+    def test_summary_is_stale_still_works_with_one_corrupt_field(self):
+        # Valid update_seq, corrupt last_summary_seq -> treat corrupt as 0.
+        assert summary_is_stale({"update_seq": 5, "last_summary_seq": "x"}) is True
+
+    def test_any_active_run_ignores_non_numeric_update_seq(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({"o/r#1": {"run": {"update_seq": "garbage"}}})
+        assert any_active_run() is False
+
+    def test_find_active_run_tolerates_mixed_started_at_types(self, tmp_path, monkeypatch):
+        # A corrupted non-str started_at must not crash the sort across candidates.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({
+            "o/r#1": {"run": {"started_at": "2026-06-06T09:00:00Z", "update_seq": 1}},
+            "o/r#2": {"run": {"started_at": 12345, "update_seq": 1}},
+        })
+        result = find_active_run("o/r")  # must not raise
+        assert result is not None
+
+    def test_stamp_summary_emitted_tolerates_corrupt_update_seq(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = PullRequest(owner="o", repo="r", number=1, url=None)
+        save_sticky_state({"o/r#1": {"run": {"update_seq": "garbage"}}})
+        stamp_summary_emitted(pr)  # must not raise
+
+
+class TestSummaryStaleness:
+    """The loop's Stop-hook backstop fires a summary only when the run has
+    advanced (a new fetch bumped update_seq) since the last emitted summary.
+    This dedups against the agent's own per-cycle summary without timing
+    guesswork."""
+
+    def test_update_run_tracking_bumps_update_seq(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = PullRequest(owner="o", repo="r", number=1, url=None)
+        update_run_tracking(pr, [("t1", "a.py")])
+        assert read_run_tracking(pr)["update_seq"] == 1
+        update_run_tracking(pr, [("t2", "b.py")])
+        assert read_run_tracking(pr)["update_seq"] == 2
+
+    def test_fresh_run_with_no_updates_is_not_stale(self):
+        # started_at but never fetched: nothing to summarize yet.
+        assert summary_is_stale({"started_at": "2026-06-06T10:00:00Z"}) is False
+
+    def test_run_with_updates_and_no_summary_is_stale(self):
+        assert summary_is_stale({"update_seq": 1}) is True
+
+    def test_run_summarized_at_current_seq_is_not_stale(self):
+        assert summary_is_stale({"update_seq": 2, "last_summary_seq": 2}) is False
+
+    def test_run_advanced_since_last_summary_is_stale(self):
+        assert summary_is_stale({"update_seq": 3, "last_summary_seq": 2}) is True
+
+    def test_stamp_summary_emitted_marks_current_seq(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = PullRequest(owner="o", repo="r", number=1, url=None)
+        update_run_tracking(pr, [("t1", "a.py")])
+        assert summary_is_stale(read_run_tracking(pr)) is True
+        stamp_summary_emitted(pr)
+        assert summary_is_stale(read_run_tracking(pr)) is False
+
+    def test_stamp_then_new_fetch_is_stale_again(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = PullRequest(owner="o", repo="r", number=1, url=None)
+        update_run_tracking(pr, [("t1", "a.py")])
+        stamp_summary_emitted(pr)
+        update_run_tracking(pr, [("t2", "b.py")])  # next cycle's fetch
+        assert summary_is_stale(read_run_tracking(pr)) is True
+
+    def test_stamp_is_noop_when_no_active_run(self, tmp_path, monkeypatch):
+        # Must not crash or create a run block when there's nothing tracked.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = PullRequest(owner="o", repo="r", number=1, url=None)
+        stamp_summary_emitted(pr)
+        assert read_run_tracking(pr) == {}
+
+
+from fetch_gemini_threads import resolve_judge_phase
+
+
+def test_resolve_judge_phase_infers_complete_for_record_run():
+    assert resolve_judge_phase(None, record_run=True) == "complete"
+
+
+def test_resolve_judge_phase_infers_cycle_for_normal_fetch():
+    assert resolve_judge_phase(None, record_run=False) == "cycle"
+
+
+def test_resolve_judge_phase_explicit_flag_wins():
+    assert resolve_judge_phase("cycle", record_run=True) == "cycle"
+    assert resolve_judge_phase("complete", record_run=False) == "complete"

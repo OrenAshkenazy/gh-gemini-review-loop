@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 
-from detect_profile import build_presets, detect, main
+from detect_profile import build_presets, detect, discover_git_tree_checks, main, parse_justfile_recipes
+import subprocess
 
 
 def _names(result):
@@ -249,3 +250,157 @@ def test_main_output_includes_presets_key(tmp_path, capsys):
         "Skip — use ad-hoc verification",
         "Customize manually",
     ]
+
+
+def test_build_presets_preserves_working_directory():
+    candidates = [
+        {"name": "backend", "command": "pytest",
+         "working_directory": "test-backend", "required": True},
+        {"name": "client", "command": "npm test",
+         "working_directory": "familia-ai/client", "required": True},
+    ]
+    presets = build_presets(candidates)
+    all_detected = presets[0]
+    assert all_detected["source"] == "confirmed"
+    cwds = {c["name"]: c.get("working_directory") for c in all_detected["checks"]}
+    assert cwds == {"backend": "test-backend", "client": "familia-ai/client"}
+    # every persisted check is still forced required
+    assert all(c["required"] is True for c in all_detected["checks"])
+
+
+def _write_justfile(tmp_path, body, name="justfile"):
+    (tmp_path / name).write_text(body)
+
+
+def test_justfile_emits_matching_runnable_recipes(tmp_path):
+    _write_justfile(tmp_path, (
+        "build:\n\tcargo build\n\n"
+        "test-backend:\n\tcd test-backend && pytest\n\n"
+        "test-client:\n\tcd client && npm test\n\n"
+        "lint:\n\truff check .\n\n"
+        "deploy:\n\t./deploy.sh\n"
+    ))
+    checks = parse_justfile_recipes(tmp_path)
+    names = [c["name"] for c in checks]
+    assert names == ["test-backend", "test-client", "lint"]
+    assert all(c["command"] == f"just {c['name']}" for c in checks)
+    assert all(c["working_directory"] == "." for c in checks)
+    assert all(c["required"] is True for c in checks)
+
+
+def test_justfile_parameter_guard(tmp_path):
+    _write_justfile(tmp_path, (
+        "test:\n\tpytest\n\n"                  # no params -> emit
+        'test-default target="all":\n\tpytest {{target}}\n\n'  # default -> emit
+        "test-target target:\n\tpytest {{target}}\n\n"          # required -> skip
+        "test-many +paths:\n\tpytest {{paths}}\n\n"             # +variadic -> skip
+        "test-opt *paths:\n\tpytest {{paths}}\n"                # *variadic -> emit
+    ))
+    names = [c["name"] for c in parse_justfile_recipes(tmp_path)]
+    assert names == ["test", "test-default", "test-opt"]
+
+
+def test_justfile_ignores_assignments_and_comments(tmp_path):
+    _write_justfile(tmp_path, (
+        "# test: this is a comment, not a recipe\n"
+        'export TEST_VAR := "x"\n'
+        "checkpoint:\n\techo not-a-check\n"   # name doesn't match 'check' exactly
+        "check:\n\tcargo check\n"
+    ))
+    names = [c["name"] for c in parse_justfile_recipes(tmp_path)]
+    assert names == ["check"]
+
+
+def test_justfile_filename_variants(tmp_path):
+    _write_justfile(tmp_path, "test:\n\tpytest\n", name="Justfile")
+    assert [c["name"] for c in parse_justfile_recipes(tmp_path)] == ["test"]
+
+
+def test_no_justfile_returns_empty(tmp_path):
+    assert parse_justfile_recipes(tmp_path) == []
+
+
+def _git_repo(tmp_path, files):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    for rel in files:
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    return tmp_path
+
+
+def test_git_tree_maps_test_dirs_to_nearest_marker(tmp_path):
+    _git_repo(tmp_path, [
+        "familia-ai/client/package.json",
+        "familia-ai/client/tests/test_app.js",
+        "familia-ai/scraper-svc/package.json",
+        "familia-ai/scraper-svc/src/__tests__/scrape.test.js",
+        "test-backend/pyproject.toml",
+        "test-backend/tests/test_api.py",
+    ])
+    checks = discover_git_tree_checks(tmp_path)
+    by_cwd = {c["working_directory"]: c for c in checks}
+    assert by_cwd["familia-ai/client"]["command"] == "npm test"
+    assert by_cwd["familia-ai/scraper-svc"]["command"] == "npm test"
+    assert by_cwd["test-backend"]["command"] == "pytest"
+    assert all(c["required"] is True for c in checks)
+
+
+def test_git_tree_dedups_one_check_per_marker_dir(tmp_path):
+    _git_repo(tmp_path, [
+        "svc/pyproject.toml",
+        "svc/tests/test_a.py",
+        "svc/spec/test_b.py",  # second test dir under the same marker
+    ])
+    checks = discover_git_tree_checks(tmp_path)
+    cwds = [c["working_directory"] for c in checks]
+    assert cwds == ["svc"]
+
+
+def test_git_tree_skips_test_dir_without_marker(tmp_path):
+    _git_repo(tmp_path, [
+        "orphan/tests/test_x.py",  # no package marker anywhere up-tree
+    ])
+    assert discover_git_tree_checks(tmp_path) == []
+
+
+def test_git_tree_empty_outside_git_repo(tmp_path):
+    # no `git init` -> ls-files fails -> empty
+    (tmp_path / "tests").mkdir()
+    assert discover_git_tree_checks(tmp_path) == []
+
+
+def test_detect_prefers_justfile_over_git_tree(tmp_path):
+    _git_repo(tmp_path, [
+        "svc/pyproject.toml",
+        "svc/tests/test_a.py",
+    ])
+    (tmp_path / "justfile").write_text("test:\n\tpytest\n")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    result = detect(tmp_path)
+    assert result["stack"] == "justfile"
+    assert [c["name"] for c in result["candidate_checks"]] == ["test"]
+    assert result["candidate_checks"][0]["command"] == "just test"
+
+
+def test_detect_uses_git_tree_when_no_matching_recipes(tmp_path):
+    _git_repo(tmp_path, [
+        "svc/pyproject.toml",
+        "svc/tests/test_a.py",
+    ])
+    # justfile present but its only recipe doesn't match a verify pattern
+    (tmp_path / "justfile").write_text("build:\n\tcargo build\n")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    result = detect(tmp_path)
+    assert result["stack"] == "monorepo"
+    assert [c["working_directory"] for c in result["candidate_checks"]] == ["svc"]
+    assert result["candidate_checks"][0]["command"] == "pytest"
+
+
+def test_detect_falls_back_to_root_marker(tmp_path):
+    # not a git repo, no justfile -> existing root single-stack detection
+    (tmp_path / "pyproject.toml").write_text("[project]\ndependencies = ['ruff']\n")
+    result = detect(tmp_path)
+    assert result["stack"] == "python"
+    assert [c["name"] for c in result["candidate_checks"]] == ["tests", "lint"]

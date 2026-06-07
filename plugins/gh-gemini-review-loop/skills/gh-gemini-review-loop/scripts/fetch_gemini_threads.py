@@ -669,9 +669,14 @@ def load_sticky_state() -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return {}
+    # state.json must be a JSON object. A valid-but-non-dict payload (a list or
+    # scalar from corruption or hand-editing) would crash callers that do
+    # .values()/.items() on the result. Guard centrally here so every caller —
+    # any_active_run, find_active_run, and the rest — is safe.
+    return data if isinstance(data, dict) else {}
 
 
 def save_sticky_state(state: dict[str, Any]) -> None:
@@ -693,6 +698,10 @@ def update_run_tracking(pr: PullRequest, findings: list[tuple[str, str | None]])
     run = entry.get("run", {})
     if "started_at" not in run:
         run["started_at"] = _now_iso()
+    # Monotonic counter bumped on every fetch. The loop's Stop-hook backstop
+    # compares it against last_summary_seq to tell whether the run advanced
+    # since the agent last emitted a summary (see summary_is_stale).
+    run["update_seq"] = _safe_int(run.get("update_seq", 0)) + 1
     ids = set(run.get("finding_ids", []))
     paths = set(run.get("finding_paths", []))
     for thread_id, path in findings:
@@ -717,6 +726,113 @@ def clear_run_tracking(pr: PullRequest) -> None:
     if key in state and "run" in state[key]:
         del state[key]["run"]
         save_sticky_state(state)
+
+
+def _safe_int(value: Any) -> int:
+    """Coerce a state value to int, returning 0 for missing/corrupt values.
+
+    state.json is local and can be hand-edited or corrupted; the seq fields
+    must never raise from a non-numeric value, so a bad value reads as 0.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def any_active_run() -> bool:
+    """True if any tracked PR (any repo) has an active loop run.
+
+    Repo-agnostic and network-free, so the Stop hook can skip git/repo
+    resolution entirely on the common case of no loop in flight.
+    """
+    state = load_sticky_state()
+    if not isinstance(state, dict):
+        return False
+    for entry in state.values():
+        if not isinstance(entry, dict):
+            continue
+        run = entry.get("run")
+        # "Active" means a fetch bumped update_seq under the current code. A
+        # started_at without update_seq is legacy/pre-feature cruft (or a
+        # cleared run) and must not count, or stale entries from any repo would
+        # look active forever.
+        if isinstance(run, dict) and _safe_int(run.get("update_seq")) > 0:
+            return True
+    return False
+
+
+def find_active_run(repo_full: str) -> tuple[int, dict[str, Any]] | None:
+    """Return ``(pr_number, run)`` for the active Gemini loop in ``repo_full``.
+
+    A loop is "active" once a cycle has accumulated into its ``run`` block
+    (signalled by ``started_at``); ``--record-run`` clears that block, so a
+    recorded/never-started loop reads as inactive. This is the cheap,
+    network-free gate the loop hooks use to decide whether to spend a GitHub
+    fetch on a summary, so it only reads local state. If several PRs in the
+    repo look active, the most recently started one wins.
+    """
+    candidates: list[tuple[str, int, dict[str, Any]]] = []
+    state = load_sticky_state()
+    if not isinstance(state, dict):
+        return None
+    for key, entry in state.items():
+        prefix, sep, suffix = key.rpartition("#")
+        if not sep or prefix != repo_full:
+            continue
+        try:
+            number = int(suffix)
+        except ValueError:
+            continue
+        run = entry.get("run") if isinstance(entry, dict) else None
+        # Active = bumped update_seq under current code (see any_active_run);
+        # a started_at-only run is legacy cruft and is skipped. Order by
+        # started_at so the most recently begun loop wins when several qualify.
+        if isinstance(run, dict) and _safe_int(run.get("update_seq")) > 0:
+            # str() the sort key so a corrupted non-str started_at can't
+            # TypeError when sorting candidates of mixed types.
+            candidates.append((str(run.get("started_at", "")), number, run))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: c[0])
+    _, number, run = candidates[-1]
+    return number, run
+
+
+def summary_is_stale(run: dict[str, Any]) -> bool:
+    """True when the run has advanced since the last emitted summary.
+
+    ``update_seq`` is bumped on every fetch; ``last_summary_seq`` is stamped
+    when a summary is emitted. A run that fetched but was never summarized
+    (``last_summary_seq`` absent → 0) is stale. A run with ``started_at`` but no
+    fetch yet (``update_seq`` 0) has nothing to show and is not stale.
+    """
+    return _safe_int(run.get("update_seq")) > _safe_int(run.get("last_summary_seq"))
+
+
+def stamp_summary_emitted(pr: PullRequest) -> None:
+    """Record that a summary covering the current run state was just emitted.
+
+    Sets ``last_summary_seq`` to the current ``update_seq`` so the Stop-hook
+    backstop won't re-emit a summary the agent already showed. A no-op when no
+    run is being tracked, so it never resurrects a cleared/absent run block.
+    """
+    state = load_sticky_state()
+    if not isinstance(state, dict):
+        return
+    key = _state_key(pr)
+    entry = state.get(key)
+    if not isinstance(entry, dict):
+        return
+    run = entry.get("run")
+    if not isinstance(run, dict) or "update_seq" not in run:
+        return
+    seq = _safe_int(run.get("update_seq"))
+    if seq <= 0:
+        return  # corrupt/non-numeric update_seq — nothing meaningful to stamp
+    run["last_summary_seq"] = seq
+    state[key]["run"] = run
+    save_sticky_state(state)
 
 
 def accumulate_judge_results(
@@ -762,6 +878,18 @@ def merge_judge_results(
     merged = dict(accumulated or {})
     merged.update(current or {})
     return merged
+
+
+def resolve_judge_phase(explicit_phase: str | None, *, record_run: bool) -> str:
+    """Infer the judge phase from invocation context when unset.
+
+    The agent need not remember to pass --judge-phase: a terminal --record-run
+    invocation is the loop's completion, everything else is a per-cycle fetch.
+    An explicit flag always wins.
+    """
+    if explicit_phase is not None:
+        return explicit_phase
+    return "complete" if record_run else "cycle"
 
 
 def record_cycle(
@@ -1295,6 +1423,16 @@ def main() -> int:
             "every cycle (unlike --record-run, which is terminal and destructive)."
         ),
     )
+    parser.add_argument(
+        "--auto-snapshot",
+        action="store_true",
+        help=(
+            "Render the lean auto-snapshot receipt instead of the full one. For "
+            "the Stop-hook backstop: shows only GitHub-observable state (threads "
+            "seen/resolved/open, cycles) and omits agent-only fields (fixed "
+            "count, verification, outcome) the hook cannot know."
+        ),
+    )
     parser.add_argument("--fixed-count", type=int, default=0, help="Agent-claimed fixes this run.")
     parser.add_argument(
         "--verification",
@@ -1529,15 +1667,18 @@ def main() -> int:
                 if args.judge_mode is not None
                 else prefs.get("judge_mode", "off")
             )
+            effective_phase = resolve_judge_phase(
+                args.judge_phase, record_run=bool(args.record_run)
+            )
             judge_results = {}
-            if should_judge_run(mode=effective_mode, phase=args.judge_phase):
+            if should_judge_run(mode=effective_mode, phase=effective_phase):
                 client = JudgeClient(model=args.judge_model or prefs["judge_model"])
                 ready, skip_reason = client.is_ready()
                 if not ready:
                     judge_status = {
                         "ran": False,
                         "mode": effective_mode,
-                        "phase": args.judge_phase,
+                        "phase": effective_phase,
                         "skip_reason": skip_reason,
                     }
                     print(
@@ -1549,7 +1690,7 @@ def main() -> int:
                     judge_status = {
                         "ran": True,
                         "mode": effective_mode,
-                        "phase": args.judge_phase,
+                        "phase": effective_phase,
                         "model": client.model,
                         "judged_count": 0,
                         "errors": 0,
@@ -1579,9 +1720,9 @@ def main() -> int:
                 judge_status = {
                     "ran": False,
                     "mode": effective_mode,
-                    "phase": args.judge_phase,
+                    "phase": effective_phase,
                     "skip_reason": (
-                        f"mode={effective_mode!r} + phase={args.judge_phase!r} → no-op"
+                        f"mode={effective_mode!r} + phase={effective_phase!r} → no-op"
                     ),
                 }
         # --------------------------------------------------------------------
@@ -1678,7 +1819,18 @@ def main() -> int:
                         clear_run_tracking(pr)
                     except OSError as exc:
                         print(f"warning: could not clear run tracking: {exc}", file=sys.stderr)
-            print(metrics.format_run_summary(record))
+            else:
+                # --cycle-summary leaves the accumulator intact but stamps that a
+                # summary covering the current run state was emitted, so the
+                # Stop-hook backstop won't duplicate it.
+                try:
+                    stamp_summary_emitted(pr)
+                except OSError as exc:
+                    print(f"warning: could not stamp summary state: {exc}", file=sys.stderr)
+            if args.auto_snapshot:
+                print(metrics.format_auto_snapshot(record))
+            else:
+                print(metrics.format_run_summary(record))
             return 0
         if args.post_receipt or args.sticky_receipt:
             sticky = args.sticky_receipt

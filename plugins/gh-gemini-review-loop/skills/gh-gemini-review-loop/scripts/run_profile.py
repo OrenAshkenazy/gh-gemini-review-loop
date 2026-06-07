@@ -110,7 +110,14 @@ def run_profile(profile: Any, repo_root: Path | str) -> ProfileRunResult:
     checks = profile.get("checks", [])
     if not isinstance(checks, list):
         checks = []
-    results = [_run_one(c, cwd, timeout) for c in checks]
+    results = []
+    for c in checks:
+        check_cwd = cwd
+        if isinstance(c, dict):
+            override = c.get("working_directory")
+            if isinstance(override, str) and override:
+                check_cwd = root / override
+        results.append(_run_one(c, check_cwd, timeout))
     failed_required = [
         c.name for c in results if c.required and c.status != "passed"
     ]

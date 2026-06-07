@@ -9,9 +9,184 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+
+# Recipe names that indicate a verification step. Anchored, case-insensitive:
+# exact "test"/"check"/"lint"/"typecheck"/"verify", or a hyphenated test
+# variant ("test-backend", "client-tests").
+_VERIFY_RECIPE_RE = re.compile(
+    r"^(test|check|lint|typecheck|verify)$"
+    r"|^test-[\w-]+$"
+    r"|^[\w-]+-tests?$",
+    re.IGNORECASE,
+)
+
+# A recipe header line: name, optional space-separated parameters, then a single
+# ':' that is NOT ':=' (which would be a just assignment). Dependencies appear
+# after the colon and are intentionally not captured.
+_RECIPE_HEADER_RE = re.compile(
+    r"^(?P<name>[A-Za-z_][\w-]*)(?P<params>(?:[ \t]+[^:#\n]+?)?)[ \t]*:(?!=)"
+)
+
+_JUSTFILE_NAMES = ("justfile", "Justfile", ".justfile")
+
+
+def _recipe_name_matches(name: str) -> bool:
+    return bool(_VERIFY_RECIPE_RE.match(name))
+
+
+def _recipe_is_runnable(params: str) -> bool:
+    """True iff every parameter is safe to omit when calling ``just <recipe>``.
+
+    just parameter forms:
+      ``name``            required positional   -> NOT runnable
+      ``name="default"``  defaulted             -> runnable
+      ``+name``           required variadic     -> NOT runnable
+      ``*name``           optional variadic     -> runnable
+
+    Splitting on whitespace can mis-handle a default containing spaces
+    (``p="a b"``); the worst case is a conservative false-skip, never a broken
+    emitted check.
+    """
+    for token in params.split():
+        if token.startswith("*"):
+            continue
+        if token.startswith("+"):
+            return False
+        if "=" in token:
+            continue
+        return False
+    return True
+
+
+def parse_justfile_recipes(root: Path | str) -> list[dict[str, Any]]:
+    """Return emittable verification checks parsed from a repo-root justfile.
+
+    A recipe is emitted only when its name matches a verification pattern AND it
+    is zero-arg-runnable (parameter guard). Returns ``[]`` when no justfile
+    exists, none match, or all matches require arguments.
+    """
+    root = Path(root)
+    text = ""
+    for fname in _JUSTFILE_NAMES:
+        path = root / fname
+        if path.is_file():
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                text = ""
+            break
+    checks: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        # Recipe headers start in column 0; recipe bodies are indented.
+        if not line or line[0].isspace() or line.lstrip().startswith("#"):
+            continue
+        match = _RECIPE_HEADER_RE.match(line)
+        if not match:
+            continue
+        name = match.group("name")
+        if name in seen or not _recipe_name_matches(name):
+            continue
+        if not _recipe_is_runnable(match.group("params")):
+            continue
+        seen.add(name)
+        checks.append({
+            "name": name,
+            "command": f"just {name}",
+            "working_directory": ".",
+            "required": True,
+        })
+    return checks
+
+
+_TEST_DIR_NAMES = frozenset({"tests", "test", "__tests__", "spec", "specs"})
+
+# Marker filename -> (runner command, check-name hint). First marker found
+# walking up from a test dir wins.
+_MARKER_RUNNERS: list[tuple[str, str]] = [
+    ("package.json", "npm test"),
+    ("pyproject.toml", "pytest"),
+    ("setup.py", "pytest"),
+    ("Cargo.toml", "cargo test"),
+    ("go.mod", "go test ./..."),
+]
+
+
+def _tracked_files(root: Path) -> list[str]:
+    try:
+        proc = subprocess.run(  # noqa: S603,S607 - fixed argv, no shell
+            ["git", "ls-files"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    return [ln for ln in proc.stdout.splitlines() if ln]
+
+
+def _nearest_marker_dir(root: Path, start: Path) -> tuple[str, str] | None:
+    """Walk up from ``start`` (inclusive) to ``root``; return (cwd, command).
+
+    ``cwd`` is the marker directory relative to ``root`` ('.' for root itself).
+    """
+    current = start
+    while True:
+        for marker, command in _MARKER_RUNNERS:
+            if (current / marker).is_file():
+                rel = current.relative_to(root).as_posix()
+                return (rel if rel != "." else ".", command)
+        if current == root:
+            return None
+        current = current.parent
+
+
+def discover_git_tree_checks(root: Path | str) -> list[dict[str, Any]]:
+    """Discover monorepo test dirs from tracked files; map to runner + cwd.
+
+    One check per nearest-marker directory (deduped). Test dirs with no marker
+    up-tree are skipped. Returns ``[]`` outside a git repo.
+    """
+    root = Path(root)
+    # Collect candidate test directories from tracked file paths.
+    test_dirs: list[Path] = []
+    seen_dirs: set[Path] = set()
+    for rel in _tracked_files(root):
+        parts = Path(rel).parts
+        for i, part in enumerate(parts):
+            if part in _TEST_DIR_NAMES:
+                d = root / Path(*parts[: i + 1])
+                if d not in seen_dirs:
+                    seen_dirs.add(d)
+                    test_dirs.append(d)
+    checks: list[dict[str, Any]] = []
+    seen_cwd: set[str] = set()
+    for test_dir in test_dirs:
+        found = _nearest_marker_dir(root, test_dir)
+        if found is None:
+            continue
+        cwd, command = found
+        if cwd in seen_cwd:
+            continue
+        seen_cwd.add(cwd)
+        name = cwd.replace("/", "-") if cwd != "." else "root"
+        checks.append({
+            "name": name,
+            "command": command,
+            "working_directory": cwd,
+            "required": True,
+        })
+    return checks
 
 
 def _check(name: str, command: str, required: bool) -> dict[str, Any]:
@@ -111,13 +286,22 @@ def _detect_go(root: Path) -> dict[str, Any]:
 
 
 def _required(check: dict[str, Any]) -> dict[str, Any]:
-    """A copy of ``check`` forced to required=True.
+    """A copy of ``check`` forced to required=True, preserving cwd.
 
     v1 has a single gating tier: every check in a saved profile is required.
     Detection may mark a check optional (e.g. mypy); when it becomes a gate we
-    normalize it to required so persistence and run_profile gate on it.
+    normalize it to required so persistence and run_profile gate on it. A
+    per-check ``working_directory`` (monorepo paths) is carried through.
     """
-    return {"name": check["name"], "command": check["command"], "required": True}
+    out: dict[str, Any] = {
+        "name": check["name"],
+        "command": check["command"],
+        "required": True,
+    }
+    cwd = check.get("working_directory")
+    if isinstance(cwd, str) and cwd:
+        out["working_directory"] = cwd
+    return out
 
 
 def _commands_label(checks: list[dict[str, Any]]) -> str:
@@ -199,6 +383,26 @@ def detect(repo_root: Path | str) -> dict[str, Any]:
     low-confidence empty candidate so the caller falls back to ad-hoc verification.
     """
     root = Path(repo_root)
+    # Precedence 1: emittable justfile verification recipes are authoritative
+    # and suppress git-tree discovery entirely.
+    justfile_checks = parse_justfile_recipes(root)
+    if justfile_checks:
+        return {
+            "stack": "justfile",
+            "confidence": "high",
+            "reasons": ["justfile"],
+            "candidate_checks": justfile_checks,
+        }
+    # Precedence 2: monorepo test dirs discovered from the git tree.
+    git_tree_checks = discover_git_tree_checks(root)
+    if git_tree_checks:
+        return {
+            "stack": "monorepo",
+            "confidence": "high",
+            "reasons": ["git-tree"],
+            "candidate_checks": git_tree_checks,
+        }
+    # Precedence 3: existing root single-stack detection (unchanged below).
     # Strong markers first. Use is_file() so a directory that happens to share a
     # marker name (e.g. a dir literally named pyproject.toml) is not mistaken for
     # the file and does not crash a later read_text().
