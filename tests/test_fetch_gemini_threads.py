@@ -20,6 +20,7 @@ from fetch_gemini_threads import (
     _derive_outcome,
     clear_run_tracking,
     derive_record_fields,
+    format_judge_verdict_summary,
     merge_judge_results,
     any_active_run,
     effective_rereview_limit,
@@ -1256,3 +1257,51 @@ def test_resolve_judge_phase_infers_cycle_for_normal_fetch():
 def test_resolve_judge_phase_explicit_flag_wins():
     assert resolve_judge_phase("cycle", record_run=True) == "cycle"
     assert resolve_judge_phase("complete", record_run=False) == "complete"
+
+
+class TestFormatJudgeVerdictSummary:
+    def _results(self, verdicts: dict[str, int]) -> dict[str, dict]:
+        """Build fake judge_results keyed by thread id."""
+        results = {}
+        i = 0
+        for verdict, count in verdicts.items():
+            for _ in range(count):
+                results[f"id{i}"] = {"status": "ok", "verdict": verdict}
+                i += 1
+        return results
+
+    def test_single_verdict_type(self):
+        results = self._results({"valid_actionable": 3})
+        out = format_judge_verdict_summary(results, "cycle")
+        assert "[loop] judge (cycle):" in out
+        assert "3 thread(s) evaluated" in out
+        assert "valid_actionable: 3" in out
+
+    def test_multiple_verdict_types_sorted_by_count(self):
+        results = self._results({"false_positive": 1, "valid_actionable": 2})
+        out = format_judge_verdict_summary(results, "complete")
+        assert "[loop] judge (complete):" in out
+        # valid_actionable (2) should come before false_positive (1) by count.
+        assert out.index("valid_actionable") < out.index("false_positive")
+
+    def test_skipped_threads_excluded_from_count(self):
+        results = {
+            "id0": {"status": "ok", "verdict": "valid_actionable"},
+            "id1": {"status": "skipped", "verdict": None},
+        }
+        out = format_judge_verdict_summary(results, "cycle")
+        # Only 1 thread evaluated (the skipped one doesn't count).
+        assert "1 thread(s) evaluated" in out
+
+    def test_all_skipped_shows_fallback(self):
+        results = {
+            "id0": {"status": "skipped", "skip_reason": "no key"},
+            "id1": {"status": "skipped", "skip_reason": "no key"},
+        }
+        out = format_judge_verdict_summary(results, "cycle")
+        assert "all skipped" in out
+
+    def test_phase_label_in_output(self):
+        results = self._results({"needs_human": 1})
+        assert "cycle" in format_judge_verdict_summary(results, "cycle")
+        assert "complete" in format_judge_verdict_summary(results, "complete")

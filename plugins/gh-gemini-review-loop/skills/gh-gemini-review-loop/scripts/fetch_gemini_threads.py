@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1213,6 +1214,34 @@ def wait_for_stable_review(
         time.sleep(min(interval_seconds, max(0.0, deadline - now)))
 
 
+def format_judge_verdict_summary(
+    judge_results: dict[str, dict[str, Any]],
+    phase: str,
+) -> str:
+    """One-line verdict breakdown for agent narration relay.
+
+    Printed after the markdown thread list so the agent can copy it verbatim
+    into its text response. Only threads where the judge actually produced a
+    verdict (status == "ok") are counted; skipped threads are excluded.
+
+    Output format (intended for literal copy-paste into agent text):
+        [loop] judge (cycle): 3 thread(s) — valid_actionable: 2, false_positive: 1
+    """
+    verdicts: Counter[str] = Counter(
+        r["verdict"]
+        for r in judge_results.values()
+        if r.get("status") == "ok" and r.get("verdict")
+    )
+    if not verdicts:
+        return f"[loop] judge ({phase}): evaluated {len(judge_results)} thread(s) — all skipped/errored"
+    total = sum(verdicts.values())
+    breakdown = ", ".join(
+        f"{verdict}: {count}"
+        for verdict, count in sorted(verdicts.items(), key=lambda kv: -kv[1])
+    )
+    return f"[loop] judge ({phase}): {total} thread(s) evaluated — {breakdown}"
+
+
 def render_markdown(
     pr: dict[str, Any],
     threads: list[dict[str, Any]],
@@ -1948,6 +1977,12 @@ def main() -> int:
             ),
             end="",
         )
+        if judge_status.get("ran") and judge_results:
+            print(
+                format_judge_verdict_summary(
+                    judge_results, judge_status.get("phase", "cycle")
+                ),
+            )
     return 0
 
 

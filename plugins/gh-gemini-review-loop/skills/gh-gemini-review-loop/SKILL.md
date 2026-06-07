@@ -335,7 +335,7 @@ Required narration points:
 | Phase | Narration line |
 |---|---|
 | Before script fetch | `[loop] cycle N/<cap> — fetching threads from PR #<num>...` |
-| After fetch, before fixes | `[loop] cycle N/<cap> — <K> actionable thread(s) (severity: <breakdown>). Fixing.` + judge eval tip if first time (see [Discoverability](#discoverability)) |
+| After fetch, before fixes | `[loop] cycle N/<cap> — <K> actionable thread(s) (severity: <breakdown>). Fixing.` + judge eval tip if first time (see [Discoverability](#discoverability)) + if judge ran: copy the `[loop] judge (<phase>): …` line from script stdout verbatim |
 | After fix attempt, before verify | `[loop] cycle N/<cap> — fixes applied. Verifying.` |
 | After verify | `[loop] cycle N/<cap> — verified (<test summary>).` |
 | Before push | `[loop] cycle N/<cap> — committing and pushing <commit-sha>...` |
