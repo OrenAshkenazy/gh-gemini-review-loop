@@ -1116,14 +1116,42 @@ def thread_fingerprint(threads: list[dict[str, Any]]) -> str:
 def review_activity_fingerprint(
     pull_request: dict[str, Any],
     author: str,
+    after_iso: str | None = None,
 ) -> str | None:
+    """Compute a hash of all Gemini review activity in ``pull_request``.
+
+    Returns ``None`` when no matching activity exists (caller keeps polling).
+
+    ``after_iso`` — optional ISO-8601 lower-bound (exclusive).  When set,
+    only reviews submitted after that timestamp and only threads whose newest
+    comment was created after that timestamp are counted.  Pass the timestamp
+    of the re-review request comment so the waiter ignores prior-cycle
+    activity and only returns once Gemini has genuinely responded to the new
+    cycle's push.
+    """
     reviews = filter_reviews(pull_request, author)
+    if after_iso:
+        reviews = [r for r in reviews if (r.get("submittedAt") or "") > after_iso]
+
     authored_threads = filter_threads(
         pull_request,
         author=author,
         include_resolved=True,
         include_outdated=True,
     )
+    if after_iso:
+        # A thread counts as "new" when at least one of its comments was
+        # created after the anchor.  Using the newest comment timestamp means
+        # a thread where Gemini added a follow-up reply after the re-review
+        # request is also captured correctly.
+        authored_threads = [
+            t for t in authored_threads
+            if any(
+                (c.get("createdAt") or "") > after_iso
+                for c in t.get("comments", [])
+            )
+        ]
+
     if not reviews and not authored_threads:
         return None
 
@@ -1138,18 +1166,37 @@ def wait_for_stable_review(
     timeout_seconds: int,
     interval_seconds: int,
     quiet_seconds: int,
+    after_iso: str | None = None,
 ) -> dict[str, Any]:
+    """Poll until ``author``'s review activity on ``pr`` is present and stable.
+
+    ``after_iso`` anchors the wait to a specific point in time (ISO-8601,
+    exclusive).  When set, review activity submitted at or before that
+    timestamp is ignored — the poller only returns once Gemini has posted
+    activity *after* that timestamp.  This prevents a cycle-2 wait from
+    returning immediately because cycle-1's review is already stable.
+
+    Typical usage: pass the ``createdAt`` of the re-review request comment
+    that triggered the new cycle, so the wait is anchored to that request.
+    """
     deadline = time.monotonic() + timeout_seconds
     last_fingerprint: str | None = None
     stable_since: float | None = None
 
+    if after_iso:
+        print(
+            f"Waiting for {author} review activity after {after_iso}...",
+            file=sys.stderr,
+        )
+
     while True:
         pull_request = fetch_threads(pr)
-        fingerprint = review_activity_fingerprint(pull_request, author)
+        fingerprint = review_activity_fingerprint(pull_request, author, after_iso=after_iso)
         now = time.monotonic()
 
         if fingerprint is None:
-            print(f"Waiting for {author} review activity...", file=sys.stderr)
+            if not after_iso:
+                print(f"Waiting for {author} review activity...", file=sys.stderr)
         elif fingerprint != last_fingerprint:
             print(f"Detected {author} review activity; waiting for it to settle...", file=sys.stderr)
             last_fingerprint = fingerprint
@@ -1262,6 +1309,17 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=900, help="Seconds to wait with --wait. Default: 900.")
     parser.add_argument("--interval", type=int, default=20, help="Polling interval in seconds with --wait. Default: 20.")
     parser.add_argument("--quiet-period", type=int, default=45, help="Stable activity period in seconds with --wait. Default: 45.")
+    parser.add_argument(
+        "--after",
+        metavar="ISO8601",
+        default=None,
+        help=(
+            "With --wait, ignore Gemini activity submitted at or before this "
+            "ISO-8601 timestamp. Pass the createdAt of the re-review request "
+            "comment so the waiter only returns once Gemini has genuinely "
+            "responded to the new cycle's push, not to prior-cycle reviews."
+        ),
+    )
     parser.add_argument(
         "--resolve-outdated",
         dest="resolve_outdated",
@@ -1560,6 +1618,7 @@ def main() -> int:
                 timeout_seconds=args.timeout,
                 interval_seconds=args.interval,
                 quiet_seconds=args.quiet_period,
+                after_iso=args.after,
             )
         else:
             pull_request = fetch_threads(pr)

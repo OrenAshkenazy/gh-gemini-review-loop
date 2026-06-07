@@ -530,12 +530,19 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
     - For this skill's full loop, commit fixes to the PR branch and push to the remote branch.
     - Use a clear commit message such as `fix: address Gemini Code Assist review`.
     - Post the re-review request after a successful push only if this would not exceed the configured total re-review request cap.
-    - Default comment:
-      - `@gemini-code-assist please review the latest changes.`
+    - **Capture the re-review comment timestamp** immediately after posting. This is the anchor for the next `--wait` call:
+      ```bash
+      REREVIEW_AT=$(gh api repos/{owner}/{repo}/issues/{pr}/comments \
+          --method POST --field body="@gemini-code-assist please review the latest changes." \
+          --jq '.created_at')
+      ```
+      If `gh api` is inconvenient, fall back to: `REREVIEW_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")` captured immediately before posting. Either approach produces a valid `--after` anchor.
     - If the repository uses a different Gemini trigger phrase, use the repo-specific phrase when known.
     - If the loop will continue after this push (the cycle is **not** terminal), emit the per-cycle receipt now, before looping back to step 3:
       `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --cycle-summary --fixed-count <n-this-cycle> --verification <passed|failed|skipped>`
       then show the printed `[loop] Summary` block to the user. This is read-only — it does not write `runs.jsonl`. Skip it only when this cycle is itself terminal (the `--record-run` receipt below covers that cycle).
+    - On the **next** `--wait` call, pass `--after "$REREVIEW_AT"` so the poller ignores prior-cycle Gemini activity and only returns once Gemini has genuinely responded to the new push:
+      `python3 "..." --wait --after "$REREVIEW_AT"`
    - After the loop reaches a terminal state, record the run exactly once:
      `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --record-run --fixed-count <n> --verification <passed|failed|skipped> [--outcome <state>]`
      then show the printed `[loop] Summary` block to the user.
@@ -561,8 +568,13 @@ By default this resolves unresolved outdated Gemini threads AND addressed-by-rep
 Useful options:
 
 ```bash
-# Wait for Gemini review activity to appear and settle
+# Wait for Gemini review activity to appear and settle (cycle 1 / initial review)
 python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --wait
+
+# Wait for a NEW Gemini review after a re-review request (cycle 2+).
+# Pass the re-review comment timestamp so prior-cycle activity is ignored.
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+    --wait --after "$REREVIEW_AT"
 
 # Read-only fetch (no GraphQL mutations)
 python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \

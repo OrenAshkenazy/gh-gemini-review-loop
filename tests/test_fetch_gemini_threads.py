@@ -38,6 +38,7 @@ from fetch_gemini_threads import (
     record_cycle,
     render_receipt,
     rereview_requests,
+    review_activity_fingerprint,
     save_sticky_state,
     select_stats_records,
     severity_counts,
@@ -429,6 +430,108 @@ class TestThreadFingerprint:
         b = thread_fingerprint([{"path": "p", "line": 1,
                                   "comments": [{"author": {"login": BOT}, "body": "Y"}]}])
         assert a != b
+
+
+# ---------------------------------------------------------------------------
+# review_activity_fingerprint + after_iso anchor
+# ---------------------------------------------------------------------------
+
+def _pr_with_review(submitted_at: str) -> dict:
+    """Minimal pull_request fixture with one Gemini review at submitted_at."""
+    return {
+        "reviewThreads": {"nodes": []},
+        "reviews": {"nodes": [
+            {"author": {"login": BOT}, "submittedAt": submitted_at, "state": "COMMENTED"},
+        ]},
+        "comments": {"nodes": []},
+    }
+
+
+def _pr_with_thread_comment(created_at: str) -> dict:
+    """Minimal pull_request fixture with one Gemini thread comment at created_at."""
+    return {
+        "reviewThreads": {"nodes": [
+            {
+                "isResolved": False,
+                "isOutdated": False,
+                "path": "src/x.py",
+                "line": 1,
+                "comments": {"nodes": [
+                    {"author": {"login": BOT}, "body": "![medium](x) fix", "createdAt": created_at},
+                ]},
+            },
+        ]},
+        "reviews": {"nodes": []},
+        "comments": {"nodes": []},
+    }
+
+
+class TestReviewActivityFingerprint:
+    # --- no after_iso (existing behaviour) ---
+
+    def test_none_when_no_activity(self):
+        pr = {"reviewThreads": {"nodes": []}, "reviews": {"nodes": []}, "comments": {"nodes": []}}
+        assert review_activity_fingerprint(pr, BOT) is None
+
+    def test_non_none_when_review_present(self):
+        pr = _pr_with_review("2026-06-07T10:00:00Z")
+        assert review_activity_fingerprint(pr, BOT) is not None
+
+    def test_different_review_bodies_produce_different_fingerprints(self):
+        pr1 = _pr_with_review("2026-06-07T10:00:00Z")
+        pr2 = _pr_with_review("2026-06-07T11:00:00Z")
+        assert review_activity_fingerprint(pr1, BOT) != review_activity_fingerprint(pr2, BOT)
+
+    # --- after_iso filters out old activity ---
+
+    def test_none_when_review_before_anchor(self):
+        pr = _pr_with_review("2026-06-07T09:00:00Z")
+        assert review_activity_fingerprint(pr, BOT, after_iso="2026-06-07T10:00:00Z") is None
+
+    def test_none_when_review_exactly_at_anchor(self):
+        # Exclusive lower bound: activity AT the anchor timestamp is treated as
+        # "not new" (the re-review comment itself has that same timestamp).
+        pr = _pr_with_review("2026-06-07T10:00:00Z")
+        assert review_activity_fingerprint(pr, BOT, after_iso="2026-06-07T10:00:00Z") is None
+
+    def test_non_none_when_review_after_anchor(self):
+        pr = _pr_with_review("2026-06-07T10:00:01Z")
+        assert review_activity_fingerprint(pr, BOT, after_iso="2026-06-07T10:00:00Z") is not None
+
+    def test_none_when_thread_comment_before_anchor(self):
+        pr = _pr_with_thread_comment("2026-06-07T09:59:00Z")
+        assert review_activity_fingerprint(pr, BOT, after_iso="2026-06-07T10:00:00Z") is None
+
+    def test_non_none_when_thread_comment_after_anchor(self):
+        pr = _pr_with_thread_comment("2026-06-07T10:00:01Z")
+        assert review_activity_fingerprint(pr, BOT, after_iso="2026-06-07T10:00:00Z") is not None
+
+    def test_mixed_only_new_review_counts(self):
+        # One old review (should be filtered), one new review (should count).
+        pr = {
+            "reviewThreads": {"nodes": []},
+            "reviews": {"nodes": [
+                {"author": {"login": BOT}, "submittedAt": "2026-06-07T09:00:00Z", "state": "COMMENTED"},
+                {"author": {"login": BOT}, "submittedAt": "2026-06-07T11:00:00Z", "state": "COMMENTED"},
+            ]},
+            "comments": {"nodes": []},
+        }
+        anchor = "2026-06-07T10:00:00Z"
+        # Without anchor: sees both reviews
+        fp_all = review_activity_fingerprint(pr, BOT)
+        # With anchor: only the new review
+        pr_old_only = _pr_with_review("2026-06-07T09:00:00Z")
+        pr_new_only = _pr_with_review("2026-06-07T11:00:00Z")
+        fp_anchored = review_activity_fingerprint(pr, BOT, after_iso=anchor)
+        fp_new_only = review_activity_fingerprint(pr_new_only, BOT, after_iso=anchor)
+        assert fp_anchored is not None
+        assert fp_anchored == fp_new_only  # anchored result matches "new review only"
+        assert fp_anchored != fp_all       # differs from the unanchored result
+
+    def test_other_author_not_counted(self):
+        pr = _pr_with_review("2026-06-07T11:00:00Z")
+        # A different author than BOT should not match
+        assert review_activity_fingerprint(pr, "other-bot", after_iso="2026-06-07T10:00:00Z") is None
 
 
 # ---------------------------------------------------------------------------
