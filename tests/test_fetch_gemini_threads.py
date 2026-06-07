@@ -21,6 +21,7 @@ from fetch_gemini_threads import (
     clear_run_tracking,
     derive_record_fields,
     detect_no_progress,
+    format_judge_thread_table,
     format_judge_verdict_summary,
     merge_judge_results,
     any_active_run,
@@ -1306,6 +1307,77 @@ class TestFormatJudgeVerdictSummary:
         results = self._results({"needs_human": 1})
         assert "cycle" in format_judge_verdict_summary(results, "cycle")
         assert "complete" in format_judge_verdict_summary(results, "complete")
+
+
+class TestFormatJudgeThreadTable:
+    def _thread(self, tid, path="src/x.py", line=10, sev_comment=""):
+        body = f"![{sev_comment}](url)" if sev_comment else "issue here"
+        return {
+            "id": tid,
+            "isResolved": False,
+            "isOutdated": False,
+            "path": path,
+            "line": line,
+            "comments": [{"author": {"login": "gemini-code-assist"}, "body": body}],
+        }
+
+    def test_header_format(self):
+        threads = [self._thread("t1")]
+        results = {"t1": {"status": "ok", "verdict": "valid_actionable",
+                           "recommended_action": "fix", "confidence": 0.91}}
+        out = format_judge_thread_table(threads, results, "cycle")
+        assert out.startswith("[loop] judge eval (cycle): 1 thread(s)")
+
+    def test_per_thread_row_contains_path_verdict_action_conf(self):
+        threads = [self._thread("t1", path="src/foo.py", line=42, sev_comment="high")]
+        results = {"t1": {"status": "ok", "verdict": "valid_actionable",
+                           "recommended_action": "fix", "confidence": 0.91}}
+        out = format_judge_thread_table(threads, results, "cycle")
+        assert "src/foo.py:42" in out
+        assert "valid_actionable" in out
+        assert "fix" in out
+        assert "0.91" in out
+
+    def test_skipped_thread_shows_reason(self):
+        threads = [self._thread("t1")]
+        results = {"t1": {"status": "skipped", "skip_reason": "no API key"}}
+        out = format_judge_thread_table(threads, results, "cycle")
+        assert "skipped" in out
+        assert "no API key" in out
+
+    def test_not_evaluated_thread(self):
+        threads = [self._thread("t1")]
+        results = {}  # no entry for t1
+        out = format_judge_thread_table(threads, results, "complete")
+        assert "not evaluated" in out
+
+    def test_multiple_threads_indexed(self):
+        threads = [self._thread("t1"), self._thread("t2", path="src/bar.py", line=5)]
+        results = {
+            "t1": {"status": "ok", "verdict": "valid_actionable",
+                   "recommended_action": "fix", "confidence": 0.9},
+            "t2": {"status": "ok", "verdict": "needs_human",
+                   "recommended_action": "escalate", "confidence": 0.8},
+        }
+        out = format_judge_thread_table(threads, results, "cycle")
+        lines = out.splitlines()
+        assert lines[0].startswith("[loop] judge eval (cycle): 2 thread(s)")
+        assert "  1 " in lines[1]
+        assert "  2 " in lines[2]
+
+    def test_phase_label_in_header(self):
+        threads = [self._thread("t1")]
+        results = {"t1": {"status": "ok", "verdict": "valid_actionable",
+                           "recommended_action": "fix", "confidence": 0.85}}
+        assert "complete" in format_judge_thread_table(threads, results, "complete")
+        assert "cycle" in format_judge_thread_table(threads, results, "cycle")
+
+    def test_confidence_non_numeric_does_not_crash(self):
+        threads = [self._thread("t1")]
+        results = {"t1": {"status": "ok", "verdict": "valid_actionable",
+                           "recommended_action": "fix", "confidence": "not-a-number"}}
+        out = format_judge_thread_table(threads, results, "cycle")
+        assert "?" in out  # fallback for bad confidence
 
 
 class TestDetectNoProgress:

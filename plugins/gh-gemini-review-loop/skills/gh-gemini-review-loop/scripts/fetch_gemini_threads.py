@@ -1281,6 +1281,52 @@ def format_judge_verdict_summary(
     return f"[loop] judge ({phase}): {total} thread(s) evaluated — {breakdown}"
 
 
+def format_judge_thread_table(
+    threads: list[dict[str, Any]],
+    judge_results: dict[str, dict[str, Any]],
+    phase: str,
+) -> str:
+    """Per-thread judge decision table for agent narration relay.
+
+    Printed after the markdown thread list so the agent can copy it verbatim
+    into its text response. Each row shows the thread location, severity,
+    verdict, recommended action, and confidence — all in one place, outside
+    the collapsed thread markdown block.
+
+    Format:
+        [loop] judge eval (cycle): 3 thread(s)
+          1 src/foo.py:42 [high] — valid_actionable · fix · conf 0.91
+          2 src/bar.py:15 [medium] — needs_human · escalate · conf 0.84
+          3 src/baz.py:7 [low] — skipped (no API key)
+    """
+    rows = []
+    for i, thread in enumerate(threads, 1):
+        path = thread.get("path") or "?"
+        line = thread.get("line") or thread.get("originalLine") or "?"
+        sev = thread_severity(thread)
+        tid = thread.get("id", "")
+        jr = judge_results.get(tid)
+        if jr and jr.get("status") == "ok":
+            verdict = jr.get("verdict", "?")
+            action = jr.get("recommended_action", "?")
+            conf = jr.get("confidence", 0.0)
+            try:
+                conf_str = f"{float(conf):.2f}"
+            except (TypeError, ValueError):
+                conf_str = "?"
+            rows.append(
+                f"  {i} {path}:{line} [{sev}] — {verdict} · {action} · conf {conf_str}"
+            )
+        elif jr and jr.get("status") == "skipped":
+            reason = jr.get("skip_reason", "unknown")
+            rows.append(f"  {i} {path}:{line} [{sev}] — skipped ({reason})")
+        else:
+            rows.append(f"  {i} {path}:{line} [{sev}] — not evaluated")
+    n = len(threads)
+    header = f"[loop] judge eval ({phase}): {n} thread(s)"
+    return "\n".join([header] + rows)
+
+
 def render_markdown(
     pr: dict[str, Any],
     threads: list[dict[str, Any]],
@@ -2032,8 +2078,8 @@ def main() -> int:
         )
         if judge_status.get("ran") and judge_results:
             print(
-                format_judge_verdict_summary(
-                    judge_results, judge_status.get("phase", "cycle")
+                format_judge_thread_table(
+                    threads, judge_results, judge_status.get("phase", "cycle")
                 ),
             )
         if no_progress_flag:
