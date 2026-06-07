@@ -11,6 +11,13 @@ Why block at git push rather than at re-review comment posting?
 git push is the natural commit point that separates cycles. Blocking here
 gives the agent a clear, one-step fix: run --cycle-summary, then push.
 
+The gate error message includes a compact snapshot of the run state read
+directly from local state.json (no subprocess, no side effects). This means
+the key data appears in the tool error even if the agent never relays the
+--cycle-summary stdout to the user. Hooks cannot verify what the agent
+includes in its text response — that enforcement lives in the SKILL.md
+<HARD-GATE> block — but this snapshot ensures the data is surfaced.
+
 Fails OPEN: any error (not a repo, bad JSON, import failure) allows the push.
 A correctness aid must never wedge normal git operations.
 """
@@ -39,14 +46,15 @@ _GIT_PUSH_RE = re.compile(r"\bgit\s+push\b")
 BLOCK_TEMPLATE = (
     "[gh-gemini-review-loop] A Gemini review loop is active for {repo} and the "
     "per-cycle summary has not been emitted yet (update_seq={update_seq} > "
-    "last_summary_seq={last_summary_seq}). Run --cycle-summary BEFORE pushing:\n\n"
+    "last_summary_seq={last_summary_seq}).\n\n"
+    "{snapshot}"
+    "Run --cycle-summary, PRINT ITS FULL OUTPUT IN YOUR TEXT RESPONSE, then push:\n\n"
     "  python3 \"$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/"
     "fetch_gemini_threads.py\" \\\n"
     "      --pr {pr_url} \\\n"
     "      --cycle-summary \\\n"
     "      --fixed-count <n> \\\n"
-    "      --verification <passed|failed|skipped>\n\n"
-    "Print the full output to the user, then push."
+    "      --verification <passed|failed|skipped>"
 )
 
 
@@ -55,8 +63,8 @@ def stale_summary_for_push(repo: str) -> dict[str, Any] | None:
 
     A push is blocked when the active loop for ``repo`` has advanced
     (``update_seq > 0``) without a summary being emitted since
-    (``last_summary_seq`` lags). Returns a dict with ``pr_number``,
-    ``update_seq``, and ``last_summary_seq`` for building the error message.
+    (``last_summary_seq`` lags). Returns a dict with run fields for building
+    the error message and snapshot.
     """
     result = find_active_run(repo)
     if result is None:
@@ -68,7 +76,37 @@ def stale_summary_for_push(repo: str) -> dict[str, Any] | None:
         "pr_number": pr_number,
         "update_seq": run.get("update_seq", "?"),
         "last_summary_seq": run.get("last_summary_seq", 0),
+        "finding_ids": run.get("finding_ids", []),
+        "finding_paths": run.get("finding_paths", []),
+        "started_at": run.get("started_at", ""),
     }
+
+
+def format_run_snapshot(info: dict[str, Any]) -> str:
+    """Build a compact state snapshot from local state.json data.
+
+    This is purely a formatting helper — no subprocess, no network, no side
+    effects. The data comes from what was accumulated by prior fetch calls.
+    Hooks cannot verify what the agent shows in its text response, so this
+    snapshot at least ensures the key data appears in the tool error output.
+    """
+    n_threads = len(info["finding_ids"])
+    n_paths = len(info["finding_paths"])
+    started = info["started_at"][:10] if info["started_at"] else "?"
+    paths_str = (
+        ", ".join(info["finding_paths"][:3])
+        + (" …" if n_paths > 3 else "")
+        if info["finding_paths"]
+        else "none recorded"
+    )
+    lines = [
+        "[loop] state snapshot (local only — call --cycle-summary for full receipt)",
+        f"  Started:          {started}",
+        f"  Fetches (cycles): {info['update_seq']}",
+        f"  Threads tracked:  {n_threads} across {n_paths} path(s)",
+        f"  Paths:            {paths_str}",
+    ]
+    return "\n".join(lines) + "\n\n"
 
 
 def main() -> int:
@@ -98,12 +136,14 @@ def main() -> int:
         return 0
 
     pr_url = f"https://github.com/{repo}/pull/{info['pr_number']}"
+    snapshot = format_run_snapshot(info)
     print(
         BLOCK_TEMPLATE.format(
             repo=repo,
             update_seq=info["update_seq"],
             last_summary_seq=info["last_summary_seq"],
             pr_url=pr_url,
+            snapshot=snapshot,
         ),
         file=sys.stderr,
     )

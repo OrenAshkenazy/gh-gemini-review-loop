@@ -11,7 +11,7 @@ import json
 import sys
 
 from fetch_gemini_threads import save_sticky_state
-from loop_summary_gate import stale_summary_for_push
+from loop_summary_gate import format_run_snapshot, stale_summary_for_push
 
 
 def _active_stale(
@@ -98,3 +98,58 @@ class TestStaleSummaryForPush:
             }},
         })
         assert stale_summary_for_push("o/r") is None
+
+    def test_info_includes_run_fields(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({
+            "o/r#5": {"run": {
+                "started_at": "2026-06-07T08:00:00Z",
+                "update_seq": 3,
+                "finding_ids": ["id1", "id2"],
+                "finding_paths": ["src/foo.py", "src/bar.py"],
+            }},
+        })
+        info = stale_summary_for_push("o/r")
+        assert info is not None
+        assert info["finding_ids"] == ["id1", "id2"]
+        assert info["finding_paths"] == ["src/foo.py", "src/bar.py"]
+        assert info["started_at"] == "2026-06-07T08:00:00Z"
+
+
+class TestFormatRunSnapshot:
+    def test_includes_key_fields(self):
+        info = {
+            "update_seq": 2,
+            "last_summary_seq": 0,
+            "finding_ids": ["a", "b", "c"],
+            "finding_paths": ["src/x.py"],
+            "started_at": "2026-06-07T08:00:00Z",
+        }
+        out = format_run_snapshot(info)
+        assert "2026-06-07" in out
+        assert "3" in out   # thread count
+        assert "src/x.py" in out
+        assert "snapshot" in out.lower()
+
+    def test_truncates_long_path_list(self):
+        info = {
+            "update_seq": 1,
+            "last_summary_seq": 0,
+            "finding_ids": [],
+            "finding_paths": ["a.py", "b.py", "c.py", "d.py"],
+            "started_at": "2026-06-07T08:00:00Z",
+        }
+        out = format_run_snapshot(info)
+        assert "…" in out  # truncation marker for > 3 paths
+
+    def test_handles_empty_run(self):
+        info = {
+            "update_seq": "?",
+            "last_summary_seq": 0,
+            "finding_ids": [],
+            "finding_paths": [],
+            "started_at": "",
+        }
+        out = format_run_snapshot(info)
+        assert "none recorded" in out
+        assert "?" in out  # started_at fallback
