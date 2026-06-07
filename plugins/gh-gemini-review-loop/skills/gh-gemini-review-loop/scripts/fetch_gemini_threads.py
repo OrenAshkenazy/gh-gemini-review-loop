@@ -407,8 +407,8 @@ def derive_record_fields(
     if judge_ran:
         needs_human = sum(
             1
-            for r in judge_results.values()
-            if r.get("verdict") == "needs_human"
+            for tid, r in judge_results.items()
+            if tid in current_actionable_ids and r.get("verdict") == "needs_human"
         )
     elif outcome == "human":
         needs_human = remaining_actionable
@@ -1457,13 +1457,15 @@ def main() -> int:
             f"(default: {DEFAULT_REREVIEW_LIMIT})."
         ),
     )
+    # Cleanup (resolve-outdated, resolve-addressed-by-reply) now always runs
+    # regardless of the re-review cap. --resolve-past-cap / --ignore-loop-limit
+    # are kept as accepted no-ops for backward compatibility with older scripts.
     parser.add_argument(
         "--resolve-past-cap",
         dest="ignore_loop_limit",
         action="store_true",
-        help="Allow --resolve-outdated / --resolve-addressed-by-reply even after the re-review cap is reached.",
+        help=argparse.SUPPRESS,
     )
-    # Deprecated alias for --resolve-past-cap. Kept for backward compat; hidden from --help.
     parser.add_argument(
         "--ignore-loop-limit",
         dest="ignore_loop_limit",
@@ -1752,14 +1754,7 @@ def main() -> int:
                 )
         rereviews = rereview_requests(pull_request, agent_login)
         limit_reached = len(rereviews) >= args.max_rereview_requests
-        cap_blocks_writes = limit_reached and not args.ignore_loop_limit
-        if args.resolve_outdated and cap_blocks_writes:
-            print(
-                f"warning: {len(rereviews)} Gemini re-review request(s) already exist; "
-                f"skipping outdated-thread resolution because the loop cap is {args.max_rereview_requests}.",
-                file=sys.stderr,
-            )
-        elif args.resolve_outdated:
+        if args.resolve_outdated:
             resolved_outdated = resolve_outdated_threads(
                 pull_request, args.author, dry_run=args.dry_run
             )
@@ -1768,13 +1763,7 @@ def main() -> int:
                 print(f"{tag} {resolved_outdated} outdated {args.author} thread(s).", file=sys.stderr)
                 if not args.dry_run:
                     pull_request = fetch_threads(pr)
-        if args.resolve_addressed_by_reply and cap_blocks_writes:
-            print(
-                f"warning: skipping addressed-by-reply resolution; "
-                f"re-review cap of {args.max_rereview_requests} already reached.",
-                file=sys.stderr,
-            )
-        elif args.resolve_addressed_by_reply:
+        if args.resolve_addressed_by_reply:
             resolved_addressed_by_reply = resolve_addressed_by_reply(
                 pull_request, args.author, dry_run=args.dry_run
             )

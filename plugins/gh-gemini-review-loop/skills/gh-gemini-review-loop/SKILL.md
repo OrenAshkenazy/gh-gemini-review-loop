@@ -334,16 +334,105 @@ Required narration points:
 
 | Phase | Narration line |
 |---|---|
-| Before script fetch | `[loop] cycle N/<cap> — fetching threads from PR #<num>...` |
-| After fetch, before fixes | `[loop] cycle N/<cap> — <K> actionable thread(s) (severity: <breakdown>). Fixing.` + judge eval tip if first time (see [Discoverability](#discoverability)) + if judge ran: copy the entire `[loop] judge eval (phase): …` block from script stdout verbatim (header + one row per thread) |
-| After fix attempt, before verify | `[loop] cycle N/<cap> — fixes applied. Verifying.` |
-| After verify | `[loop] cycle N/<cap> — verified (<test summary>).` |
-| Before push | `[loop] cycle N/<cap> — committing and pushing <commit-sha>...` |
+| Before script fetch | `[loop] session cycle N — re-review cap: M/K consumed. Fetching threads from PR #<num>...` where N is the cycle number within this session (1-based), M is how many re-reviews already exist on the PR, K is the cap. This is the key fix for the "cycle 1/4 but cap is 3/4" confusion: always show both session-local position and cap state separately. |
+| After fetch, before fixes | `[loop] session cycle N — <K> actionable thread(s) (severity: <breakdown>). Fixing.` + judge eval tip if first time (see [Discoverability](#discoverability)) + if judge ran: copy the entire `[loop] judge eval (phase): …` block from script stdout verbatim (header + one row per thread) |
+| After fix attempt, before verify | `[loop] session cycle N — fixes applied. Verifying via profile runner.` |
+| After verify | `[loop] session cycle N — verified (<test summary>).` |
+| Before push | `[loop] session cycle N — committing and pushing <commit-sha>...` |
 | **Before push (HARD GATE)** | Run `--cycle-summary` and print its full output (`[loop] Cycle receipt` block). Only then push. |
-| After push, before re-review | `[loop] cycle N/<cap> — pushed. Requesting Gemini re-review (cycle N consumed).` |
+| After push, before re-review | `[loop] session cycle N — pushed. Requesting Gemini re-review. Cap now M/K.` |
 | Stop condition triggered | `[loop] STOP — <stop-condition>: <one-line explanation>.` |
 | Loop complete (all clean) | `[loop] DONE — 0 actionable threads remaining. Cycles used: N/<cap>.` |
 | Loop complete / stopped (after DONE/STOP) | `[loop] Summary` block (from `--record-run`) — print the full stdout; this is the terminal receipt |
+
+### Terminal thread breakdown (when remaining_actionable > 0)
+
+After printing the `[loop] Summary` block, when there are remaining actionable threads, render them in **three separate buckets** — never a single mixed "for human review" table. The buckets map directly to why each thread is still open:
+
+**Bucket 1 — Human decision required**
+
+Threads where the judge verdict was `needs_human`. These require a product/format/design call, not a code change. For each thread:
+
+```
+Human decision required
+
+1. <file>:<line> · <GitHub comment URL>
+   Finding: <what Gemini flagged, verbatim or closely paraphrased>
+   Why human: <concrete reason — format consistency, security policy, product behavior tradeoff>
+   Claude did not auto-fix this because <specific reason: changes report format behavior / requires policy decision / both options are valid>.
+   Options:
+   - <option A>
+   - <option B>
+```
+
+Example:
+```
+Human decision required
+
+1. main.py:828 · https://github.com/Owner/Repo/pull/9#discussion_r3369882171
+   Finding: OWASP tags appear in console and JSON reports, but not in Markdown.
+   Why human: this changes report format behavior. Both choices are valid.
+   Claude did not auto-fix this because it is a product decision, not a safe mechanical fix.
+   Options:
+   - Add OWASP tags to Markdown output for consistency.
+   - Keep Markdown simpler; document that OWASP tags are JSON/console only.
+```
+
+**Bucket 2 — Remaining because cap was reached**
+
+Threads that the judge classified as `valid_actionable` but the loop ran out of cycles before addressing them. **Do not label these as "human review"** and do not downgrade their severity — they remain valid, fixable issues. Do not use "low priority" unless the judge, reviewer, or user explicitly said so.
+
+```
+Remaining because cap was reached
+
+1. <file>:<line> · <GitHub comment URL>
+   Finding: <one-sentence description>
+   Judge: valid_actionable (conf <N>)
+   Reason not fixed: cap reached
+   Suggested handling: fix in next PR, or bump cap and re-run the loop
+
+2. ...
+```
+
+**Bucket 3 — Already fixed but still unresolved on GitHub**
+
+Threads where you applied a code fix in this loop, but the GitHub thread still shows UNRESOLVED. These are not open work items — they will become OUTDATED on the next Gemini review.
+
+```
+Already fixed but still unresolved on GitHub
+
+1. <file>:<line> · <GitHub comment URL>
+   Finding: <what Gemini originally flagged>
+   Status: fix applied in this session
+   Why still shown: code change shifts the line anchor; thread auto-resolves as OUTDATED on next Gemini review
+```
+
+**Omit any bucket with zero entries.** If every remaining thread fits bucket 1, just print bucket 1. Never print an empty bucket header.
+
+**Classification logic (in order of priority):**
+
+1. Judge verdict `needs_human` → bucket 1
+2. Thread from a prior Gemini review where you applied a code fix at that file/line in this session → bucket 3
+3. All other `valid_actionable` threads (new from latest review, or no fix attempted) → bucket 2
+
+**After the buckets — next step suggestions (always print):**
+
+```
+Next options:
+1. Bump cap and continue: re-run the loop with a higher cap (e.g. "run the Gemini loop with cap 5")
+2. Fix only the human decision: ask Claude to implement one of the options above
+3. Leave remaining cleanup for a follow-up PR
+```
+
+Adapt the suggestions to the actual state: if cap was not the stopping reason, omit option 1. If there are no human decisions, omit option 2.
+
+**Verification routing:**
+
+Always run verification through `run_profile.py` when a profile is confirmed for the repo:
+```bash
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/run_profile.py" owner/repo /path/to/repo
+```
+Feed its `verification` field into `--verification` and its full JSON output into `--verification-details`. Do not call `uv run pytest` or any test runner directly — route through the profile so metrics get consistent structured details. This matters even when you know the profile command (the runner times it, captures structured output, and sets the right exit code for downstream processing).
 
 Skip narration only when running in pure non-interactive batch mode (e.g. `gh pr create` chained into a script that captures output for later — but in Claude Code interactive sessions, never skip).
 

@@ -184,10 +184,12 @@ def format_run_summary(record: dict[str, Any], *, terminal: bool = True) -> str:
         )
         if ignored:
             lines.append(f"Ignored by judge: {ignored}")
-        if verdicts.get("needs_human", 0):
-            lines.append(f"Needs human by judge: {verdicts['needs_human']}")
-    lines.append(f"Remaining actionable: {record['remaining_actionable']}")
-    lines.append(f"Needs human: {record['needs_human']}")
+    valid_remaining = record.get("valid_actionable_remaining", record["remaining_actionable"])
+    needs_human = record.get("needs_human", 0)
+    if valid_remaining:
+        lines.append(f"Remaining valid actionable: {valid_remaining}")
+    if needs_human:
+        lines.append(f"Human decision required: {needs_human}")
     if record.get("addressed_by_reply"):
         lines.append(f"Addressed by reply: {record['addressed_by_reply']}")
     lines.append(f"Cycles used: {record['cycles_used']}/{record['cycle_cap']}")
@@ -413,6 +415,7 @@ def build_record(
     else:
         duration = _duration_seconds(started_at, ts)
     paths = list(finding_paths or [])
+    valid_actionable_remaining = max(0, remaining_actionable - needs_human)
     return {
         "schema_version": RECORD_SCHEMA_VERSION,
         "ts": ts,
@@ -423,6 +426,7 @@ def build_record(
         "fixed_count": fixed_count,
         "observed_fixed_count": observed_fixed_count,
         "remaining_actionable": remaining_actionable,
+        "valid_actionable_remaining": valid_actionable_remaining,
         "needs_human": needs_human,
         "addressed_by_reply": addressed_by_reply,
         "cycles_used": cycles_used,
