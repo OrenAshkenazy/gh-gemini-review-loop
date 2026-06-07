@@ -24,7 +24,7 @@ The loop doesn't assume its fixes are correct; it verifies them, gating every ch
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
 │ Set once, then silent         │ Returning runs are prompt-free and deterministic.                                         │
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
-│ Secure by design              │ Checks run shell-free with timeouts; pinned commands are saved only on confirmation.      │
+│ Secure by design              │ Pinned commands are saved only on confirmation.                                           │
 └───────────────────────────────┴───────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
