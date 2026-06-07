@@ -984,7 +984,7 @@ class TestCycleSummary:
         assert rc == 0
 
         out = capsys.readouterr().out
-        assert "[loop] Summary" in out
+        assert "[loop] Cycle receipt" in out      # mid-loop header, not terminal [loop] Summary
         assert "Findings fetched: 2" in out      # t1 + t2 accumulated
         assert "Fixed: 1" in out
         assert "Ignored by judge: 1" in out      # t2 false_positive, from accumulation

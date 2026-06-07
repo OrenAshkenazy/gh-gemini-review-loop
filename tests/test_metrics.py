@@ -152,6 +152,18 @@ class TestFormatRunSummary:
             "Time to clean PR: 12m",
         ]
 
+    def test_cycle_receipt_header_when_not_terminal(self):
+        # --cycle-summary path (terminal=False) uses a distinct header so users
+        # can tell mid-loop receipts from the final [loop] Summary.
+        out = metrics.format_run_summary(self._rec(), terminal=False)
+        lines = out.splitlines()
+        assert lines[0] == "[loop] Cycle receipt"
+        assert lines[1] == "Findings fetched: 7"
+
+    def test_terminal_header_explicit(self):
+        out = metrics.format_run_summary(self._rec(), terminal=True)
+        assert out.splitlines()[0] == "[loop] Summary"
+
     def test_observed_fixed_shown_when_differs_from_fixed(self):
         out = metrics.format_run_summary(
             self._rec(fixed_count=2, observed_fixed_count=1)

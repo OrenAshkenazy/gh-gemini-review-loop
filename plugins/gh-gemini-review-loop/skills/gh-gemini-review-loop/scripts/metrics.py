@@ -152,15 +152,21 @@ def format_auto_snapshot(record: dict[str, Any]) -> str:
     )
 
 
-def format_run_summary(record: dict[str, Any]) -> str:
+def format_run_summary(record: dict[str, Any], *, terminal: bool = True) -> str:
     """Human-readable receipt for one loop run.
 
     A receipt, not a dashboard: a small fixed core, plus optional lines that
     appear only when they carry signal (observed != fixed, judge verdicts > 0,
     addressed-by-reply > 0, a named failed check).
+
+    ``terminal=True`` (default) is the ``--record-run`` path; the header reads
+    ``[loop] Summary``. ``terminal=False`` is the mid-loop ``--cycle-summary``
+    path; the header reads ``[loop] Cycle receipt`` so users can distinguish
+    per-cycle snapshots from the final terminal receipt.
     """
+    header = "[loop] Summary" if terminal else "[loop] Cycle receipt"
     lines = [
-        "[loop] Summary",
+        header,
         f"Findings fetched: {record['findings_fetched']}",
         f"Fixed: {record['fixed_count']}",
     ]

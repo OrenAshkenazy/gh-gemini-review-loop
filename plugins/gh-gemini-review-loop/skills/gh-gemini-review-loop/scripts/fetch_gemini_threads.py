@@ -1889,7 +1889,7 @@ def main() -> int:
             if args.auto_snapshot:
                 print(metrics.format_auto_snapshot(record))
             else:
-                print(metrics.format_run_summary(record))
+                print(metrics.format_run_summary(record, terminal=bool(args.record_run)))
             return 0
         if args.post_receipt or args.sticky_receipt:
             sticky = args.sticky_receipt

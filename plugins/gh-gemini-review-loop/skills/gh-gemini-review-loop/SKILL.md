@@ -276,7 +276,7 @@ The script fetches the current thread state, derives counts, appends the record,
 
 ### Per-cycle summary block
 
-`--record-run` is terminal: it writes a record **and clears** the run accumulator, so it must be called exactly once at loop end. To show the `[loop] Summary` block **during** the loop — at the end of each cycle — use `--cycle-summary` instead:
+`--record-run` is terminal: it writes a record **and clears** the run accumulator, so it must be called exactly once at loop end. To show a mid-loop receipt **during** the loop — at the end of each cycle — use `--cycle-summary` instead:
 
 ```bash
 python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
@@ -285,14 +285,14 @@ python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_t
     --verification <passed|failed|skipped>
 ```
 
-`--cycle-summary` builds the record from the **accumulated** run state (findings and judge verdicts unioned across cycles so far) and prints the same `[loop] Summary` block — but it does **not** append to `runs.jsonl` and does **not** clear the accumulator. It is read-only and safe to call every cycle.
+`--cycle-summary` builds the record from the **accumulated** run state (findings and judge verdicts unioned across cycles so far) and prints a `[loop] Cycle receipt` block — distinct from the terminal `[loop] Summary` — but it does **not** append to `runs.jsonl` and does **not** clear the accumulator. It is read-only and safe to call every cycle.
 
 **Emit a receipt at the end of every cycle.** Which command depends on whether the cycle is also terminal:
 
 - **Non-terminal cycle** (the loop will push, re-review, and continue): run `--cycle-summary` right after the verify step. This is REQUIRED on every such cycle — do not skip it because fixes were small or verification was skipped.
 - **Terminal cycle** (this cycle hits a [stopping condition](#stopping-conditions) — clean, capped, human decision, regression, or no-progress): do **not** call `--cycle-summary`. The single `--record-run` call you make at loop end already prints the receipt for this cycle. Calling both would print two near-identical receipts back-to-back.
 
-So a clean two-cycle run prints two receipts: one from `--cycle-summary` at the end of cycle 1, one from `--record-run` at loop end. A run that stops on cycle 1 (like a human-decision deferral) prints exactly one receipt — from `--record-run`. Never emit two receipts on the same cycle.
+So a clean two-cycle run prints two receipts: one `[loop] Cycle receipt` from `--cycle-summary` at the end of cycle 1, one `[loop] Summary` from `--record-run` at loop end. A run that stops on cycle 1 (like a human-decision deferral) prints exactly one receipt — `[loop] Summary` from `--record-run`. Never emit two receipts on the same cycle.
 
 Do not call `--record-run` more than once per loop: each call clears the accumulator, so a second call would undercount `findings_fetched` and reset the duration. Use `--cycle-summary` for all mid-loop visibility.
 
@@ -339,7 +339,7 @@ Required narration points:
 | After fix attempt, before verify | `[loop] cycle N/<cap> — fixes applied. Verifying.` |
 | After verify | `[loop] cycle N/<cap> — verified (<test summary>).` |
 | Before push | `[loop] cycle N/<cap> — committing and pushing <commit-sha>...` |
-| **Before push (HARD GATE)** | Run `--cycle-summary` and print its full output. Only then push. |
+| **Before push (HARD GATE)** | Run `--cycle-summary` and print its full output (`[loop] Cycle receipt` block). Only then push. |
 | After push, before re-review | `[loop] cycle N/<cap> — pushed. Requesting Gemini re-review (cycle N consumed).` |
 | Stop condition triggered | `[loop] STOP — <stop-condition>: <one-line explanation>.` |
 | Loop complete (all clean) | `[loop] DONE — 0 actionable threads remaining. Cycles used: N/<cap>.` |
