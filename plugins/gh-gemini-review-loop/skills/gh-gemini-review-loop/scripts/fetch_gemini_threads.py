@@ -770,7 +770,10 @@ def find_active_run(repo_full: str) -> tuple[int, dict[str, Any]] | None:
     repo look active, the most recently started one wins.
     """
     candidates: list[tuple[str, int, dict[str, Any]]] = []
-    for key, entry in load_sticky_state().items():
+    state = load_sticky_state()
+    if not isinstance(state, dict):
+        return None
+    for key, entry in state.items():
         prefix, sep, suffix = key.rpartition("#")
         if not sep or prefix != repo_full:
             continue
