@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -406,8 +407,8 @@ def derive_record_fields(
     if judge_ran:
         needs_human = sum(
             1
-            for r in judge_results.values()
-            if r.get("verdict") == "needs_human"
+            for tid, r in judge_results.items()
+            if tid in current_actionable_ids and r.get("verdict") == "needs_human"
         )
     elif outcome == "human":
         needs_human = remaining_actionable
@@ -738,6 +739,45 @@ def _safe_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def detect_no_progress(pr: PullRequest, current_fingerprint: str) -> bool:
+    """True when the actionable thread fingerprint is unchanged from last cycle.
+
+    Call AFTER ``update_run_tracking`` so ``update_seq`` reflects the current
+    fetch. Reads the fingerprint stored by the previous call, stores the new
+    one, and returns True only when both conditions hold:
+
+    - ``update_seq >= 2``: at least two fetches have run (one per-cycle fix
+      attempt has already been made without clearing the set of open threads).
+    - The fingerprint is identical to the one stored on the previous call.
+
+    A True return means no observable code change resolved any of the threads
+    the agent was supposed to fix. The agent should stop with
+    ``--record-run --outcome no_progress``.
+
+    Fails OPEN: any state read/write error allows the push (correctness aid
+    must never wedge the loop).
+    """
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key, {})
+    if not isinstance(entry, dict):
+        entry = {}
+    run = entry.get("run", {})
+    if not isinstance(run, dict):
+        run = {}
+    prev_fingerprint = run.get("thread_fingerprint")
+    update_seq = _safe_int(run.get("update_seq", 0))
+    run["thread_fingerprint"] = current_fingerprint
+    entry["run"] = run
+    state[key] = entry
+    save_sticky_state(state)
+    return bool(
+        prev_fingerprint
+        and prev_fingerprint == current_fingerprint
+        and update_seq >= 2
+    )
 
 
 def any_active_run() -> bool:
@@ -1116,14 +1156,42 @@ def thread_fingerprint(threads: list[dict[str, Any]]) -> str:
 def review_activity_fingerprint(
     pull_request: dict[str, Any],
     author: str,
+    after_iso: str | None = None,
 ) -> str | None:
+    """Compute a hash of all Gemini review activity in ``pull_request``.
+
+    Returns ``None`` when no matching activity exists (caller keeps polling).
+
+    ``after_iso`` — optional ISO-8601 lower-bound (exclusive).  When set,
+    only reviews submitted after that timestamp and only threads whose newest
+    comment was created after that timestamp are counted.  Pass the timestamp
+    of the re-review request comment so the waiter ignores prior-cycle
+    activity and only returns once Gemini has genuinely responded to the new
+    cycle's push.
+    """
     reviews = filter_reviews(pull_request, author)
+    if after_iso:
+        reviews = [r for r in reviews if (r.get("submittedAt") or "") > after_iso]
+
     authored_threads = filter_threads(
         pull_request,
         author=author,
         include_resolved=True,
         include_outdated=True,
     )
+    if after_iso:
+        # A thread counts as "new" when at least one of its comments was
+        # created after the anchor.  Using the newest comment timestamp means
+        # a thread where Gemini added a follow-up reply after the re-review
+        # request is also captured correctly.
+        authored_threads = [
+            t for t in authored_threads
+            if any(
+                (c.get("createdAt") or "") > after_iso
+                for c in t.get("comments", [])
+            )
+        ]
+
     if not reviews and not authored_threads:
         return None
 
@@ -1138,18 +1206,37 @@ def wait_for_stable_review(
     timeout_seconds: int,
     interval_seconds: int,
     quiet_seconds: int,
+    after_iso: str | None = None,
 ) -> dict[str, Any]:
+    """Poll until ``author``'s review activity on ``pr`` is present and stable.
+
+    ``after_iso`` anchors the wait to a specific point in time (ISO-8601,
+    exclusive).  When set, review activity submitted at or before that
+    timestamp is ignored — the poller only returns once Gemini has posted
+    activity *after* that timestamp.  This prevents a cycle-2 wait from
+    returning immediately because cycle-1's review is already stable.
+
+    Typical usage: pass the ``createdAt`` of the re-review request comment
+    that triggered the new cycle, so the wait is anchored to that request.
+    """
     deadline = time.monotonic() + timeout_seconds
     last_fingerprint: str | None = None
     stable_since: float | None = None
 
+    if after_iso:
+        print(
+            f"Waiting for {author} review activity after {after_iso}...",
+            file=sys.stderr,
+        )
+
     while True:
         pull_request = fetch_threads(pr)
-        fingerprint = review_activity_fingerprint(pull_request, author)
+        fingerprint = review_activity_fingerprint(pull_request, author, after_iso=after_iso)
         now = time.monotonic()
 
         if fingerprint is None:
-            print(f"Waiting for {author} review activity...", file=sys.stderr)
+            if not after_iso:
+                print(f"Waiting for {author} review activity...", file=sys.stderr)
         elif fingerprint != last_fingerprint:
             print(f"Detected {author} review activity; waiting for it to settle...", file=sys.stderr)
             last_fingerprint = fingerprint
@@ -1164,6 +1251,80 @@ def wait_for_stable_review(
             )
 
         time.sleep(min(interval_seconds, max(0.0, deadline - now)))
+
+
+def format_judge_verdict_summary(
+    judge_results: dict[str, dict[str, Any]],
+    phase: str,
+) -> str:
+    """One-line verdict breakdown for agent narration relay.
+
+    Printed after the markdown thread list so the agent can copy it verbatim
+    into its text response. Only threads where the judge actually produced a
+    verdict (status == "ok") are counted; skipped threads are excluded.
+
+    Output format (intended for literal copy-paste into agent text):
+        [loop] judge (cycle): 3 thread(s) — valid_actionable: 2, false_positive: 1
+    """
+    verdicts: Counter[str] = Counter(
+        r["verdict"]
+        for r in judge_results.values()
+        if r.get("status") == "ok" and r.get("verdict")
+    )
+    if not verdicts:
+        return f"[loop] judge ({phase}): evaluated {len(judge_results)} thread(s) — all skipped/errored"
+    total = sum(verdicts.values())
+    breakdown = ", ".join(
+        f"{verdict}: {count}"
+        for verdict, count in sorted(verdicts.items(), key=lambda kv: -kv[1])
+    )
+    return f"[loop] judge ({phase}): {total} thread(s) evaluated — {breakdown}"
+
+
+def format_judge_thread_table(
+    threads: list[dict[str, Any]],
+    judge_results: dict[str, dict[str, Any]],
+    phase: str,
+) -> str:
+    """Per-thread judge decision table for agent narration relay.
+
+    Printed after the markdown thread list so the agent can copy it verbatim
+    into its text response. Each row shows the thread location, severity,
+    verdict, recommended action, and confidence — all in one place, outside
+    the collapsed thread markdown block.
+
+    Format:
+        [loop] judge eval (cycle): 3 thread(s)
+          1 src/foo.py:42 [high] — valid_actionable · fix · conf 0.91
+          2 src/bar.py:15 [medium] — needs_human · escalate · conf 0.84
+          3 src/baz.py:7 [low] — skipped (no API key)
+    """
+    rows = []
+    for i, thread in enumerate(threads, 1):
+        path = thread.get("path") or "?"
+        line = thread.get("line") or thread.get("originalLine") or "?"
+        sev = thread_severity(thread)
+        tid = thread.get("id", "")
+        jr = judge_results.get(tid)
+        if jr and jr.get("status") == "ok":
+            verdict = jr.get("verdict", "?")
+            action = jr.get("recommended_action", "?")
+            conf = jr.get("confidence", 0.0)
+            try:
+                conf_str = f"{float(conf):.2f}"
+            except (TypeError, ValueError):
+                conf_str = "?"
+            rows.append(
+                f"  {i} {path}:{line} [{sev}] — {verdict} · {action} · conf {conf_str}"
+            )
+        elif jr and jr.get("status") == "skipped":
+            reason = jr.get("skip_reason", "unknown")
+            rows.append(f"  {i} {path}:{line} [{sev}] — skipped ({reason})")
+        else:
+            rows.append(f"  {i} {path}:{line} [{sev}] — not evaluated")
+    n = len(threads)
+    header = f"[loop] judge eval ({phase}): {n} thread(s)"
+    return "\n".join([header] + rows)
 
 
 def render_markdown(
@@ -1263,6 +1424,17 @@ def main() -> int:
     parser.add_argument("--interval", type=int, default=20, help="Polling interval in seconds with --wait. Default: 20.")
     parser.add_argument("--quiet-period", type=int, default=45, help="Stable activity period in seconds with --wait. Default: 45.")
     parser.add_argument(
+        "--after",
+        metavar="ISO8601",
+        default=None,
+        help=(
+            "With --wait, ignore Gemini activity submitted at or before this "
+            "ISO-8601 timestamp. Pass the createdAt of the re-review request "
+            "comment so the waiter only returns once Gemini has genuinely "
+            "responded to the new cycle's push, not to prior-cycle reviews."
+        ),
+    )
+    parser.add_argument(
         "--resolve-outdated",
         dest="resolve_outdated",
         action="store_true",
@@ -1285,13 +1457,15 @@ def main() -> int:
             f"(default: {DEFAULT_REREVIEW_LIMIT})."
         ),
     )
+    # Cleanup (resolve-outdated, resolve-addressed-by-reply) now always runs
+    # regardless of the re-review cap. --resolve-past-cap / --ignore-loop-limit
+    # are kept as accepted no-ops for backward compatibility with older scripts.
     parser.add_argument(
         "--resolve-past-cap",
         dest="ignore_loop_limit",
         action="store_true",
-        help="Allow --resolve-outdated / --resolve-addressed-by-reply even after the re-review cap is reached.",
+        help=argparse.SUPPRESS,
     )
-    # Deprecated alias for --resolve-past-cap. Kept for backward compat; hidden from --help.
     parser.add_argument(
         "--ignore-loop-limit",
         dest="ignore_loop_limit",
@@ -1560,6 +1734,7 @@ def main() -> int:
                 timeout_seconds=args.timeout,
                 interval_seconds=args.interval,
                 quiet_seconds=args.quiet_period,
+                after_iso=args.after,
             )
         else:
             pull_request = fetch_threads(pr)
@@ -1579,14 +1754,7 @@ def main() -> int:
                 )
         rereviews = rereview_requests(pull_request, agent_login)
         limit_reached = len(rereviews) >= args.max_rereview_requests
-        cap_blocks_writes = limit_reached and not args.ignore_loop_limit
-        if args.resolve_outdated and cap_blocks_writes:
-            print(
-                f"warning: {len(rereviews)} Gemini re-review request(s) already exist; "
-                f"skipping outdated-thread resolution because the loop cap is {args.max_rereview_requests}.",
-                file=sys.stderr,
-            )
-        elif args.resolve_outdated:
+        if args.resolve_outdated:
             resolved_outdated = resolve_outdated_threads(
                 pull_request, args.author, dry_run=args.dry_run
             )
@@ -1595,13 +1763,7 @@ def main() -> int:
                 print(f"{tag} {resolved_outdated} outdated {args.author} thread(s).", file=sys.stderr)
                 if not args.dry_run:
                     pull_request = fetch_threads(pr)
-        if args.resolve_addressed_by_reply and cap_blocks_writes:
-            print(
-                f"warning: skipping addressed-by-reply resolution; "
-                f"re-review cap of {args.max_rereview_requests} already reached.",
-                file=sys.stderr,
-            )
-        elif args.resolve_addressed_by_reply:
+        if args.resolve_addressed_by_reply:
             resolved_addressed_by_reply = resolve_addressed_by_reply(
                 pull_request, args.author, dry_run=args.dry_run
             )
@@ -1643,6 +1805,19 @@ def main() -> int:
         page_warnings = pagination_warnings(pull_request)
         for warning in page_warnings:
             print(f"warning: {warning}", file=sys.stderr)
+
+        # ---- No-progress detection ------------------------------------------
+        # Compare the actionable thread fingerprint to the previous cycle's.
+        # Only runs during a real fetch (not --cycle-summary / --record-run /
+        # --stats), so the comparison reflects actual loop cycles, not
+        # mid-cycle read-only calls.
+        no_progress_flag = False
+        if not args.record_run and not args.cycle_summary and not args.stats:
+            current_fp = thread_fingerprint(threads)
+            try:
+                no_progress_flag = detect_no_progress(pr, current_fp)
+            except OSError as exc:
+                print(f"warning: could not check progress: {exc}", file=sys.stderr)
 
         # ---- Judge (optional, opt-in via prefs file or --judge-mode) -------
         # The script is the single source of truth for whether the judge
@@ -1830,7 +2005,7 @@ def main() -> int:
             if args.auto_snapshot:
                 print(metrics.format_auto_snapshot(record))
             else:
-                print(metrics.format_run_summary(record))
+                print(metrics.format_run_summary(record, terminal=bool(args.record_run)))
             return 0
         if args.post_receipt or args.sticky_receipt:
             sticky = args.sticky_receipt
@@ -1874,6 +2049,7 @@ def main() -> int:
                         "pageLimitWarnings": page_warnings,
                         "dryRun": args.dry_run,
                         "actionableThreadFingerprint": thread_fingerprint(threads),
+                        "noProgressDetected": no_progress_flag,
                         "judge": judge_status,
                     },
                     "judgeResults": judge_results,
@@ -1889,6 +2065,19 @@ def main() -> int:
             ),
             end="",
         )
+        if judge_status.get("ran") and judge_results:
+            print(
+                format_judge_thread_table(
+                    threads, judge_results, judge_status.get("phase", "cycle")
+                ),
+            )
+        if no_progress_flag:
+            print(
+                "[loop] no_progress: actionable thread set is unchanged since the previous "
+                "cycle — no fix landed. Stop with: "
+                "--record-run --outcome no_progress "
+                "--outcome-reason 'no code change resolved any open thread'"
+            )
     return 0
 
 

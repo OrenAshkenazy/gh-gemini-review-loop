@@ -276,7 +276,7 @@ The script fetches the current thread state, derives counts, appends the record,
 
 ### Per-cycle summary block
 
-`--record-run` is terminal: it writes a record **and clears** the run accumulator, so it must be called exactly once at loop end. To show the `[loop] Summary` block **during** the loop — at the end of each cycle — use `--cycle-summary` instead:
+`--record-run` is terminal: it writes a record **and clears** the run accumulator, so it must be called exactly once at loop end. To show a mid-loop receipt **during** the loop — at the end of each cycle — use `--cycle-summary` instead:
 
 ```bash
 python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
@@ -285,14 +285,14 @@ python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_t
     --verification <passed|failed|skipped>
 ```
 
-`--cycle-summary` builds the record from the **accumulated** run state (findings and judge verdicts unioned across cycles so far) and prints the same `[loop] Summary` block — but it does **not** append to `runs.jsonl` and does **not** clear the accumulator. It is read-only and safe to call every cycle.
+`--cycle-summary` builds the record from the **accumulated** run state (findings and judge verdicts unioned across cycles so far) and prints a `[loop] Cycle receipt` block — distinct from the terminal `[loop] Summary` — but it does **not** append to `runs.jsonl` and does **not** clear the accumulator. It is read-only and safe to call every cycle.
 
 **Emit a receipt at the end of every cycle.** Which command depends on whether the cycle is also terminal:
 
 - **Non-terminal cycle** (the loop will push, re-review, and continue): run `--cycle-summary` right after the verify step. This is REQUIRED on every such cycle — do not skip it because fixes were small or verification was skipped.
 - **Terminal cycle** (this cycle hits a [stopping condition](#stopping-conditions) — clean, capped, human decision, regression, or no-progress): do **not** call `--cycle-summary`. The single `--record-run` call you make at loop end already prints the receipt for this cycle. Calling both would print two near-identical receipts back-to-back.
 
-So a clean two-cycle run prints two receipts: one from `--cycle-summary` at the end of cycle 1, one from `--record-run` at loop end. A run that stops on cycle 1 (like a human-decision deferral) prints exactly one receipt — from `--record-run`. Never emit two receipts on the same cycle.
+So a clean two-cycle run prints two receipts: one `[loop] Cycle receipt` from `--cycle-summary` at the end of cycle 1, one `[loop] Summary` from `--record-run` at loop end. A run that stops on cycle 1 (like a human-decision deferral) prints exactly one receipt — `[loop] Summary` from `--record-run`. Never emit two receipts on the same cycle.
 
 Do not call `--record-run` more than once per loop: each call clears the accumulator, so a second call would undercount `findings_fetched` and reset the duration. Use `--cycle-summary` for all mid-loop visibility.
 
@@ -310,24 +310,129 @@ Run metrics and `--stats` are local-only — stored under `~/.config/gh-gemini-r
 
 ## Progress Narration
 
+<HARD-GATE>
+DO NOT run `git push` or call `--record-run` until you have:
+1. Called `--cycle-summary` (for a non-terminal cycle) OR confirmed `--record-run` is the terminal call.
+2. Printed the FULL stdout of that script call verbatim in your text response to the user.
+
+This is enforced mechanically: a PreToolUse:Bash hook (`loop_summary_gate.py`) blocks every `git push` while a Gemini loop is active and the summary is stale. The hook does NOT fire for `--record-run` (the terminal receipt is exempt). Trying to push without summarizing first returns exit code 2 and explains the fix.
+
+Violating the letter of this rule violates the spirit.
+</HARD-GATE>
+
 While the loop is running, the agent MUST emit one-line status updates to the user-facing chat at each phase transition. The format is `[loop] cycle N/<cap> — <phase>`.
 
-**Mechanical backstop (you do not need to rely on remembering this).** A bundled `Stop` hook (`scripts/loop_summary_hook.py`) guarantees the per-cycle/end summary even if the agent forgets it. On every turn end, if a loop advanced (a new fetch bumped the run's `update_seq` in `state.json`) without the agent emitting a `[loop] Summary` since (`last_summary_seq` lags), the hook emits the authoritative `--cycle-summary` itself. It is **dedup-aware**: when the agent *did* run `--cycle-summary`/`--record-run` that turn (those stamp `last_summary_seq`), the hook stays silent — no double summaries. It is network-gated by local state, so it is a free no-op outside an active loop, and it is read-only (never appends a metrics record, never clears the accumulator — the agent still owns the single terminal `--record-run`). So the narration table below is the *intended* cadence; the hook is the floor.
+**Mechanical backstop layer (three independent enforcers):**
+
+1. **`loop_summary_gate.py` (PreToolUse:Bash)** — Blocks `git push` when `update_seq > last_summary_seq`. Exit code 2 with an error message tells the agent exactly which `--cycle-summary` command to run first. This is the primary gate: the agent cannot push a new cycle's commits without first emitting the summary.
+
+2. **`loop_summary_hook.py` (Stop)** — On every turn end, if a loop advanced without a summary being emitted, runs `--cycle-summary --auto-snapshot` and surfaces the result via `systemMessage`. Catches the terminal-cycle gap (between `--record-run` output existing in Bash tool output and the agent relaying it to the user).
+
+3. **Memory feedback** — Saved in the session memory to reinforce the rule across future sessions.
 
 Required narration points:
 
 | Phase | Narration line |
 |---|---|
-| Before script fetch | `[loop] cycle N/<cap> — fetching threads from PR #<num>...` |
-| After fetch, before fixes | `[loop] cycle N/<cap> — <K> actionable thread(s) (severity: <breakdown>). Fixing.` + judge eval tip if first time (see [Discoverability](#discoverability)) |
-| After fix attempt, before verify | `[loop] cycle N/<cap> — fixes applied. Verifying.` |
-| After verify | `[loop] cycle N/<cap> — verified (<test summary>).` |
-| Before push | `[loop] cycle N/<cap> — committing and pushing <commit-sha>...` |
-| After push, before re-review | `[loop] cycle N/<cap> — pushed. Requesting Gemini re-review (cycle N consumed).` |
-| **End of each non-terminal cycle** | **`[loop] Summary` block (from `--cycle-summary`)** — REQUIRED on every cycle that will continue looping; see [Per-cycle summary](#per-cycle-summary-block) |
+| Before script fetch | `[loop] session cycle N — re-review cap: M/K consumed. Fetching threads from PR #<num>...` where N is the cycle number within this session (1-based), M is how many re-reviews already exist on the PR, K is the cap. This is the key fix for the "cycle 1/4 but cap is 3/4" confusion: always show both session-local position and cap state separately. |
+| After fetch, before fixes | `[loop] session cycle N — <K> actionable thread(s) (severity: <breakdown>). Fixing.` + judge eval tip if first time (see [Discoverability](#discoverability)) + if judge ran: copy the entire `[loop] judge eval (phase): …` block from script stdout verbatim (header + one row per thread) |
+| After fix attempt, before verify | `[loop] session cycle N — fixes applied. Verifying via profile runner.` |
+| After verify | `[loop] session cycle N — verified (<test summary>).` |
+| Before push | `[loop] session cycle N — committing and pushing <commit-sha>...` |
+| **Before push (HARD GATE)** | Run `--cycle-summary` and print its full output (`[loop] Cycle receipt` block). Only then push. |
+| After push, before re-review | `[loop] session cycle N — pushed. Requesting Gemini re-review. Cap now M/K.` |
 | Stop condition triggered | `[loop] STOP — <stop-condition>: <one-line explanation>.` |
 | Loop complete (all clean) | `[loop] DONE — 0 actionable threads remaining. Cycles used: N/<cap>.` |
-| Loop complete / stopped (after DONE/STOP) | `[loop] Summary` block (from `--record-run`) — this is also the terminal cycle's receipt; do not also emit `--cycle-summary` on that cycle |
+| Loop complete / stopped (after DONE/STOP) | `[loop] Summary` block (from `--record-run`) — print the full stdout; this is the terminal receipt |
+
+### Terminal thread breakdown (when remaining_actionable > 0)
+
+After printing the `[loop] Summary` block, when there are remaining actionable threads, render them in **three separate buckets** — never a single mixed "for human review" table. The buckets map directly to why each thread is still open:
+
+**Bucket 1 — Human decision required**
+
+Threads where the judge verdict was `needs_human`. These require a product/format/design call, not a code change. For each thread:
+
+```
+Human decision required
+
+1. <file>:<line> · <GitHub comment URL>
+   Finding: <what Gemini flagged, verbatim or closely paraphrased>
+   Why human: <concrete reason — format consistency, security policy, product behavior tradeoff>
+   Claude did not auto-fix this because <specific reason: changes report format behavior / requires policy decision / both options are valid>.
+   Options:
+   - <option A>
+   - <option B>
+```
+
+Example:
+```
+Human decision required
+
+1. main.py:828 · https://github.com/Owner/Repo/pull/9#discussion_r3369882171
+   Finding: OWASP tags appear in console and JSON reports, but not in Markdown.
+   Why human: this changes report format behavior. Both choices are valid.
+   Claude did not auto-fix this because it is a product decision, not a safe mechanical fix.
+   Options:
+   - Add OWASP tags to Markdown output for consistency.
+   - Keep Markdown simpler; document that OWASP tags are JSON/console only.
+```
+
+**Bucket 2 — Remaining because cap was reached**
+
+Threads that the judge classified as `valid_actionable` but the loop ran out of cycles before addressing them. **Do not label these as "human review"** and do not downgrade their severity — they remain valid, fixable issues. Do not use "low priority" unless the judge, reviewer, or user explicitly said so.
+
+```
+Remaining because cap was reached
+
+1. <file>:<line> · <GitHub comment URL>
+   Finding: <one-sentence description>
+   Judge: valid_actionable (conf <N>)
+   Reason not fixed: cap reached
+   Suggested handling: fix in next PR, or bump cap and re-run the loop
+
+2. ...
+```
+
+**Bucket 3 — Already fixed but still unresolved on GitHub**
+
+Threads where you applied a code fix in this loop, but the GitHub thread still shows UNRESOLVED. These are not open work items — they will become OUTDATED on the next Gemini review.
+
+```
+Already fixed but still unresolved on GitHub
+
+1. <file>:<line> · <GitHub comment URL>
+   Finding: <what Gemini originally flagged>
+   Status: fix applied in this session
+   Why still shown: code change shifts the line anchor; thread auto-resolves as OUTDATED on next Gemini review
+```
+
+**Omit any bucket with zero entries.** If every remaining thread fits bucket 1, just print bucket 1. Never print an empty bucket header.
+
+**Classification logic (in order of priority):**
+
+1. Judge verdict `needs_human` → bucket 1
+2. Thread from a prior Gemini review where you applied a code fix at that file/line in this session → bucket 3
+3. All other `valid_actionable` threads (new from latest review, or no fix attempted) → bucket 2
+
+**After the buckets — next step suggestions (always print):**
+
+```
+Next options:
+1. Bump cap and continue: re-run the loop with a higher cap (e.g. "run the Gemini loop with cap 5")
+2. Fix only the human decision: ask Claude to implement one of the options above
+3. Leave remaining cleanup for a follow-up PR
+```
+
+Adapt the suggestions to the actual state: if cap was not the stopping reason, omit option 1. If there are no human decisions, omit option 2.
+
+**Verification routing:**
+
+Always run verification through `run_profile.py` when a profile is confirmed for the repo:
+```bash
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/run_profile.py" owner/repo /path/to/repo
+```
+Feed its `verification` field into `--verification` and its full JSON output into `--verification-details`. Do not call `uv run pytest` or any test runner directly — route through the profile so metrics get consistent structured details. This matters even when you know the profile command (the runner times it, captures structured output, and sets the right exit code for downstream processing).
 
 Skip narration only when running in pure non-interactive batch mode (e.g. `gh pr create` chained into a script that captures output for later — but in Claude Code interactive sessions, never skip).
 
@@ -337,16 +442,16 @@ When the user explicitly wants visibility outside the chat (e.g. they'll step aw
 
 ## Bundled hooks
 
-The plugin ships two hooks (`hooks/hooks.json`) that turn the two most-skipped
-agent obligations — *summarize every cycle* and *set up the profile before
-fixing* — from prose into mechanical guarantees. Both are network-gated by local
-`state.json` (free no-ops outside an active loop) and both fail open: a hook
+The plugin ships three hooks (`hooks/hooks.json`) that turn the most-skipped
+agent obligations into mechanical guarantees. All are network-gated by local
+`state.json` (free no-ops outside an active loop) and all fail open: a hook
 error never wedges the session.
 
 | Event | Script | What it guarantees |
 |---|---|---|
-| `Stop` | `loop_summary_hook.py` | If a loop advanced this turn without a `[loop] Summary`, emits the authoritative `--cycle-summary`. Dedup-aware via `update_seq`/`last_summary_seq` — silent when the agent already summarized. Read-only; never records or clears. |
+| `PreToolUse` (`Bash`) | `loop_summary_gate.py` | Blocks `git push` while a loop is active and `summary_is_stale()`. Exit code 2 with the exact `--cycle-summary` command to run. Primary gate — the agent physically cannot push without summarizing first. |
 | `PreToolUse` (`Edit`/`Write`/`MultiEdit`) | `loop_profile_gate.py` | Blocks edits while a loop is active for the repo and no verification profile is saved, so the verify strategy is fixed before any fix. Saving any profile — including `Skip` — clears the gate. |
+| `Stop` | `loop_summary_hook.py` | If a loop advanced this turn without a `[loop] Summary`, emits the authoritative `--cycle-summary`. Dedup-aware via `update_seq`/`last_summary_seq` — silent when the agent already summarized. Read-only; never records or clears. |
 
 These mean the agent should still narrate and summarize as documented, but a lapse no longer costs the user visibility or breaks the profile-before-fixes ordering.
 
@@ -398,6 +503,12 @@ Stop the loop and report status instead of pushing or asking Gemini again when a
 3. **Human decision required** — All remaining `UNRESOLVED` threads are informational, duplicate, contradictory, or require a human product/design/security decision.
 4. **Test regression** — Tests fail after a fix attempt and the failure is not clearly caused by the latest Gemini-addressing change.
 5. **No progress** — A thread that was UNRESOLVED in the previous cycle is still UNRESOLVED after a fix attempt AND the surrounding code/hunk was not changed AND no substantive maintainer reply (as defined in Thread States) was posted on it. This catches genuine stuckness — distinct from ADDRESSED_BY_REPLY, which is intentional deferral and should not trip this condition.
+
+   The script detects this mechanically: when the actionable thread fingerprint (SHA256 of thread ids + bodies) is identical to the previous cycle's, it prints:
+   ```
+   [loop] no_progress: actionable thread set is unchanged since the previous cycle — no fix landed. Stop with: --record-run --outcome no_progress ...
+   ```
+   When this line appears in script stdout, **stop immediately**: call `--record-run --outcome no_progress --outcome-reason 'no code change resolved any open thread'` and do not push or request another review.
 
 If a thread was deliberately deferred via a substantive reply (state `ADDRESSED_BY_REPLY`), treat it as condition 3 (human decision), not condition 5 (no progress). The loop must not re-try the same fix on the same thread cycle after cycle.
 
@@ -514,12 +625,19 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
     - For this skill's full loop, commit fixes to the PR branch and push to the remote branch.
     - Use a clear commit message such as `fix: address Gemini Code Assist review`.
     - Post the re-review request after a successful push only if this would not exceed the configured total re-review request cap.
-    - Default comment:
-      - `@gemini-code-assist please review the latest changes.`
+    - **Capture the re-review comment timestamp** immediately after posting. This is the anchor for the next `--wait` call:
+      ```bash
+      REREVIEW_AT=$(gh api repos/{owner}/{repo}/issues/{pr}/comments \
+          --method POST --field body="@gemini-code-assist please review the latest changes." \
+          --jq '.created_at')
+      ```
+      If `gh api` is inconvenient, fall back to: `REREVIEW_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")` captured immediately before posting. Either approach produces a valid `--after` anchor.
     - If the repository uses a different Gemini trigger phrase, use the repo-specific phrase when known.
     - If the loop will continue after this push (the cycle is **not** terminal), emit the per-cycle receipt now, before looping back to step 3:
       `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --cycle-summary --fixed-count <n-this-cycle> --verification <passed|failed|skipped>`
       then show the printed `[loop] Summary` block to the user. This is read-only — it does not write `runs.jsonl`. Skip it only when this cycle is itself terminal (the `--record-run` receipt below covers that cycle).
+    - On the **next** `--wait` call, pass `--after "$REREVIEW_AT"` so the poller ignores prior-cycle Gemini activity and only returns once Gemini has genuinely responded to the new push:
+      `python3 "..." --wait --after "$REREVIEW_AT"`
    - After the loop reaches a terminal state, record the run exactly once:
      `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --record-run --fixed-count <n> --verification <passed|failed|skipped> [--outcome <state>]`
      then show the printed `[loop] Summary` block to the user.
@@ -545,8 +663,13 @@ By default this resolves unresolved outdated Gemini threads AND addressed-by-rep
 Useful options:
 
 ```bash
-# Wait for Gemini review activity to appear and settle
+# Wait for Gemini review activity to appear and settle (cycle 1 / initial review)
 python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --wait
+
+# Wait for a NEW Gemini review after a re-review request (cycle 2+).
+# Pass the re-review comment timestamp so prior-cycle activity is ignored.
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+    --wait --after "$REREVIEW_AT"
 
 # Read-only fetch (no GraphQL mutations)
 python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \

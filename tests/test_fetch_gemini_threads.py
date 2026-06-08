@@ -20,6 +20,9 @@ from fetch_gemini_threads import (
     _derive_outcome,
     clear_run_tracking,
     derive_record_fields,
+    detect_no_progress,
+    format_judge_thread_table,
+    format_judge_verdict_summary,
     merge_judge_results,
     any_active_run,
     effective_rereview_limit,
@@ -38,6 +41,7 @@ from fetch_gemini_threads import (
     record_cycle,
     render_receipt,
     rereview_requests,
+    review_activity_fingerprint,
     save_sticky_state,
     select_stats_records,
     severity_counts,
@@ -429,6 +433,108 @@ class TestThreadFingerprint:
         b = thread_fingerprint([{"path": "p", "line": 1,
                                   "comments": [{"author": {"login": BOT}, "body": "Y"}]}])
         assert a != b
+
+
+# ---------------------------------------------------------------------------
+# review_activity_fingerprint + after_iso anchor
+# ---------------------------------------------------------------------------
+
+def _pr_with_review(submitted_at: str) -> dict:
+    """Minimal pull_request fixture with one Gemini review at submitted_at."""
+    return {
+        "reviewThreads": {"nodes": []},
+        "reviews": {"nodes": [
+            {"author": {"login": BOT}, "submittedAt": submitted_at, "state": "COMMENTED"},
+        ]},
+        "comments": {"nodes": []},
+    }
+
+
+def _pr_with_thread_comment(created_at: str) -> dict:
+    """Minimal pull_request fixture with one Gemini thread comment at created_at."""
+    return {
+        "reviewThreads": {"nodes": [
+            {
+                "isResolved": False,
+                "isOutdated": False,
+                "path": "src/x.py",
+                "line": 1,
+                "comments": {"nodes": [
+                    {"author": {"login": BOT}, "body": "![medium](x) fix", "createdAt": created_at},
+                ]},
+            },
+        ]},
+        "reviews": {"nodes": []},
+        "comments": {"nodes": []},
+    }
+
+
+class TestReviewActivityFingerprint:
+    # --- no after_iso (existing behaviour) ---
+
+    def test_none_when_no_activity(self):
+        pr = {"reviewThreads": {"nodes": []}, "reviews": {"nodes": []}, "comments": {"nodes": []}}
+        assert review_activity_fingerprint(pr, BOT) is None
+
+    def test_non_none_when_review_present(self):
+        pr = _pr_with_review("2026-06-07T10:00:00Z")
+        assert review_activity_fingerprint(pr, BOT) is not None
+
+    def test_different_review_bodies_produce_different_fingerprints(self):
+        pr1 = _pr_with_review("2026-06-07T10:00:00Z")
+        pr2 = _pr_with_review("2026-06-07T11:00:00Z")
+        assert review_activity_fingerprint(pr1, BOT) != review_activity_fingerprint(pr2, BOT)
+
+    # --- after_iso filters out old activity ---
+
+    def test_none_when_review_before_anchor(self):
+        pr = _pr_with_review("2026-06-07T09:00:00Z")
+        assert review_activity_fingerprint(pr, BOT, after_iso="2026-06-07T10:00:00Z") is None
+
+    def test_none_when_review_exactly_at_anchor(self):
+        # Exclusive lower bound: activity AT the anchor timestamp is treated as
+        # "not new" (the re-review comment itself has that same timestamp).
+        pr = _pr_with_review("2026-06-07T10:00:00Z")
+        assert review_activity_fingerprint(pr, BOT, after_iso="2026-06-07T10:00:00Z") is None
+
+    def test_non_none_when_review_after_anchor(self):
+        pr = _pr_with_review("2026-06-07T10:00:01Z")
+        assert review_activity_fingerprint(pr, BOT, after_iso="2026-06-07T10:00:00Z") is not None
+
+    def test_none_when_thread_comment_before_anchor(self):
+        pr = _pr_with_thread_comment("2026-06-07T09:59:00Z")
+        assert review_activity_fingerprint(pr, BOT, after_iso="2026-06-07T10:00:00Z") is None
+
+    def test_non_none_when_thread_comment_after_anchor(self):
+        pr = _pr_with_thread_comment("2026-06-07T10:00:01Z")
+        assert review_activity_fingerprint(pr, BOT, after_iso="2026-06-07T10:00:00Z") is not None
+
+    def test_mixed_only_new_review_counts(self):
+        # One old review (should be filtered), one new review (should count).
+        pr = {
+            "reviewThreads": {"nodes": []},
+            "reviews": {"nodes": [
+                {"author": {"login": BOT}, "submittedAt": "2026-06-07T09:00:00Z", "state": "COMMENTED"},
+                {"author": {"login": BOT}, "submittedAt": "2026-06-07T11:00:00Z", "state": "COMMENTED"},
+            ]},
+            "comments": {"nodes": []},
+        }
+        anchor = "2026-06-07T10:00:00Z"
+        # Without anchor: sees both reviews
+        fp_all = review_activity_fingerprint(pr, BOT)
+        # With anchor: only the new review
+        pr_old_only = _pr_with_review("2026-06-07T09:00:00Z")
+        pr_new_only = _pr_with_review("2026-06-07T11:00:00Z")
+        fp_anchored = review_activity_fingerprint(pr, BOT, after_iso=anchor)
+        fp_new_only = review_activity_fingerprint(pr_new_only, BOT, after_iso=anchor)
+        assert fp_anchored is not None
+        assert fp_anchored == fp_new_only  # anchored result matches "new review only"
+        assert fp_anchored != fp_all       # differs from the unanchored result
+
+    def test_other_author_not_counted(self):
+        pr = _pr_with_review("2026-06-07T11:00:00Z")
+        # A different author than BOT should not match
+        assert review_activity_fingerprint(pr, "other-bot", after_iso="2026-06-07T10:00:00Z") is None
 
 
 # ---------------------------------------------------------------------------
@@ -881,7 +987,7 @@ class TestCycleSummary:
         assert rc == 0
 
         out = capsys.readouterr().out
-        assert "[loop] Summary" in out
+        assert "[loop] Cycle receipt" in out      # mid-loop header, not terminal [loop] Summary
         assert "Findings fetched: 2" in out      # t1 + t2 accumulated
         assert "Fixed: 1" in out
         assert "Ignored by judge: 1" in out      # t2 false_positive, from accumulation
@@ -1153,3 +1259,169 @@ def test_resolve_judge_phase_infers_cycle_for_normal_fetch():
 def test_resolve_judge_phase_explicit_flag_wins():
     assert resolve_judge_phase("cycle", record_run=True) == "cycle"
     assert resolve_judge_phase("complete", record_run=False) == "complete"
+
+
+class TestFormatJudgeVerdictSummary:
+    def _results(self, verdicts: dict[str, int]) -> dict[str, dict]:
+        """Build fake judge_results keyed by thread id."""
+        results = {}
+        i = 0
+        for verdict, count in verdicts.items():
+            for _ in range(count):
+                results[f"id{i}"] = {"status": "ok", "verdict": verdict}
+                i += 1
+        return results
+
+    def test_single_verdict_type(self):
+        results = self._results({"valid_actionable": 3})
+        out = format_judge_verdict_summary(results, "cycle")
+        assert "[loop] judge (cycle):" in out
+        assert "3 thread(s) evaluated" in out
+        assert "valid_actionable: 3" in out
+
+    def test_multiple_verdict_types_sorted_by_count(self):
+        results = self._results({"false_positive": 1, "valid_actionable": 2})
+        out = format_judge_verdict_summary(results, "complete")
+        assert "[loop] judge (complete):" in out
+        # valid_actionable (2) should come before false_positive (1) by count.
+        assert out.index("valid_actionable") < out.index("false_positive")
+
+    def test_skipped_threads_excluded_from_count(self):
+        results = {
+            "id0": {"status": "ok", "verdict": "valid_actionable"},
+            "id1": {"status": "skipped", "verdict": None},
+        }
+        out = format_judge_verdict_summary(results, "cycle")
+        # Only 1 thread evaluated (the skipped one doesn't count).
+        assert "1 thread(s) evaluated" in out
+
+    def test_all_skipped_shows_fallback(self):
+        results = {
+            "id0": {"status": "skipped", "skip_reason": "no key"},
+            "id1": {"status": "skipped", "skip_reason": "no key"},
+        }
+        out = format_judge_verdict_summary(results, "cycle")
+        assert "all skipped" in out
+
+    def test_phase_label_in_output(self):
+        results = self._results({"needs_human": 1})
+        assert "cycle" in format_judge_verdict_summary(results, "cycle")
+        assert "complete" in format_judge_verdict_summary(results, "complete")
+
+
+class TestFormatJudgeThreadTable:
+    def _thread(self, tid, path="src/x.py", line=10, sev_comment=""):
+        body = f"![{sev_comment}](url)" if sev_comment else "issue here"
+        return {
+            "id": tid,
+            "isResolved": False,
+            "isOutdated": False,
+            "path": path,
+            "line": line,
+            "comments": [{"author": {"login": "gemini-code-assist"}, "body": body}],
+        }
+
+    def test_header_format(self):
+        threads = [self._thread("t1")]
+        results = {"t1": {"status": "ok", "verdict": "valid_actionable",
+                           "recommended_action": "fix", "confidence": 0.91}}
+        out = format_judge_thread_table(threads, results, "cycle")
+        assert out.startswith("[loop] judge eval (cycle): 1 thread(s)")
+
+    def test_per_thread_row_contains_path_verdict_action_conf(self):
+        threads = [self._thread("t1", path="src/foo.py", line=42, sev_comment="high")]
+        results = {"t1": {"status": "ok", "verdict": "valid_actionable",
+                           "recommended_action": "fix", "confidence": 0.91}}
+        out = format_judge_thread_table(threads, results, "cycle")
+        assert "src/foo.py:42" in out
+        assert "valid_actionable" in out
+        assert "fix" in out
+        assert "0.91" in out
+
+    def test_skipped_thread_shows_reason(self):
+        threads = [self._thread("t1")]
+        results = {"t1": {"status": "skipped", "skip_reason": "no API key"}}
+        out = format_judge_thread_table(threads, results, "cycle")
+        assert "skipped" in out
+        assert "no API key" in out
+
+    def test_not_evaluated_thread(self):
+        threads = [self._thread("t1")]
+        results = {}  # no entry for t1
+        out = format_judge_thread_table(threads, results, "complete")
+        assert "not evaluated" in out
+
+    def test_multiple_threads_indexed(self):
+        threads = [self._thread("t1"), self._thread("t2", path="src/bar.py", line=5)]
+        results = {
+            "t1": {"status": "ok", "verdict": "valid_actionable",
+                   "recommended_action": "fix", "confidence": 0.9},
+            "t2": {"status": "ok", "verdict": "needs_human",
+                   "recommended_action": "escalate", "confidence": 0.8},
+        }
+        out = format_judge_thread_table(threads, results, "cycle")
+        lines = out.splitlines()
+        assert lines[0].startswith("[loop] judge eval (cycle): 2 thread(s)")
+        assert "  1 " in lines[1]
+        assert "  2 " in lines[2]
+
+    def test_phase_label_in_header(self):
+        threads = [self._thread("t1")]
+        results = {"t1": {"status": "ok", "verdict": "valid_actionable",
+                           "recommended_action": "fix", "confidence": 0.85}}
+        assert "complete" in format_judge_thread_table(threads, results, "complete")
+        assert "cycle" in format_judge_thread_table(threads, results, "cycle")
+
+    def test_confidence_non_numeric_does_not_crash(self):
+        threads = [self._thread("t1")]
+        results = {"t1": {"status": "ok", "verdict": "valid_actionable",
+                           "recommended_action": "fix", "confidence": "not-a-number"}}
+        out = format_judge_thread_table(threads, results, "cycle")
+        assert "?" in out  # fallback for bad confidence
+
+
+class TestDetectNoProgress:
+    def _pr(self):
+        return PullRequest(owner="o", repo="r", number=1, url=None)
+
+    def test_false_on_first_call(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        # Seed update_seq = 1 (as if update_run_tracking ran once).
+        save_sticky_state({"o/r#1": {"run": {"started_at": "t", "update_seq": 1}}})
+        assert detect_no_progress(pr, "fp_a") is False
+
+    def test_false_when_fingerprint_changes(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        save_sticky_state({"o/r#1": {"run": {"started_at": "t", "update_seq": 2,
+                                              "thread_fingerprint": "fp_a"}}})
+        assert detect_no_progress(pr, "fp_b") is False
+
+    def test_true_when_fingerprint_unchanged_and_seq_ge_2(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        save_sticky_state({"o/r#1": {"run": {"started_at": "t", "update_seq": 2,
+                                              "thread_fingerprint": "fp_same"}}})
+        assert detect_no_progress(pr, "fp_same") is True
+
+    def test_false_when_seq_is_1_even_if_fingerprint_matches(self, tmp_path, monkeypatch):
+        # update_seq == 1 means only one fetch has run; no prior cycle to compare.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        save_sticky_state({"o/r#1": {"run": {"started_at": "t", "update_seq": 1,
+                                              "thread_fingerprint": "fp_same"}}})
+        assert detect_no_progress(pr, "fp_same") is False
+
+    def test_stores_fingerprint_for_next_call(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        save_sticky_state({"o/r#1": {"run": {"started_at": "t", "update_seq": 1}}})
+        detect_no_progress(pr, "fp_stored")
+        run = read_run_tracking(pr)
+        assert run.get("thread_fingerprint") == "fp_stored"
+
+    def test_false_with_no_active_run(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        assert detect_no_progress(pr, "fp_any") is False

@@ -152,15 +152,21 @@ def format_auto_snapshot(record: dict[str, Any]) -> str:
     )
 
 
-def format_run_summary(record: dict[str, Any]) -> str:
+def format_run_summary(record: dict[str, Any], *, terminal: bool = True) -> str:
     """Human-readable receipt for one loop run.
 
     A receipt, not a dashboard: a small fixed core, plus optional lines that
     appear only when they carry signal (observed != fixed, judge verdicts > 0,
     addressed-by-reply > 0, a named failed check).
+
+    ``terminal=True`` (default) is the ``--record-run`` path; the header reads
+    ``[loop] Summary``. ``terminal=False`` is the mid-loop ``--cycle-summary``
+    path; the header reads ``[loop] Cycle receipt`` so users can distinguish
+    per-cycle snapshots from the final terminal receipt.
     """
+    header = "[loop] Summary" if terminal else "[loop] Cycle receipt"
     lines = [
-        "[loop] Summary",
+        header,
         f"Findings fetched: {record['findings_fetched']}",
         f"Fixed: {record['fixed_count']}",
     ]
@@ -178,10 +184,12 @@ def format_run_summary(record: dict[str, Any]) -> str:
         )
         if ignored:
             lines.append(f"Ignored by judge: {ignored}")
-        if verdicts.get("needs_human", 0):
-            lines.append(f"Needs human by judge: {verdicts['needs_human']}")
-    lines.append(f"Remaining actionable: {record['remaining_actionable']}")
-    lines.append(f"Needs human: {record['needs_human']}")
+    valid_remaining = record.get("valid_actionable_remaining", record["remaining_actionable"])
+    needs_human = record.get("needs_human", 0)
+    if valid_remaining:
+        lines.append(f"Remaining valid actionable: {valid_remaining}")
+    if needs_human:
+        lines.append(f"Human decision required: {needs_human}")
     if record.get("addressed_by_reply"):
         lines.append(f"Addressed by reply: {record['addressed_by_reply']}")
     lines.append(f"Cycles used: {record['cycles_used']}/{record['cycle_cap']}")
@@ -407,6 +415,7 @@ def build_record(
     else:
         duration = _duration_seconds(started_at, ts)
     paths = list(finding_paths or [])
+    valid_actionable_remaining = max(0, remaining_actionable - needs_human)
     return {
         "schema_version": RECORD_SCHEMA_VERSION,
         "ts": ts,
@@ -417,6 +426,7 @@ def build_record(
         "fixed_count": fixed_count,
         "observed_fixed_count": observed_fixed_count,
         "remaining_actionable": remaining_actionable,
+        "valid_actionable_remaining": valid_actionable_remaining,
         "needs_human": needs_human,
         "addressed_by_reply": addressed_by_reply,
         "cycles_used": cycles_used,

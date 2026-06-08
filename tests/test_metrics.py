@@ -138,19 +138,32 @@ class TestFormatRunSummary:
         return base
 
     def test_judge_off_default_receipt(self):
+        # remaining_actionable=1, needs_human=1 → valid_actionable_remaining=0,
+        # so only "Human decision required" shows (no "Remaining valid actionable").
         # observed_fixed_count == fixed_count, so no "Observed fixed" line.
         out = metrics.format_run_summary(self._rec())
         assert out.splitlines() == [
             "[loop] Summary",
             "Findings fetched: 7",
             "Fixed: 4",
-            "Remaining actionable: 1",
-            "Needs human: 1",
+            "Human decision required: 1",
             "Cycles used: 2/3",
             "Verification: passed",
             "Outcome: clean",
             "Time to clean PR: 12m",
         ]
+
+    def test_cycle_receipt_header_when_not_terminal(self):
+        # --cycle-summary path (terminal=False) uses a distinct header so users
+        # can tell mid-loop receipts from the final [loop] Summary.
+        out = metrics.format_run_summary(self._rec(), terminal=False)
+        lines = out.splitlines()
+        assert lines[0] == "[loop] Cycle receipt"
+        assert lines[1] == "Findings fetched: 7"
+
+    def test_terminal_header_explicit(self):
+        out = metrics.format_run_summary(self._rec(), terminal=True)
+        assert out.splitlines()[0] == "[loop] Summary"
 
     def test_observed_fixed_shown_when_differs_from_fixed(self):
         out = metrics.format_run_summary(
@@ -201,11 +214,13 @@ class TestFormatRunSummary:
             },
             "recommended_actions": {"fix": 3, "reply": 1, "ignore": 2, "escalate": 1},
         }
+        # remaining_actionable=1, needs_human=1 → valid_actionable_remaining=0 →
+        # only "Human decision required" line; "Needs human by judge" is removed.
         out = metrics.format_run_summary(self._rec(judge=judge)).splitlines()
         assert out[2] == "Fixed: 4"
         assert out[3] == "Ignored by judge: 3"   # false_positive+duplicate+already_addressed+explanation_only
-        assert out[4] == "Needs human by judge: 1"
-        assert out[5] == "Remaining actionable: 1"
+        assert out[4] == "Human decision required: 1"
+        assert "Needs human by judge" not in out
 
     def test_judge_lines_omitted_when_zero(self):
         judge = {
@@ -215,7 +230,7 @@ class TestFormatRunSummary:
         }
         out = metrics.format_run_summary(self._rec(judge=judge))
         assert "Ignored by judge" not in out
-        assert "Needs human by judge" not in out
+        assert "Needs human by judge" not in out  # label removed entirely
 
 
 class TestFormatAutoSnapshot:
