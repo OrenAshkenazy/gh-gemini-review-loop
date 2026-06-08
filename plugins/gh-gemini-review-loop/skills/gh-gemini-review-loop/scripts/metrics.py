@@ -249,7 +249,7 @@ def format_findings_block(findings: list[dict[str, Any]]) -> str:
     for idx, finding in enumerate(valid_findings, 1):
         loc = finding.get("path") or "?"
         line = finding.get("line")
-        if line:
+        if line is not None:
             loc = f"{loc}:{line}"
         severity = finding.get("severity") or "unknown"
         tag = " · carried over from a prior cycle" if finding.get("carried") else ""

@@ -1211,7 +1211,7 @@ def finding_fingerprint(thread: dict[str, Any]) -> str:
     body = first_comment if isinstance(first_comment, str) else ""
     body = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", body)  # drop severity image
     body = re.sub(r"\s+", " ", body).strip().lower()
-    return hashlib.sha1(f"{path}\n{body[:300]}".encode()).hexdigest()[:16]
+    return hashlib.sha1(f"{path}\n{body[:1000]}".encode()).hexdigest()[:16]
 
 
 def review_activity_fingerprint(
