@@ -765,7 +765,9 @@ def prior_finding_fingerprints(pr: PullRequest) -> set[str]:
     Read by the receipt path to mark a current finding as carried-over. Empty
     on cycle 1 (no prior cycle) — so every cycle-1 finding reads as new.
     """
-    run = read_run_tracking(pr)
+    state = load_sticky_state()
+    entry = state.get(_state_key(pr), {})
+    run = entry.get("run", {}) if isinstance(entry, dict) else {}
     value = run.get("prior_seen_finding_fps", []) if isinstance(run, dict) else []
     return set(value) if isinstance(value, list) else set()
 
