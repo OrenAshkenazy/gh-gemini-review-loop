@@ -240,12 +240,13 @@ def format_findings_block(findings: list[dict[str, Any]]) -> str:
     fetches 4 threads where 1 repeats a prior fix reads ``3 new, 1 carried
     over``.
     """
-    if not findings:
+    valid_findings = [f for f in findings if isinstance(f, dict)]
+    if not valid_findings:
         return ""
-    new_count = sum(1 for f in findings if not f.get("carried"))
-    carried_count = len(findings) - new_count
-    lines = [f"Findings ({len(findings)}): {new_count} new, {carried_count} carried over"]
-    for idx, finding in enumerate(findings, 1):
+    new_count = sum(1 for f in valid_findings if not f.get("carried"))
+    carried_count = len(valid_findings) - new_count
+    lines = [f"Findings ({len(valid_findings)}): {new_count} new, {carried_count} carried over"]
+    for idx, finding in enumerate(valid_findings, 1):
         loc = finding.get("path") or "?"
         line = finding.get("line")
         if line:

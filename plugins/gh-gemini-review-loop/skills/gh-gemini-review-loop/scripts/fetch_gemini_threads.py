@@ -1205,8 +1205,8 @@ def finding_fingerprint(thread: dict[str, Any]) -> str:
     """
     path = thread.get("path") or ""
     comments = _iter_comments(thread)
-    first_comment = comments[0].get("body") if comments else None
-    body = first_comment if first_comment is not None else ""
+    first_comment = comments[0].get("body") if comments and isinstance(comments[0], dict) else None
+    body = first_comment if isinstance(first_comment, str) else ""
     body = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", body)  # drop severity image
     body = re.sub(r"\s+", " ", body).strip().lower()
     return hashlib.sha1(f"{path}\n{body[:300]}".encode()).hexdigest()[:16]
@@ -2092,11 +2092,12 @@ def main() -> int:
                 findings_view = []
                 for thread in threads:
                     comments = _iter_comments(thread)
+                    line_val = thread.get("line")
                     findings_view.append({
                         "path": thread.get("path"),
-                        "line": thread.get("line") or thread.get("originalLine"),
+                        "line": line_val if line_val is not None else thread.get("originalLine"),
                         "severity": thread_severity(thread),
-                        "url": comments[0].get("url") if comments else None,
+                        "url": comments[0].get("url") if comments and isinstance(comments[0], dict) else None,
                         "carried": finding_fingerprint(thread) in prior_fps,
                     })
                 findings_block = metrics.format_findings_block(findings_view)
