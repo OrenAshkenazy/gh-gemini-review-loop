@@ -749,7 +749,8 @@ def track_finding_fingerprints(pr: PullRequest, current_fps: set[str]) -> dict[s
     run = entry.get("run", {})
     if not isinstance(run, dict):
         run = {}
-    prior = set(run.get("seen_finding_fps", []))
+    prior_val = run.get("seen_finding_fps", [])
+    prior = set(prior_val) if isinstance(prior_val, list) else set()
     run["prior_seen_finding_fps"] = sorted(prior)
     run["seen_finding_fps"] = sorted(prior | current_fps)
     entry["run"] = run
@@ -1203,8 +1204,9 @@ def finding_fingerprint(thread: dict[str, Any]) -> str:
     differences (line-number echoes, re-wrapping) don't change the fingerprint.
     """
     path = thread.get("path") or ""
-    comments = thread.get("comments") or []
-    body = (comments[0].get("body") if comments else "") or ""
+    comments = _iter_comments(thread)
+    first_comment = comments[0].get("body") if comments else None
+    body = first_comment if first_comment is not None else ""
     body = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", body)  # drop severity image
     body = re.sub(r"\s+", " ", body).strip().lower()
     return hashlib.sha1(f"{path}\n{body[:300]}".encode()).hexdigest()[:16]
@@ -2089,7 +2091,7 @@ def main() -> int:
                 prior_fps = prior_finding_fingerprints(pr)
                 findings_view = []
                 for thread in threads:
-                    comments = thread.get("comments") or []
+                    comments = _iter_comments(thread)
                     findings_view.append({
                         "path": thread.get("path"),
                         "line": thread.get("line") or thread.get("originalLine"),
