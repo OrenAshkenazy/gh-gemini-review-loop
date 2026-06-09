@@ -1894,7 +1894,7 @@ def main() -> int:
             # carried-over findings. Real-fetch only, once per cycle.
             try:
                 track_finding_fingerprints(
-                    pr, {finding_fingerprint(t) for t in threads}
+                    pr, {finding_fingerprint(t) for t in threads if isinstance(t, dict)}
                 )
             except OSError as exc:
                 print(f"warning: could not track finding fingerprints: {exc}", file=sys.stderr)
