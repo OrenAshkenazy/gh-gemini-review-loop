@@ -287,6 +287,19 @@ python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_t
 
 `--cycle-summary` builds the record from the **accumulated** run state (findings and judge verdicts unioned across cycles so far) and prints a `[loop] Cycle receipt` block — distinct from the terminal `[loop] Summary` — but it does **not** append to `runs.jsonl` and does **not** clear the accumulator. It is read-only and safe to call every cycle.
 
+The receipt block also carries two sections that used to be buried in collapsed
+tool output. Relay the **entire** receipt verbatim so they reach the chat:
+
+- **`Verification suite:`** — the repo-aware checks `run_profile.py` detected
+  (e.g. `uv run pytest  (root, required) → passed`). Built from
+  `--verification-details`; present whenever you pass profile JSON.
+- **`Findings (N): X new, Y carried over`** — the deterministic finding list,
+  one line per finding with `path:line [severity]` and the GitHub comment URL.
+  A finding whose content was already seen in a prior cycle is tagged
+  `· carried over from a prior cycle`, so a re-posted suggestion is never
+  miscounted as a fresh finding. This is the canonical, visible finding list —
+  do not hand-roll a separate one or leave it inside a collapsed Bash result.
+
 **Emit a receipt at the end of every cycle.** Which command depends on whether the cycle is also terminal:
 
 - **Non-terminal cycle** (the loop will push, re-review, and continue): run `--cycle-summary` right after the verify step. This is REQUIRED on every such cycle — do not skip it because fixes were small or verification was skipped.
@@ -348,6 +361,13 @@ Required narration points:
 ### Terminal thread breakdown (when remaining_actionable > 0)
 
 After printing the `[loop] Summary` block, when there are remaining actionable threads, render them in **three separate buckets** — never a single mixed "for human review" table. The buckets map directly to why each thread is still open:
+
+**Always reference a thread by its GitHub comment URL** (e.g.
+`https://github.com/<owner>/<repo>/pull/<n>#discussion_r3374837147`), which the
+receipt's `Findings` block already prints per finding. Never surface the bare
+`discussion_r…` / GraphQL node token on its own — it is opaque to the user and
+not clickable. If you need to point at a thread to resolve, give the URL and,
+when useful, the `file:line`.
 
 **Bucket 1 — Human decision required**
 
@@ -576,7 +596,10 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
 
 3. Wait for Gemini to finish its first review.
    - Run `scripts/fetch_gemini_threads.py --wait` from this skill.
-   - The script polls GitHub until Gemini review activity is present and stable for a quiet period.
+   - **Cycle 1 (no `--after`):** the script returns as soon as Gemini review
+     activity is present — it does NOT wait for a quiet/settle period. The
+     settle only matters on cycle 2+, where a freshly pushed fix needs the
+     re-review to stabilize; pass `--after "$REREVIEW_AT"` there (step 10).
    - By default, the script resolves unresolved outdated Gemini threads after the wait and before returning current feedback.
    - If the wait times out, report that Gemini did not finish within the timeout and do not invent feedback.
 
@@ -663,11 +686,16 @@ By default this resolves unresolved outdated Gemini threads AND addressed-by-rep
 Useful options:
 
 ```bash
-# Wait for Gemini review activity to appear and settle (cycle 1 / initial review)
+# Wait for Gemini review activity to appear (cycle 1 / initial review).
+# No --after → returns as soon as activity is present; it does NOT wait for a
+# quiet/settle period. At the initial review there either are comments or there
+# aren't, so settling buys nothing — the wait only blocks until Gemini has shown up.
 python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --wait
 
 # Wait for a NEW Gemini review after a re-review request (cycle 2+).
 # Pass the re-review comment timestamp so prior-cycle activity is ignored.
+# WITH --after the wait settles (waits for the new review to stabilize) before
+# returning, so a fast-forward fetch doesn't catch a half-posted re-review.
 python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
     --wait --after "$REREVIEW_AT"
 

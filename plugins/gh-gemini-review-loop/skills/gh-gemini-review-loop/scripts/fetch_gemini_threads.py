@@ -729,6 +729,49 @@ def clear_run_tracking(pr: PullRequest) -> None:
         save_sticky_state(state)
 
 
+def track_finding_fingerprints(pr: PullRequest, current_fps: set[str]) -> dict[str, set[str]]:
+    """Snapshot the prior cycle's finding fingerprints, then union the current.
+
+    Call ONLY on a real agent fetch (not ``--cycle-summary`` / ``--record-run``),
+    exactly once per cycle. It moves the running union into
+    ``prior_seen_finding_fps`` *before* folding in this cycle's fingerprints, so
+    a later read-only ``--cycle-summary`` can ask "was this finding present in a
+    previous cycle?" without the current cycle's own fetch poisoning the answer.
+
+    Returns ``{"prior": <prior union>, "new": <current − prior>}``. Fails open:
+    any state I/O error yields an empty prior (everything reads as new).
+    """
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key, {})
+    if not isinstance(entry, dict):
+        entry = {}
+    run = entry.get("run", {})
+    if not isinstance(run, dict):
+        run = {}
+    prior_val = run.get("seen_finding_fps", [])
+    prior = {x for x in prior_val if isinstance(x, str)} if isinstance(prior_val, list) else set()
+    run["prior_seen_finding_fps"] = sorted(prior)
+    run["seen_finding_fps"] = sorted(prior | current_fps)
+    entry["run"] = run
+    state[key] = entry
+    save_sticky_state(state)
+    return {"prior": prior, "new": current_fps - prior}
+
+
+def prior_finding_fingerprints(pr: PullRequest) -> set[str]:
+    """Finding fingerprints seen in cycles *before* the current one.
+
+    Read by the receipt path to mark a current finding as carried-over. Empty
+    on cycle 1 (no prior cycle) — so every cycle-1 finding reads as new.
+    """
+    state = load_sticky_state()
+    entry = state.get(_state_key(pr), {})
+    run = entry.get("run", {}) if isinstance(entry, dict) else {}
+    value = run.get("prior_seen_finding_fps", []) if isinstance(run, dict) else []
+    return {x for x in value if isinstance(x, str)} if isinstance(value, list) else set()
+
+
 def _safe_int(value: Any) -> int:
     """Coerce a state value to int, returning 0 for missing/corrupt values.
 
@@ -1153,6 +1196,27 @@ def thread_fingerprint(threads: list[dict[str, Any]]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def finding_fingerprint(thread: dict[str, Any]) -> str:
+    """Content identity of a single finding, stable across re-posts.
+
+    Gemini re-posts the same suggestion as a *new* thread (new id) on each
+    re-review, so the thread id cannot tell a fresh finding from a carried-over
+    one. The path plus the normalized suggestion text can: we strip the leading
+    severity image markdown Gemini prepends and collapse whitespace, so cosmetic
+    differences (line-number echoes, re-wrapping) don't change the fingerprint.
+    """
+    if not isinstance(thread, dict):
+        return ""
+    path_val = thread.get("path")
+    path = path_val if path_val is not None else ""
+    comments = _iter_comments(thread)
+    first_comment = comments[0].get("body") if comments and isinstance(comments[0], dict) else None
+    body = first_comment if isinstance(first_comment, str) else ""
+    body = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", body)  # drop severity image
+    body = re.sub(r"\s+", " ", body).strip().lower()
+    return hashlib.sha1(f"{path}\n{body[:1000]}".encode()).hexdigest()[:16]
+
+
 def review_activity_fingerprint(
     pull_request: dict[str, Any],
     author: str,
@@ -1237,6 +1301,14 @@ def wait_for_stable_review(
         if fingerprint is None:
             if not after_iso:
                 print(f"Waiting for {author} review activity...", file=sys.stderr)
+        elif after_iso is None:
+            # Cycle 1 / initial review: activity is present, so return at once
+            # without waiting for it to settle. At the initial review there
+            # either are comments or there aren't — the quiet-period settle only
+            # earns its keep on cycle 2+ (after_iso set), where a freshly pushed
+            # fix needs Gemini's re-review to stabilize before we fetch.
+            print(f"Detected {author} review activity.", file=sys.stderr)
+            return pull_request
         elif fingerprint != last_fingerprint:
             print(f"Detected {author} review activity; waiting for it to settle...", file=sys.stderr)
             last_fingerprint = fingerprint
@@ -1753,7 +1825,7 @@ def main() -> int:
                     file=sys.stderr,
                 )
         rereviews = rereview_requests(pull_request, agent_login)
-        limit_reached = len(rereviews) >= args.max_rereview_requests
+        _limit_reached = len(rereviews) >= args.max_rereview_requests
         if args.resolve_outdated:
             resolved_outdated = resolve_outdated_threads(
                 pull_request, args.author, dry_run=args.dry_run
@@ -1818,6 +1890,14 @@ def main() -> int:
                 no_progress_flag = detect_no_progress(pr, current_fp)
             except OSError as exc:
                 print(f"warning: could not check progress: {exc}", file=sys.stderr)
+            # Snapshot prior-cycle finding fingerprints so the receipt can mark
+            # carried-over findings. Real-fetch only, once per cycle.
+            try:
+                track_finding_fingerprints(
+                    pr, {finding_fingerprint(t) for t in threads if isinstance(t, dict)}
+                )
+            except OSError as exc:
+                print(f"warning: could not track finding fingerprints: {exc}", file=sys.stderr)
 
         # ---- Judge (optional, opt-in via prefs file or --judge-mode) -------
         # The script is the single source of truth for whether the judge
@@ -2006,6 +2086,28 @@ def main() -> int:
                 print(metrics.format_auto_snapshot(record))
             else:
                 print(metrics.format_run_summary(record, terminal=bool(args.record_run)))
+                # Surface the detected test toolset and the deterministic finding
+                # list inline, so neither stays buried in the collapsed profile
+                # JSON / fetch output. Carried-over findings are marked using the
+                # prior-cycle fingerprint snapshot.
+                suite_block = metrics.format_suite_block(verification_details)
+                if suite_block:
+                    print(suite_block)
+                prior_fps = prior_finding_fingerprints(pr)
+                findings_view = []
+                for thread in threads:
+                    comments = _iter_comments(thread)
+                    line_val = thread.get("line")
+                    findings_view.append({
+                        "path": thread.get("path"),
+                        "line": line_val if line_val is not None else thread.get("originalLine"),
+                        "severity": thread_severity(thread),
+                        "url": comments[0].get("url") if comments and isinstance(comments[0], dict) else None,
+                        "carried": finding_fingerprint(thread) in prior_fps,
+                    })
+                findings_block = metrics.format_findings_block(findings_view)
+                if findings_block:
+                    print(findings_block)
             return 0
         if args.post_receipt or args.sticky_receipt:
             sticky = args.sticky_receipt

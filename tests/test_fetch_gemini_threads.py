@@ -50,6 +50,11 @@ from fetch_gemini_threads import (
     thread_fingerprint,
     thread_severity,
     update_run_tracking,
+    finding_fingerprint,
+    track_finding_fingerprints,
+    prior_finding_fingerprints,
+    wait_for_stable_review,
+    resolve_judge_phase,
 )
 
 
@@ -523,7 +528,7 @@ class TestReviewActivityFingerprint:
         # Without anchor: sees both reviews
         fp_all = review_activity_fingerprint(pr, BOT)
         # With anchor: only the new review
-        pr_old_only = _pr_with_review("2026-06-07T09:00:00Z")
+        _pr_old_only = _pr_with_review("2026-06-07T09:00:00Z")
         pr_new_only = _pr_with_review("2026-06-07T11:00:00Z")
         fp_anchored = review_activity_fingerprint(pr, BOT, after_iso=anchor)
         fp_new_only = review_activity_fingerprint(pr_new_only, BOT, after_iso=anchor)
@@ -712,6 +717,94 @@ class TestStickyReceiptRender:
         )
         # Header line ends after "receipt" with no " — " suffix
         assert body.splitlines()[0] == "### gh-gemini-review-loop receipt"
+
+
+def _thread(path, body, line=1):
+    return {"path": path, "line": line, "comments": [{"body": body, "url": f"https://gh/{path}"}]}
+
+
+class TestFindingFingerprint:
+    def test_same_content_same_fingerprint(self):
+        a = _thread("a.py", "![high](x) Fix the off-by-one")
+        b = _thread("a.py", "![high](x) Fix the off-by-one")
+        assert finding_fingerprint(a) == finding_fingerprint(b)
+
+    def test_severity_image_ignored(self):
+        # Same suggestion re-posted with a different severity image still matches.
+        a = _thread("a.py", "![high](sev-high.svg) Fix the off-by-one")
+        b = _thread("a.py", "![medium](sev-medium.svg) Fix the off-by-one")
+        assert finding_fingerprint(a) == finding_fingerprint(b)
+
+    def test_different_path_differs(self):
+        a = _thread("a.py", "![high](x) Fix it")
+        b = _thread("b.py", "![high](x) Fix it")
+        assert finding_fingerprint(a) != finding_fingerprint(b)
+
+    def test_different_body_differs(self):
+        a = _thread("a.py", "![high](x) Fix the parser")
+        b = _thread("a.py", "![high](x) Fix the renderer")
+        assert finding_fingerprint(a) != finding_fingerprint(b)
+
+
+class TestCarriedOverTracking:
+    def _pr(self):
+        return PullRequest(owner="o", repo="r", number=1)
+
+    def test_cycle_1_has_empty_prior(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        result = track_finding_fingerprints(pr, {"fp1", "fp2"})
+        assert result["prior"] == set()
+        assert result["new"] == {"fp1", "fp2"}
+        assert prior_finding_fingerprints(pr) == set()
+
+    def test_cycle_2_carries_prior_and_flags_new(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        track_finding_fingerprints(pr, {"fp1", "fp2"})       # cycle 1
+        result = track_finding_fingerprints(pr, {"fp2", "fp3"})  # cycle 2: fp2 carried, fp3 new
+        assert result["prior"] == {"fp1", "fp2"}
+        assert result["new"] == {"fp3"}
+        # The read-only receipt path sees cycle-1's union as "prior".
+        assert prior_finding_fingerprints(pr) == {"fp1", "fp2"}
+
+
+class TestWaitCycleOneNoSettle:
+    def _pr(self):
+        return PullRequest(owner="o", repo="r", number=1)
+
+    def test_cycle1_returns_on_first_detection_without_settle(self, monkeypatch):
+        # after_iso=None (cycle 1): activity present → return immediately, no sleep.
+        pull = _pr_with_review("2026-06-07T10:00:00Z")
+        monkeypatch.setattr("fetch_gemini_threads.fetch_threads", lambda pr: pull)
+
+        def _no_sleep(_):
+            raise AssertionError("cycle 1 must not settle/sleep")
+
+        monkeypatch.setattr("fetch_gemini_threads.time.sleep", _no_sleep)
+        out = wait_for_stable_review(
+            self._pr(), author=BOT, timeout_seconds=10, interval_seconds=1,
+            quiet_seconds=45, after_iso=None,
+        )
+        assert out is pull
+
+    def test_cycle2_waits_for_settle(self, monkeypatch):
+        # after_iso set (cycle 2+): first detection must NOT return; it sleeps to settle.
+        pull = _pr_with_review("2026-06-07T10:00:05Z")
+        monkeypatch.setattr("fetch_gemini_threads.fetch_threads", lambda pr: pull)
+        slept = {"n": 0}
+
+        def _count_sleep(_):
+            slept["n"] += 1
+            raise RuntimeError("stop after first sleep")  # break the loop deterministically
+
+        monkeypatch.setattr("fetch_gemini_threads.time.sleep", _count_sleep)
+        with pytest.raises(RuntimeError, match="stop after first sleep"):
+            wait_for_stable_review(
+                self._pr(), author=BOT, timeout_seconds=10, interval_seconds=1,
+                quiet_seconds=45, after_iso="2026-06-07T10:00:00Z",
+            )
+        assert slept["n"] == 1  # it sleeps rather than returning on first detection
 
 
 class TestRunTracking:
@@ -1243,9 +1336,6 @@ class TestSummaryStaleness:
         pr = PullRequest(owner="o", repo="r", number=1, url=None)
         stamp_summary_emitted(pr)
         assert read_run_tracking(pr) == {}
-
-
-from fetch_gemini_threads import resolve_judge_phase
 
 
 def test_resolve_judge_phase_infers_complete_for_record_run():

@@ -205,6 +205,61 @@ def format_run_summary(record: dict[str, Any], *, terminal: bool = True) -> str:
     return "\n".join(lines)
 
 
+def format_suite_block(verification_details: dict[str, Any] | None) -> str:
+    """One line per detected verification check, or '' when none.
+
+    Surfaces the repo-aware test toolset (e.g. ``uv run pytest``) that
+    ``run_profile.py`` detected, so it is visible in the chat receipt instead
+    of buried in the collapsed profile-runner JSON. ``verification_details`` is
+    the parsed ``ProfileRunResult.to_details()`` dict.
+    """
+    if not isinstance(verification_details, dict):
+        return ""
+    checks = verification_details.get("checks")
+    if not isinstance(checks, list) or not checks:
+        return ""
+    lines = ["Verification suite:"]
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        command = check.get("command", "?")
+        name = check.get("name", "?")
+        scope = "required" if check.get("required") else "optional"
+        status = check.get("status", "?")
+        lines.append(f"  - {command}  ({name}, {scope}) → {status}")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def format_findings_block(findings: list[dict[str, Any]]) -> str:
+    """Deterministic list of the current actionable findings, or '' when empty.
+
+    Each finding dict carries ``path``, ``line``, ``severity``, optional ``url``
+    (the GitHub comment permalink), and ``carried`` (True when the same finding
+    was already seen in a prior cycle). The header counts new vs carried-over so
+    a re-posted finding is never mistaken for a fresh one — e.g. a cycle that
+    fetches 4 threads where 1 repeats a prior fix reads ``3 new, 1 carried
+    over``.
+    """
+    valid_findings = [f for f in findings if isinstance(f, dict)]
+    if not valid_findings:
+        return ""
+    new_count = sum(1 for f in valid_findings if not f.get("carried"))
+    carried_count = len(valid_findings) - new_count
+    lines = [f"Findings ({len(valid_findings)}): {new_count} new, {carried_count} carried over"]
+    for idx, finding in enumerate(valid_findings, 1):
+        loc = finding.get("path") or "?"
+        line = finding.get("line")
+        if line is not None:
+            loc = f"{loc}:{line}"
+        severity = finding.get("severity") or "unknown"
+        tag = " · carried over from a prior cycle" if finding.get("carried") else ""
+        lines.append(f"  {idx}. {loc} [{severity}]{tag}")
+        url = finding.get("url")
+        if url:
+            lines.append(f"     {url}")
+    return "\n".join(lines)
+
+
 def _mode(items: list[Any]) -> Any | None:
     if not items:
         return None

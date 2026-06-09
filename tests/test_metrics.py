@@ -233,6 +233,52 @@ class TestFormatRunSummary:
         assert "Needs human by judge" not in out  # label removed entirely
 
 
+class TestFormatSuiteBlock:
+    def test_empty_when_no_details(self):
+        assert metrics.format_suite_block(None) == ""
+        assert metrics.format_suite_block({}) == ""
+        assert metrics.format_suite_block({"checks": []}) == ""
+
+    def test_renders_one_line_per_check(self):
+        details = {"checks": [
+            {"name": "root", "command": "uv run pytest", "required": True, "status": "passed"},
+            {"name": "web", "command": "npm test", "required": False, "status": "skipped"},
+        ]}
+        out = metrics.format_suite_block(details).splitlines()
+        assert out[0] == "Verification suite:"
+        assert "uv run pytest" in out[1] and "(root, required)" in out[1] and "passed" in out[1]
+        assert "npm test" in out[2] and "(web, optional)" in out[2] and "skipped" in out[2]
+
+    def test_ignores_non_dict_checks(self):
+        details = {"checks": ["junk", {"name": "root", "command": "pytest", "required": True, "status": "passed"}]}
+        out = metrics.format_suite_block(details)
+        assert "pytest" in out and "junk" not in out
+
+
+class TestFormatFindingsBlock:
+    def test_empty_when_no_findings(self):
+        assert metrics.format_findings_block([]) == ""
+
+    def test_counts_new_vs_carried(self):
+        findings = [
+            {"path": "a.py", "line": 10, "severity": "high", "carried": False},
+            {"path": "b.py", "line": 20, "severity": "medium", "carried": True},
+            {"path": "c.py", "line": 30, "severity": "high", "carried": False},
+        ]
+        out = metrics.format_findings_block(findings)
+        head = out.splitlines()[0]
+        assert head == "Findings (3): 2 new, 1 carried over"
+        assert "carried over from a prior cycle" in out  # only the carried one is tagged
+        assert out.count("carried over from a prior cycle") == 1
+
+    def test_includes_url_and_location(self):
+        findings = [{"path": "a.py", "line": 10, "severity": "high",
+                     "url": "https://github.com/o/r/pull/1#discussion_r99", "carried": False}]
+        out = metrics.format_findings_block(findings)
+        assert "a.py:10 [high]" in out
+        assert "https://github.com/o/r/pull/1#discussion_r99" in out
+
+
 class TestFormatAutoSnapshot:
     """The Stop-hook backstop can't know agent-only facts (fixed count,
     verification, terminal outcome), so its summary must show ONLY
