@@ -769,7 +769,7 @@ def prior_finding_fingerprints(pr: PullRequest) -> set[str]:
     entry = state.get(_state_key(pr), {})
     run = entry.get("run", {}) if isinstance(entry, dict) else {}
     value = run.get("prior_seen_finding_fps", []) if isinstance(run, dict) else []
-    return set(value) if isinstance(value, list) else set()
+    return {x for x in value if isinstance(x, str)} if isinstance(value, list) else set()
 
 
 def _safe_int(value: Any) -> int:
