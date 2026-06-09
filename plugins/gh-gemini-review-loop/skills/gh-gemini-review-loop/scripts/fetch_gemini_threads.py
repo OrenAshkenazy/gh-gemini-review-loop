@@ -1205,7 +1205,10 @@ def finding_fingerprint(thread: dict[str, Any]) -> str:
     severity image markdown Gemini prepends and collapse whitespace, so cosmetic
     differences (line-number echoes, re-wrapping) don't change the fingerprint.
     """
-    path = thread.get("path") or ""
+    if not isinstance(thread, dict):
+        return ""
+    path_val = thread.get("path")
+    path = path_val if path_val is not None else ""
     comments = _iter_comments(thread)
     first_comment = comments[0].get("body") if comments and isinstance(comments[0], dict) else None
     body = first_comment if isinstance(first_comment, str) else ""
