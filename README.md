@@ -18,7 +18,7 @@ The loop doesn't assume its fixes are correct; it verifies them, gating every ch
 ┌───────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────┐
 │ Zero-touch setup              │ A single menu pick on the first run. No config files and no schema to learn.              │
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
-│ Repo-aware                    │ Auto-detects Python, Node, Rust, and Go — and respects your own pinned commands.          │
+│ Repo-aware                    │ Auto-detects repo frameworks(Python, Node, Rust & Go) for acceptence test for each cycle. │
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
 │ Regression-proof              │ Every fix is gated on your own tests and linters before it is pushed.                     │
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
