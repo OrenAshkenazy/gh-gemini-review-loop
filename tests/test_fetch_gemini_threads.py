@@ -1639,6 +1639,7 @@ class TestFormatterCommands:
             "--profile-intro",
             "--repo",
             "OrenAshkenazy/AegisLocal",
+            "--no-color",
         ])
 
         rc = fgt.main()
@@ -1660,6 +1661,7 @@ class TestFormatterCommands:
             "--planned-verification",
             "--repo",
             "OrenAshkenazy/AegisLocal",
+            "--no-color",
         ])
 
         rc = fgt.main()

@@ -24,6 +24,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import metrics  # noqa: E402 — sibling module, pure/stdlib-only
+from loop_color import color_loop, colors_enabled  # noqa: E402 — sibling module
 
 
 DEFAULT_AUTHOR = "gemini-code-assist"
@@ -1585,6 +1586,13 @@ def judge_eval_requested(judge_status: dict[str, Any]) -> bool:
     return mode in {"on_cycle", "on_complete", "once"} and "no-op" not in reason
 
 
+def color_loop_block(block: str, *, enabled: bool) -> str:
+    """Color only human-readable loop-owned blocks."""
+    if isinstance(block, str) and block.startswith("[loop]"):
+        return color_loop(block, enabled=enabled)
+    return block
+
+
 def render_markdown(
     pr: dict[str, Any],
     threads: list[dict[str, Any]],
@@ -1676,6 +1684,11 @@ def main() -> int:
     parser.add_argument("--repo", default=None, help="OWNER/REPO for formatter-only commands.")
     parser.add_argument("--author", default=DEFAULT_AUTHOR, help=f"Review author login. Default: {DEFAULT_AUTHOR}")
     parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable ANSI color for human-readable [loop] blocks.",
+    )
     parser.add_argument(
         "--profile-intro",
         action="store_true",
@@ -1989,6 +2002,7 @@ def main() -> int:
         help="Aggregate across all repos instead of only the current one.",
     )
     args = parser.parse_args()
+    color_enabled = colors_enabled(no_color=args.no_color)
 
     if args.profile_intro or args.planned_verification:
         if not args.repo:
@@ -2000,7 +2014,7 @@ def main() -> int:
             blocks.append(metrics.format_profile_intro_block(profile, args.repo))
         if args.planned_verification:
             blocks.append(metrics.format_planned_verification_block(profile))
-        print("\n".join(blocks))
+        print(color_loop_block("\n".join(blocks), enabled=color_enabled))
         return 0
 
     if args.stats:
@@ -2049,8 +2063,11 @@ def main() -> int:
             print(f"warning: could not record cycle timing: {exc}", file=sys.stderr)
             return 0
         print(
-            f"[loop] recorded cycle: {metrics.format_duration(cycle['duration_seconds'])} "
-            f"active ({cycle['finding_count']} finding(s), outcome={cycle['outcome']})."
+            color_loop_block(
+                f"[loop] recorded cycle: {metrics.format_duration(cycle['duration_seconds'])} "
+                f"active ({cycle['finding_count']} finding(s), outcome={cycle['outcome']}).",
+                enabled=color_enabled,
+            )
         )
         return 0
 
@@ -2381,18 +2398,28 @@ def main() -> int:
                 except OSError as exc:
                     print(f"warning: could not stamp summary state: {exc}", file=sys.stderr)
             if args.auto_snapshot:
-                print(metrics.format_auto_snapshot(record))
+                print(color_loop_block(metrics.format_auto_snapshot(record), enabled=color_enabled))
             else:
-                print(metrics.format_run_summary(record, terminal=bool(args.record_run)))
+                print(
+                    color_loop_block(
+                        metrics.format_run_summary(record, terminal=bool(args.record_run)),
+                        enabled=color_enabled,
+                    )
+                )
                 if judge_eval_requested(judge_status):
-                    print(metrics.format_judge_skip(judge_status.get("skip_reason", "")))
+                    print(
+                        color_loop_block(
+                            metrics.format_judge_skip(judge_status.get("skip_reason", "")),
+                            enabled=color_enabled,
+                        )
+                    )
                 # Surface the detected test toolset and the deterministic finding
                 # list inline, so neither stays buried in the collapsed profile
                 # JSON / fetch output. Carried-over findings are marked using the
                 # prior-cycle fingerprint snapshot.
                 semantic_risk_block = metrics.format_semantic_risk_block(args.semantic_risk)
                 if semantic_risk_block:
-                    print(semantic_risk_block)
+                    print(color_loop_block(semantic_risk_block, enabled=color_enabled))
                 suite_block = metrics.format_suite_block(verification_details)
                 if suite_block:
                     print(suite_block)
@@ -2472,18 +2499,29 @@ def main() -> int:
         )
         if judge_status.get("ran") and judge_results:
             print(
-                format_judge_thread_table(
-                    threads, judge_results, judge_status.get("phase", "cycle")
+                color_loop_block(
+                    format_judge_thread_table(
+                        threads, judge_results, judge_status.get("phase", "cycle")
+                    ),
+                    enabled=color_enabled,
                 ),
             )
         elif judge_eval_requested(judge_status):
-            print(metrics.format_judge_skip(judge_status.get("skip_reason", "")))
+            print(
+                color_loop_block(
+                    metrics.format_judge_skip(judge_status.get("skip_reason", "")),
+                    enabled=color_enabled,
+                )
+            )
         if no_progress_flag:
             print(
-                "[loop] no_progress: actionable thread set is unchanged since the previous "
-                "cycle — no fix landed. Stop with: "
-                "--record-run --outcome no_progress "
-                "--outcome-reason 'no code change resolved any open thread'"
+                color_loop_block(
+                    "[loop] no_progress: actionable thread set is unchanged since the previous "
+                    "cycle — no fix landed. Stop with: "
+                    "--record-run --outcome no_progress "
+                    "--outcome-reason 'no code change resolved any open thread'",
+                    enabled=color_enabled,
+                )
             )
     return 0
 
