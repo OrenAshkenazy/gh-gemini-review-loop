@@ -750,7 +750,7 @@ def track_finding_fingerprints(pr: PullRequest, current_fps: set[str]) -> dict[s
     if not isinstance(run, dict):
         run = {}
     prior_val = run.get("seen_finding_fps", [])
-    prior = set(prior_val) if isinstance(prior_val, list) else set()
+    prior = {x for x in prior_val if isinstance(x, str)} if isinstance(prior_val, list) else set()
     run["prior_seen_finding_fps"] = sorted(prior)
     run["seen_finding_fps"] = sorted(prior | current_fps)
     entry["run"] = run
