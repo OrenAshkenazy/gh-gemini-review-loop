@@ -228,6 +228,179 @@ def format_auto_snapshot(record: dict[str, Any]) -> str:
     )
 
 
+def _count(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def format_terminal_breakdown(
+    *,
+    confirmed_fixed_outdated: int = 0,
+    fixed_pending_confirmation: int = 0,
+    remaining_valid_actionable: int = 0,
+    needs_human: int = 0,
+) -> str:
+    """Render terminal finding buckets with unambiguous labels."""
+    return "\n".join(
+        [
+            f"Confirmed fixed/outdated: {_count(confirmed_fixed_outdated)}",
+            (
+                "Fixed but awaiting review confirmation: "
+                f"{_count(fixed_pending_confirmation)}"
+            ),
+            f"Remaining valid actionable: {_count(remaining_valid_actionable)}",
+            f"Human decision required: {_count(needs_human)}",
+        ]
+    )
+
+
+def _profile_checks(profile: Any) -> list[dict[str, Any]]:
+    if not isinstance(profile, dict):
+        return []
+    checks = profile.get("checks")
+    if not isinstance(checks, list):
+        return []
+    profile_cwd = profile.get("working_directory")
+    if not isinstance(profile_cwd, str) or not profile_cwd.strip():
+        profile_cwd = "."
+
+    normalized: list[dict[str, Any]] = []
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        command = check.get("command")
+        if not isinstance(command, str) or not command.strip():
+            continue
+        name = check.get("name")
+        if not isinstance(name, str) or not name.strip():
+            name = "check"
+        cwd = check.get("working_directory")
+        if not isinstance(cwd, str) or not cwd.strip():
+            cwd = profile_cwd
+        normalized.append(
+            {
+                "name": name.strip(),
+                "command": command.strip(),
+                "cwd": cwd.strip(),
+                "required": bool(check.get("required", True)),
+            }
+        )
+    return normalized
+
+
+def format_profile_intro_block(profile: Any, repo: str) -> str:
+    """Deterministic intro for the saved repo-aware verification profile."""
+    if profile is None:
+        return "[loop] Verification profile: none saved, using ad hoc verification."
+    if not isinstance(profile, dict):
+        return "[loop] Verification profile: missing or malformed, using ad hoc verification."
+    if profile.get("source") == "skipped":
+        return "[loop] Verification profile: skipped for this repo, using ad hoc verification."
+
+    checks = _profile_checks(profile)
+    if not checks:
+        return "[loop] Verification profile: missing or malformed, using ad hoc verification."
+
+    lines = [
+        "[loop] Repo-aware verification profile",
+        f"Profile: {repo}",
+        "Checks:",
+    ]
+    for index, check in enumerate(checks, 1):
+        scope = "required" if check["required"] else "optional"
+        lines.append(
+            f"{index}. {check['name']} — {check['command']} "
+            f"(cwd: {check['cwd']}, {scope})"
+        )
+    return "\n".join(lines)
+
+
+def format_planned_verification_block(profile: Any) -> str:
+    """Render the required repo-aware checks the loop plans to run."""
+    checks = [check for check in _profile_checks(profile) if check["required"]]
+    if not checks:
+        return (
+            "[loop] Verification suite\n"
+            "No required repo-aware checks saved; use ad hoc verification."
+        )
+
+    plural = "check" if len(checks) == 1 else "checks"
+    lines = [
+        "[loop] Verification suite",
+        f"Running {len(checks)} required repo-aware {plural}:",
+    ]
+    for index, check in enumerate(checks, 1):
+        lines.append(f"{index}. {check['name']} — {check['command']} (cwd: {check['cwd']})")
+    return "\n".join(lines)
+
+
+def format_judge_skip(reason: str) -> str:
+    reason = reason.strip() if isinstance(reason, str) else ""
+    return f"[loop] judge eval skipped: {reason or 'unknown reason'}"
+
+
+def format_next_options(outcome: str, cap_reached: bool, needs_human: int) -> str:
+    """Deterministic next-step menu for non-clean terminal outcomes."""
+    if outcome == "clean":
+        return ""
+    if outcome == "fixed_pending_confirmation":
+        options = [
+            "Bump cap and run one confirmation cycle",
+            "Manually inspect and resolve the remaining GitHub thread",
+            "Leave it for follow-up",
+        ]
+    elif outcome == "capped":
+        options = [
+            'Bump cap and continue: "run the Gemini loop with cap 6"',
+            "Manually inspect and resolve the remaining GitHub thread",
+            "Leave it for a follow-up PR",
+        ]
+    elif outcome == "human" or _count(needs_human):
+        options = [
+            "Ask Claude to implement option A",
+            "Ask Claude to implement option B",
+            "Leave the behavior unchanged and reply to the thread with rationale",
+        ]
+    elif cap_reached:
+        options = [
+            'Bump cap and continue: "run the Gemini loop with cap 6"',
+            "Manually inspect and resolve the remaining GitHub thread",
+            "Leave it for a follow-up PR",
+        ]
+    else:
+        options = [
+            "Inspect the remaining GitHub thread",
+            "Adjust the fix and rerun verification",
+            "Leave it for a follow-up PR",
+        ]
+    return "\n".join(["Next options:"] + [f"{i}. {option}" for i, option in enumerate(options, 1)])
+
+
+def format_semantic_risk_block(changes: list[str] | None) -> str:
+    """Render an explicit manual/heuristic semantic-risk note."""
+    if not isinstance(changes, list):
+        return ""
+    cleaned = [change.strip() for change in changes if isinstance(change, str) and change.strip()]
+    if not cleaned:
+        return ""
+    lines = [
+        "[loop] Semantic risk note (manual / heuristic)",
+        "This cycle changed public behavior:",
+    ]
+    lines.extend(f"- {change}" for change in cleaned)
+    lines.extend(
+        [
+            "",
+            "Verification passed, but this may require human review.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def format_run_summary(record: dict[str, Any], *, terminal: bool = True) -> str:
     """Human-readable receipt for one loop run.
 
@@ -241,10 +414,11 @@ def format_run_summary(record: dict[str, Any], *, terminal: bool = True) -> str:
     per-cycle snapshots from the final terminal receipt.
     """
     header = "[loop] Summary" if terminal else "[loop] Cycle receipt"
+    fixed_label = "Fixed" if terminal else "Fixed locally"
     lines = [
         header,
         f"Findings fetched: {record['findings_fetched']}",
-        f"Fixed: {record['fixed_count']}",
+        f"{fixed_label}: {record['fixed_count']}",
     ]
     observed = record.get("observed_fixed_count")
     if observed is not None and observed != record["fixed_count"]:
@@ -262,10 +436,25 @@ def format_run_summary(record: dict[str, Any], *, terminal: bool = True) -> str:
             lines.append(f"Ignored by judge: {ignored}")
     valid_remaining = record.get("valid_actionable_remaining", record["remaining_actionable"])
     needs_human = record.get("needs_human", 0)
-    if valid_remaining:
-        lines.append(f"Remaining valid actionable: {valid_remaining}")
-    if needs_human:
-        lines.append(f"Human decision required: {needs_human}")
+    terminal_breakdown = record.get("terminal_breakdown")
+    if terminal and isinstance(terminal_breakdown, dict) and terminal_breakdown:
+        lines.extend(
+            format_terminal_breakdown(
+                confirmed_fixed_outdated=terminal_breakdown.get("confirmed_fixed_outdated", 0),
+                fixed_pending_confirmation=terminal_breakdown.get("fixed_pending_confirmation", 0),
+                remaining_valid_actionable=terminal_breakdown.get("remaining_valid_actionable", 0),
+                needs_human=terminal_breakdown.get("needs_human", 0),
+            ).splitlines()
+        )
+    elif not terminal and record.get("fixed_count") and valid_remaining:
+        lines.append(f"Awaiting push/re-review confirmation: {valid_remaining}")
+        if needs_human:
+            lines.append(f"Human decision required: {needs_human}")
+    else:
+        if valid_remaining:
+            lines.append(f"Remaining valid actionable: {valid_remaining}")
+        if needs_human:
+            lines.append(f"Human decision required: {needs_human}")
     if record.get("addressed_by_reply"):
         lines.append(f"Addressed by reply: {record['addressed_by_reply']}")
     lines.append(f"Cycles used: {record['cycles_used']}/{record['cycle_cap']}")
@@ -278,6 +467,14 @@ def format_run_summary(record: dict[str, Any], *, terminal: bool = True) -> str:
     lines.append(f"Outcome: {record['outcome']}")
     label = "Time to clean PR" if record["outcome"] == "clean" else "Time spent"
     lines.append(f"{label}: {format_duration(record['duration_seconds'])}")
+    if terminal:
+        options = format_next_options(
+            record.get("outcome", ""),
+            record.get("cycles_used", 0) >= record.get("cycle_cap", 0),
+            record.get("needs_human", 0),
+        )
+        if options:
+            lines.extend(options.splitlines())
     return "\n".join(lines)
 
 
@@ -537,6 +734,7 @@ def build_record(
     finding_paths: list[str],
     judge: dict[str, Any] | None,
     cycles: list[dict[str, Any]] | None = None,
+    terminal_breakdown: dict[str, Any] | None = None,
     ts: str | None = None,
 ) -> dict[str, Any]:
     ts = ts or now_iso()
@@ -575,4 +773,5 @@ def build_record(
         "finding_areas": [top_dir(p) for p in paths],
         "finding_paths": paths,
         "judge": judge or {"enabled": False},
+        "terminal_breakdown": dict(terminal_breakdown) if isinstance(terminal_breakdown, dict) else {},
     }

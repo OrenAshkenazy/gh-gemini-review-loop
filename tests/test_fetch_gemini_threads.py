@@ -1263,7 +1263,7 @@ class TestCycleSummary:
         out = capsys.readouterr().out
         assert "[loop] Cycle receipt" in out      # mid-loop header, not terminal [loop] Summary
         assert "Findings fetched: 2" in out      # t1 + t2 accumulated
-        assert "Fixed: 1" in out
+        assert "Fixed locally: 1" in out
         assert "Ignored by judge: 1" in out      # t2 false_positive, from accumulation
 
         # Read-only: no record written, accumulator NOT cleared.
@@ -1271,6 +1271,37 @@ class TestCycleSummary:
         run = read_run_tracking(pr)
         assert set(run.get("finding_ids", [])) == {"t1", "t2"}
         assert run.get("judge_results")  # verdicts still present for next cycle
+
+    def test_cycle_summary_renders_semantic_risk_block(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+
+        pr = PullRequest(owner="o", repo="r", number=7)
+        update_run_tracking(pr, [("t1", "a.py")])
+        thread = {"id": "t1", "path": "a.py"}
+        monkeypatch.setattr(fgt, "resolve_pr", lambda spec: pr)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda p: {"stub": True})
+        monkeypatch.setattr(fgt, "filter_threads", lambda *a, **k: [thread])
+        monkeypatch.setattr(fgt, "sort_by_severity", lambda threads: threads)
+        monkeypatch.setattr(fgt, "rereview_requests", lambda *a, **k: ["c1"])
+        monkeypatch.setattr(fgt, "addressed_by_reply_threads", lambda *a, **k: [])
+        monkeypatch.setattr(fgt, "pagination_warnings", lambda pull_request: [])
+
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py", "--cycle-summary",
+            "--judge-mode", "off", "--no-agent-filter",
+            "--no-resolve-outdated", "--no-resolve-addressed-by-reply",
+            "--fixed-count", "1", "--verification", "passed",
+            "--semantic-risk", "get_user() now returns one row instead of a list",
+        ])
+
+        rc = fgt.main()
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "[loop] Semantic risk note (manual / heuristic)" in out
+        assert "- get_user() now returns one row instead of a list" in out
 
 
 class TestDeriveRecordFields:
@@ -1587,6 +1618,58 @@ def test_resolve_judge_phase_infers_cycle_for_normal_fetch():
 def test_resolve_judge_phase_explicit_flag_wins():
     assert resolve_judge_phase("cycle", record_run=True) == "cycle"
     assert resolve_judge_phase("complete", record_run=False) == "complete"
+
+
+class TestFormatterCommands:
+    def _profile(self):
+        return {
+            "source": "confirmed",
+            "working_directory": ".",
+            "checks": [
+                {"name": "root", "command": "uv run pytest", "required": True}
+            ],
+        }
+
+    def test_profile_intro_cli_outputs_deterministic_text(self, monkeypatch, capsys):
+        import fetch_gemini_threads as fgt
+
+        monkeypatch.setattr(fgt, "load_profile_for_repo", lambda repo: self._profile())
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py",
+            "--profile-intro",
+            "--repo",
+            "OrenAshkenazy/AegisLocal",
+        ])
+
+        rc = fgt.main()
+
+        assert rc == 0
+        assert capsys.readouterr().out.splitlines() == [
+            "[loop] Repo-aware verification profile",
+            "Profile: OrenAshkenazy/AegisLocal",
+            "Checks:",
+            "1. root — uv run pytest (cwd: ., required)",
+        ]
+
+    def test_planned_verification_cli_outputs_deterministic_text(self, monkeypatch, capsys):
+        import fetch_gemini_threads as fgt
+
+        monkeypatch.setattr(fgt, "load_profile_for_repo", lambda repo: self._profile())
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py",
+            "--planned-verification",
+            "--repo",
+            "OrenAshkenazy/AegisLocal",
+        ])
+
+        rc = fgt.main()
+
+        assert rc == 0
+        assert capsys.readouterr().out.splitlines() == [
+            "[loop] Verification suite",
+            "Running 1 required repo-aware check:",
+            "1. root — uv run pytest (cwd: .)",
+        ]
 
 
 class TestFormatJudgeVerdictSummary:

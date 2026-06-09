@@ -1565,6 +1565,26 @@ def format_judge_thread_table(
     return "\n".join([header] + rows)
 
 
+def load_profile_for_repo(repo: str) -> dict[str, Any] | None:
+    """Best-effort saved verification profile lookup for formatter commands."""
+    try:
+        from judge import get_profile  # noqa: PLC0415
+    except ImportError:
+        return None
+    try:
+        return get_profile(repo)
+    except Exception:
+        return None
+
+
+def judge_eval_requested(judge_status: dict[str, Any]) -> bool:
+    if not isinstance(judge_status, dict) or judge_status.get("ran"):
+        return False
+    mode = judge_status.get("mode")
+    reason = str(judge_status.get("skip_reason") or "")
+    return mode in {"on_cycle", "on_complete", "once"} and "no-op" not in reason
+
+
 def render_markdown(
     pr: dict[str, Any],
     threads: list[dict[str, Any]],
@@ -1653,8 +1673,19 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--pr", help="PR URL or OWNER/REPO#NUMBER. Defaults to current branch PR.")
+    parser.add_argument("--repo", default=None, help="OWNER/REPO for formatter-only commands.")
     parser.add_argument("--author", default=DEFAULT_AUTHOR, help=f"Review author login. Default: {DEFAULT_AUTHOR}")
     parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    parser.add_argument(
+        "--profile-intro",
+        action="store_true",
+        help="Print the saved verification-profile intro block for --repo and exit.",
+    )
+    parser.add_argument(
+        "--planned-verification",
+        action="store_true",
+        help="Print the planned repo-aware verification block for --repo and exit.",
+    )
     parser.add_argument("--include-resolved", action="store_true")
     parser.add_argument("--include-outdated", action="store_true")
     parser.add_argument("--wait", action="store_true", help="Poll until Gemini review activity appears and is stable.")
@@ -1907,6 +1938,15 @@ def main() -> int:
         help="The final Gemini wait timed out or otherwise did not confirm the latest fixes.",
     )
     parser.add_argument(
+        "--semantic-risk",
+        action="append",
+        default=[],
+        help=(
+            "Manual/heuristic semantic risk note for this cycle. Repeatable; "
+            "rendered only in cycle/run summary output."
+        ),
+    )
+    parser.add_argument(
         "--record-cycle",
         action="store_true",
         help=(
@@ -1949,6 +1989,19 @@ def main() -> int:
         help="Aggregate across all repos instead of only the current one.",
     )
     args = parser.parse_args()
+
+    if args.profile_intro or args.planned_verification:
+        if not args.repo:
+            print("error: --profile-intro/--planned-verification require --repo OWNER/REPO.", file=sys.stderr)
+            return 1
+        profile = load_profile_for_repo(args.repo)
+        blocks = []
+        if args.profile_intro:
+            blocks.append(metrics.format_profile_intro_block(profile, args.repo))
+        if args.planned_verification:
+            blocks.append(metrics.format_planned_verification_block(profile))
+        print("\n".join(blocks))
+        return 0
 
     if args.stats:
         try:
@@ -2269,6 +2322,17 @@ def main() -> int:
                 judge_ran=judge_ran,
                 judge_results=merged_judge_results,
             )
+            terminal_breakdown = {
+                "confirmed_fixed_outdated": derived["observed_fixed_count"],
+                "fixed_pending_confirmation": likely_fixed_remaining,
+                "remaining_valid_actionable": max(
+                    0,
+                    derived["remaining_actionable"]
+                    - derived["needs_human"]
+                    - likely_fixed_remaining,
+                ),
+                "needs_human": derived["needs_human"],
+            }
             verification_details: dict[str, Any] = {}
             if args.verification_details:
                 try:
@@ -2293,6 +2357,7 @@ def main() -> int:
                 finding_paths=finding_paths,
                 judge=metrics.build_judge_block(judge_ran, merged_judge_results),
                 cycles=run.get("cycles", []),
+                terminal_breakdown=terminal_breakdown,
                 **derived,
             )
             # --cycle-summary is read-only: print the block but never append a
@@ -2319,10 +2384,15 @@ def main() -> int:
                 print(metrics.format_auto_snapshot(record))
             else:
                 print(metrics.format_run_summary(record, terminal=bool(args.record_run)))
+                if judge_eval_requested(judge_status):
+                    print(metrics.format_judge_skip(judge_status.get("skip_reason", "")))
                 # Surface the detected test toolset and the deterministic finding
                 # list inline, so neither stays buried in the collapsed profile
                 # JSON / fetch output. Carried-over findings are marked using the
                 # prior-cycle fingerprint snapshot.
+                semantic_risk_block = metrics.format_semantic_risk_block(args.semantic_risk)
+                if semantic_risk_block:
+                    print(semantic_risk_block)
                 suite_block = metrics.format_suite_block(verification_details)
                 if suite_block:
                     print(suite_block)
@@ -2406,6 +2476,8 @@ def main() -> int:
                     threads, judge_results, judge_status.get("phase", "cycle")
                 ),
             )
+        elif judge_eval_requested(judge_status):
+            print(metrics.format_judge_skip(judge_status.get("skip_reason", "")))
         if no_progress_flag:
             print(
                 "[loop] no_progress: actionable thread set is unchanged since the previous "
