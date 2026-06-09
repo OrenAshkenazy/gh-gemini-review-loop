@@ -7,9 +7,6 @@ blocked while a loop is active for the repo and summary_is_stale() is True
 last_summary_seq and clears the gate.
 """
 
-import json
-import sys
-
 from fetch_gemini_threads import save_sticky_state
 from loop_summary_gate import format_run_snapshot, stale_summary_for_push
 

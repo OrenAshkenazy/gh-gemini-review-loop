@@ -22,7 +22,6 @@ from judge import (  # noqa: E402
     DEFAULT_MAX_REREVIEW_REQUESTS,
     DEFAULT_MODEL,
     PREFS_SCHEMA_VERSION,
-    PROFILE_SOURCES,
     VALID_VERDICTS,
     JudgeClient,
     JudgeError,

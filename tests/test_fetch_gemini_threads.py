@@ -54,6 +54,7 @@ from fetch_gemini_threads import (
     track_finding_fingerprints,
     prior_finding_fingerprints,
     wait_for_stable_review,
+    resolve_judge_phase,
 )
 
 
@@ -527,7 +528,7 @@ class TestReviewActivityFingerprint:
         # Without anchor: sees both reviews
         fp_all = review_activity_fingerprint(pr, BOT)
         # With anchor: only the new review
-        pr_old_only = _pr_with_review("2026-06-07T09:00:00Z")
+        _pr_old_only = _pr_with_review("2026-06-07T09:00:00Z")
         pr_new_only = _pr_with_review("2026-06-07T11:00:00Z")
         fp_anchored = review_activity_fingerprint(pr, BOT, after_iso=anchor)
         fp_new_only = review_activity_fingerprint(pr_new_only, BOT, after_iso=anchor)
@@ -1335,9 +1336,6 @@ class TestSummaryStaleness:
         pr = PullRequest(owner="o", repo="r", number=1, url=None)
         stamp_summary_emitted(pr)
         assert read_run_tracking(pr) == {}
-
-
-from fetch_gemini_threads import resolve_judge_phase
 
 
 def test_resolve_judge_phase_infers_complete_for_record_run():

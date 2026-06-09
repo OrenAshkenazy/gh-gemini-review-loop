@@ -1822,7 +1822,7 @@ def main() -> int:
                     file=sys.stderr,
                 )
         rereviews = rereview_requests(pull_request, agent_login)
-        limit_reached = len(rereviews) >= args.max_rereview_requests
+        _limit_reached = len(rereviews) >= args.max_rereview_requests
         if args.resolve_outdated:
             resolved_outdated = resolve_outdated_threads(
                 pull_request, args.author, dry_run=args.dry_run
