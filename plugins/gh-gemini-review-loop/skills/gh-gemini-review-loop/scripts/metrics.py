@@ -32,6 +32,7 @@ VALID_OUTCOMES = (
     "regression",
     "no_progress",
     "verification_failed",
+    "fixed_pending_confirmation",
 )
 VALID_VERIFICATION = ("passed", "failed", "skipped")
 # Terminal outcomes counted as a "failed run" in the elapsed-by-outcome split.
@@ -120,6 +121,81 @@ def build_judge_block(judge_ran: bool, judge_results: dict[str, Any]) -> dict[st
         if action in actions:
             actions[action] += 1
     return {"enabled": True, "verdicts": verdicts, "recommended_actions": actions}
+
+
+# Per-finding states produced by classify_finding_state. These are NOT the
+# terminal run outcomes (VALID_OUTCOMES); they describe one finding's status so
+# the terminal breakdown can label it accurately instead of lumping every
+# open thread into "remaining valid actionable".
+FINDING_STATES = (
+    "new_valid_actionable",
+    "carried_over",
+    "stale_already_fixed",
+    "fixed_locally",
+    "fixed_pushed_awaiting_review",
+    "fixed_pending_confirmation",
+    "confirmed_outdated",
+    "needs_human",
+    "capped_unfixed",
+)
+
+
+def classify_finding_state(signals: dict[str, Any]) -> str:
+    """Classify one finding from explicit, multi-signal booleans.
+
+    ``signals`` carries six independent flags (any absent key defaults to
+    False — no hidden magic):
+
+    - ``judge_needs_human``  : the judge flagged a human decision.
+    - ``carried_over``       : prior-cycle fingerprint match (still present).
+    - ``fixed_locally``      : agent marker says it fixed this finding.
+    - ``file_changed``       : the finding's path appears in a fixing-commit diff.
+    - ``gemini_confirmed``   : the final review cleared / outdated this finding.
+    - ``cap_reached``        : the re-review cap was reached.
+
+    No single signal decides ``fixed_pending_confirmation``; it requires the
+    *combination* fixed_locally + file_changed at cap with no Gemini
+    confirmation.
+
+    Precedence (first matching rule wins, highest-confidence first):
+
+    1. gemini_confirmed                              -> confirmed_outdated
+    2. judge_needs_human                             -> needs_human
+    3. fixed_locally & file_changed & cap_reached    -> fixed_pending_confirmation
+    4. fixed_locally & file_changed                  -> fixed_pushed_awaiting_review
+    5. fixed_locally                                 -> fixed_locally
+    6. carried_over & file_changed                   -> stale_already_fixed
+    7. carried_over & cap_reached                    -> capped_unfixed
+    8. carried_over                                  -> carried_over
+    9. cap_reached                                   -> capped_unfixed
+    10. (default)                                    -> new_valid_actionable
+    """
+    judge_needs_human = bool(signals.get("judge_needs_human"))
+    carried_over = bool(signals.get("carried_over"))
+    fixed_locally = bool(signals.get("fixed_locally"))
+    file_changed = bool(signals.get("file_changed"))
+    gemini_confirmed = bool(signals.get("gemini_confirmed"))
+    cap_reached = bool(signals.get("cap_reached"))
+
+    if gemini_confirmed:
+        return "confirmed_outdated"
+    if judge_needs_human:
+        return "needs_human"
+    if fixed_locally and file_changed and cap_reached:
+        return "fixed_pending_confirmation"
+    if fixed_locally and file_changed:
+        return "fixed_pushed_awaiting_review"
+    if fixed_locally:
+        return "fixed_locally"
+    if carried_over and file_changed:
+        return "stale_already_fixed"
+    if carried_over and cap_reached:
+        return "capped_unfixed"
+    if carried_over:
+        return "carried_over"
+    if cap_reached:
+        return "capped_unfixed"
+    return "new_valid_actionable"
 
 
 def _duration_seconds(started_at: str, ts: str) -> int:

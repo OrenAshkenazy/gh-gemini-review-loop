@@ -423,20 +423,55 @@ def derive_record_fields(
     }
 
 
-def _derive_outcome(remaining_actionable: int, verification: str, cap_reached: bool) -> str:
+def _derive_outcome(
+    remaining_actionable: int,
+    verification: str,
+    cap_reached: bool,
+    *,
+    gemini_confirmed: bool = True,
+    likely_fixed_remaining: int = 0,
+) -> str:
     """Best-effort outcome when the agent does not pass --outcome explicitly.
 
-    Can only produce the outcomes inferable from script-visible state:
-    capped / verification_failed / clean / human. The remaining
-    metrics.VALID_OUTCOMES values (regression, no_progress) encode an agent
-    judgment the script cannot see, so the agent must pass them via --outcome.
+    Produces the outcomes inferable from script-visible state plus the two
+    agent-supplied signals that disambiguate the terminal cycle:
+
+    - ``gemini_confirmed`` — the final re-review actually responded after the
+      re-review request (False when the final wait timed out). Defaults True so
+      legacy callers are unaffected; ``clean`` is only ever returned when True.
+    - ``likely_fixed_remaining`` — count of still-open threads that are
+      multi-signal "likely fixed" (see metrics.classify_finding_state).
+
+    Logic (corrections folded in):
+      - verification failed                                  -> verification_failed
+      - unconfirmed final wait + everything resolved/likely-fixed
+                                                             -> fixed_pending_confirmation
+      - cap reached (genuine unfixed remaining)              -> capped
+      - no remaining + passed + gemini_confirmed             -> clean
+      - else                                                 -> human
+
+    ``regression`` / ``no_progress`` encode an agent judgment the script cannot
+    see, so the agent must pass them via --outcome.
     """
-    if cap_reached:
-        return "capped"
     if verification == "failed":
         return "verification_failed"
-    if remaining_actionable == 0 and verification == "passed":
+
+    # Everything still open is multi-signal "likely fixed".
+    likely_all_fixed = (
+        remaining_actionable > 0 and likely_fixed_remaining >= remaining_actionable
+    )
+    # No open threads and the suite passed — it *looks* resolved.
+    looks_resolved = remaining_actionable == 0 and verification == "passed"
+
+    # Final wait timed out (Gemini never re-confirmed) but state otherwise looks
+    # fixed: never guess clean or capped — report pending confirmation.
+    if not gemini_confirmed and (likely_all_fixed or looks_resolved):
+        return "fixed_pending_confirmation"
+
+    if looks_resolved and gemini_confirmed:
         return "clean"
+    if cap_reached:
+        return "capped"
     return "human"
 
 
@@ -727,6 +762,137 @@ def clear_run_tracking(pr: PullRequest) -> None:
     if key in state and "run" in state[key]:
         del state[key]["run"]
         save_sticky_state(state)
+
+
+def accumulate_fixed_markers(
+    pr: PullRequest,
+    *,
+    fingerprints: list[str] | None = None,
+    paths: list[str] | None = None,
+) -> None:
+    """Merge agent-supplied "fixed locally" markers into run tracking.
+
+    The agent passes ``--fixed-finding <fp>`` (finding fingerprints) and/or
+    fixed file paths as it remediates each cycle. They accumulate (union) under
+    the run entry so the terminal classification can read which findings the
+    agent claims to have fixed — one of the multi-signal inputs to
+    metrics.classify_finding_state. Stored alongside, never replacing, the
+    existing run-tracking ids/paths.
+    """
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key)
+    entry = dict(entry) if isinstance(entry, dict) else {}
+    run = entry.get("run")
+    run = dict(run) if isinstance(run, dict) else {}
+    fps = {x for x in run.get("fixed_finding_fps", []) if isinstance(x, str)}
+    fpaths = {x for x in run.get("fixed_paths", []) if isinstance(x, str)}
+    for fp in fingerprints or []:
+        if fp:
+            fps.add(fp)
+    for p in paths or []:
+        if p:
+            fpaths.add(p)
+    run["fixed_finding_fps"] = sorted(fps)
+    run["fixed_paths"] = sorted(fpaths)
+    entry["run"] = run
+    state[key] = entry
+    save_sticky_state(state)
+
+
+def read_fixed_markers(pr: PullRequest) -> dict[str, set[str]]:
+    """Return the accumulated fixed markers as ``{"fingerprints", "paths"}`` sets.
+
+    Empty sets when none were recorded or the state is missing/corrupt.
+    """
+    run = read_run_tracking(pr)
+    if not isinstance(run, dict):
+        run = {}
+    fps = run.get("fixed_finding_fps", [])
+    fpaths = run.get("fixed_paths", [])
+    return {
+        "fingerprints": {x for x in fps if isinstance(x, str)} if isinstance(fps, list) else set(),
+        "paths": {x for x in fpaths if isinstance(x, str)} if isinstance(fpaths, list) else set(),
+    }
+
+
+def changed_files_in_range(
+    base: str | None, head: str | None, *, cwd: str | None = None
+) -> set[str]:
+    """Best-effort set of files changed in ``base..head`` via git.
+
+    Used to compute the ``file_changed`` signal: did the finding's path actually
+    change in the fixing commits? Fails OPEN — any git error (not a repo, bad
+    revs, git missing) yields an empty set rather than crashing the loop.
+    """
+    if not base or not head:
+        return set()
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", f"{base}..{head}"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, ValueError):
+        return set()
+    if result.returncode != 0:
+        return set()
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+LIKELY_FIXED_FINDING_STATES = {
+    "fixed_pushed_awaiting_review",
+    "fixed_pending_confirmation",
+    "stale_already_fixed",
+}
+
+
+def classify_remaining_finding_states(
+    threads: list[dict[str, Any]],
+    *,
+    fixed_fingerprints: set[str],
+    fixed_paths: set[str],
+    changed_paths: set[str],
+    prior_fingerprints: set[str],
+    judge_results: dict[str, dict[str, Any]],
+    cap_reached: bool,
+) -> dict[str, str]:
+    """Classify the still-actionable findings for terminal outcome derivation.
+
+    The state machine lives in ``metrics.classify_finding_state``. This adapter
+    only builds its explicit signal booleans from script-visible state and
+    agent-supplied fixed markers.
+    """
+    states: dict[str, str] = {}
+    for index, thread in enumerate(threads):
+        if not isinstance(thread, dict):
+            continue
+        fingerprint = finding_fingerprint(thread)
+        path_val = thread.get("path")
+        path = path_val if isinstance(path_val, str) else ""
+        fixed_by_marker = fingerprint in fixed_fingerprints or path in fixed_paths
+        file_changed = path in changed_paths or path in fixed_paths
+        thread_id = thread.get("id")
+        result_key = thread_id if isinstance(thread_id, str) else fingerprint
+        judge_result = judge_results.get(result_key, {}) if result_key else {}
+        state = metrics.classify_finding_state(
+            {
+                "judge_needs_human": judge_result.get("verdict") == "needs_human",
+                "carried_over": fingerprint in prior_fingerprints,
+                "fixed_locally": fixed_by_marker,
+                "file_changed": file_changed,
+                "gemini_confirmed": False,
+                "cap_reached": cap_reached,
+            }
+        )
+        states[result_key or f"finding-{index}"] = state
+    return states
+
+
+def count_likely_fixed_remaining(states: dict[str, str]) -> int:
+    return sum(1 for state in states.values() if state in LIKELY_FIXED_FINDING_STATES)
 
 
 def track_finding_fingerprints(pr: PullRequest, current_fps: set[str]) -> dict[str, set[str]]:
@@ -1681,6 +1847,34 @@ def main() -> int:
     )
     parser.add_argument("--fixed-count", type=int, default=0, help="Agent-claimed fixes this run.")
     parser.add_argument(
+        "--fixed-finding",
+        action="append",
+        default=[],
+        help=(
+            "Finding fingerprint the agent fixed locally. Repeatable; stored in "
+            "run tracking and used for terminal classification."
+        ),
+    )
+    parser.add_argument(
+        "--fixed-path",
+        action="append",
+        default=[],
+        help=(
+            "Path the agent fixed locally. Repeatable; stored in run tracking and "
+            "used as path-level fixed/change evidence."
+        ),
+    )
+    parser.add_argument(
+        "--changed-base",
+        default=None,
+        help="Optional git base ref for changed-file evidence (`git diff --name-only base..head`).",
+    )
+    parser.add_argument(
+        "--changed-head",
+        default=None,
+        help="Optional git head ref for changed-file evidence (`git diff --name-only base..head`).",
+    )
+    parser.add_argument(
         "--verification",
         choices=["passed", "failed", "skipped"],
         default="skipped",
@@ -1698,6 +1892,20 @@ def main() -> int:
         help="Terminal outcome of the loop. If omitted, derived from state.",
     )
     parser.add_argument("--outcome-reason", default=None, help="One-line reason for --outcome.")
+    parser.add_argument(
+        "--gemini-confirmed",
+        dest="gemini_confirmed",
+        action="store_true",
+        default=True,
+        help="The final Gemini wait/re-review completed. Default for legacy compatibility.",
+    )
+    parser.add_argument(
+        "--gemini-unconfirmed",
+        "--no-gemini-confirmed",
+        dest="gemini_confirmed",
+        action="store_false",
+        help="The final Gemini wait timed out or otherwise did not confirm the latest fixes.",
+    )
     parser.add_argument(
         "--record-cycle",
         action="store_true",
@@ -1799,6 +2007,15 @@ def main() -> int:
             args.max_rereview_requests, prefs
         )
         pr = resolve_pr(args.pr)
+        if args.fixed_finding or args.fixed_path:
+            try:
+                accumulate_fixed_markers(
+                    pr,
+                    fingerprints=args.fixed_finding,
+                    paths=args.fixed_path,
+                )
+            except OSError as exc:
+                print(f"warning: could not persist fixed markers: {exc}", file=sys.stderr)
         if args.wait:
             pull_request = wait_for_stable_review(
                 pr,
@@ -2025,8 +2242,24 @@ def main() -> int:
             merged_judge_results = merge_judge_results(accumulated_results, judge_results)
             judge_ran = bool(run.get("judge_ran")) or bool(judge_status.get("ran"))
             cap_reached = len(rereviews) >= args.max_rereview_requests
+            fixed_markers = read_fixed_markers(pr)
+            changed_paths = changed_files_in_range(args.changed_base, args.changed_head)
+            remaining_states = classify_remaining_finding_states(
+                threads,
+                fixed_fingerprints=fixed_markers["fingerprints"],
+                fixed_paths=fixed_markers["paths"],
+                changed_paths=changed_paths,
+                prior_fingerprints=prior_finding_fingerprints(pr),
+                judge_results=merged_judge_results,
+                cap_reached=cap_reached,
+            )
+            likely_fixed_remaining = count_likely_fixed_remaining(remaining_states)
             outcome = args.outcome or _derive_outcome(
-                len(current_actionable_ids), args.verification, cap_reached
+                len(current_actionable_ids),
+                args.verification,
+                cap_reached,
+                gemini_confirmed=args.gemini_confirmed,
+                likely_fixed_remaining=likely_fixed_remaining,
             )
             derived = derive_record_fields(
                 baseline_ids=baseline_ids,

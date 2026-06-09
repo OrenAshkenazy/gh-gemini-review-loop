@@ -5,6 +5,7 @@ pure helpers that operate on already-fetched GraphQL payloads.
 """
 
 import json
+import os
 import sys
 
 import pytest
@@ -25,6 +26,8 @@ from fetch_gemini_threads import (
     format_judge_verdict_summary,
     merge_judge_results,
     any_active_run,
+    classify_remaining_finding_states,
+    count_likely_fixed_remaining,
     effective_rereview_limit,
     filter_by_min_severity,
     find_active_run,
@@ -839,6 +842,74 @@ class TestRunTracking:
         assert read_run_tracking(pr) == {}
         assert load_sticky_state()[_state_key(pr)]["commentId"] == 42
 
+    def test_changed_files_in_range_reads_git_diff(self, tmp_path):
+        import subprocess
+        from fetch_gemini_threads import changed_files_in_range
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        def git(*args):
+            subprocess.run(["git", *args], cwd=repo, env=env, check=True,
+                           capture_output=True)
+        git("init", "-q")
+        (repo / "a.py").write_text("x = 1\n")
+        git("add", "a.py")
+        git("commit", "-qm", "base")
+        base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, env=env,
+                              capture_output=True, text=True).stdout.strip()
+        (repo / "a.py").write_text("x = 2\n")
+        (repo / "b.py").write_text("y = 1\n")
+        git("add", "a.py", "b.py")
+        git("commit", "-qm", "fix")
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, env=env,
+                              capture_output=True, text=True).stdout.strip()
+        changed = changed_files_in_range(base, head, cwd=str(repo))
+        assert changed == {"a.py", "b.py"}
+
+    def test_changed_files_in_range_guarded_on_error(self, tmp_path):
+        from fetch_gemini_threads import changed_files_in_range
+        # Non-existent revs / not a repo must not raise — best-effort empty set.
+        assert changed_files_in_range("nope", "nope2", cwd=str(tmp_path)) == set()
+
+    def test_changed_files_in_range_guarded_when_git_raises(self, monkeypatch):
+        import fetch_gemini_threads as fgt
+
+        def _raise(*args, **kwargs):
+            raise OSError("git missing")
+
+        monkeypatch.setattr(fgt.subprocess, "run", _raise)
+        assert fgt.changed_files_in_range("base", "head") == set()
+
+    def test_changed_files_in_range_empty_when_no_refs(self):
+        from fetch_gemini_threads import changed_files_in_range
+        assert changed_files_in_range(None, None) == set()
+
+    def test_accumulate_fixed_markers_persists_and_unions(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        from fetch_gemini_threads import accumulate_fixed_markers, read_fixed_markers
+        pr = self._pr()
+        accumulate_fixed_markers(pr, fingerprints=["fp1"], paths=["a.py"])
+        accumulate_fixed_markers(pr, fingerprints=["fp2"], paths=["b.py"])
+        markers = read_fixed_markers(pr)
+        assert markers["fingerprints"] == {"fp1", "fp2"}
+        assert markers["paths"] == {"a.py", "b.py"}
+
+    def test_read_fixed_markers_empty_by_default(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        from fetch_gemini_threads import read_fixed_markers
+        markers = read_fixed_markers(self._pr())
+        assert markers == {"fingerprints": set(), "paths": set()}
+
+    def test_accumulate_fixed_markers_survives_alongside_run_tracking(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        from fetch_gemini_threads import accumulate_fixed_markers, read_fixed_markers
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")])
+        accumulate_fixed_markers(pr, fingerprints=["fp1"], paths=[])
+        assert read_run_tracking(pr)["finding_ids"] == ["t1"]
+        assert read_fixed_markers(pr)["fingerprints"] == {"fp1"}
+
     def test_record_cycle_appends_timed_entry(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         pr = self._pr()
@@ -914,6 +985,46 @@ class TestRunTracking:
         assert "could not record cycle timing" in capsys.readouterr().err
 
 
+class TestRemainingFindingStateAdapter:
+    def _thread(self, thread_id="t1", path="a.py", body="Use the helper here."):
+        return {
+            "id": thread_id,
+            "path": path,
+            "line": 10,
+            "comments": [{"author": {"login": BOT}, "body": body}],
+        }
+
+    def test_fixed_marker_and_changed_path_counts_as_likely_fixed(self):
+        thread = self._thread()
+        fp = finding_fingerprint(thread)
+        states = classify_remaining_finding_states(
+            [thread],
+            fixed_fingerprints={fp},
+            fixed_paths=set(),
+            changed_paths={"a.py"},
+            prior_fingerprints=set(),
+            judge_results={},
+            cap_reached=True,
+        )
+        assert states == {"t1": "fixed_pending_confirmation"}
+        assert count_likely_fixed_remaining(states) == 1
+
+    def test_needs_human_is_not_likely_fixed(self):
+        thread = self._thread()
+        fp = finding_fingerprint(thread)
+        states = classify_remaining_finding_states(
+            [thread],
+            fixed_fingerprints={fp},
+            fixed_paths={"a.py"},
+            changed_paths={"a.py"},
+            prior_fingerprints=set(),
+            judge_results={"t1": {"verdict": "needs_human"}},
+            cap_reached=True,
+        )
+        assert states == {"t1": "needs_human"}
+        assert count_likely_fixed_remaining(states) == 0
+
+
 class TestJudgeAccumulation:
     def _pr(self):
         return PullRequest(owner="o", repo="r", number=1)
@@ -986,6 +1097,15 @@ class TestRecordRunIntegration:
     No real network/gh calls — every GitHub-touching function is monkeypatched.
     """
 
+    def _stub_record_run_fetch(self, fgt, monkeypatch, pr, threads, rereviews):
+        monkeypatch.setattr(fgt, "resolve_pr", lambda spec: pr)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda p: {"stub": True})
+        monkeypatch.setattr(fgt, "filter_threads", lambda *a, **k: threads)
+        monkeypatch.setattr(fgt, "sort_by_severity", lambda fetched: fetched)
+        monkeypatch.setattr(fgt, "rereview_requests", lambda *a, **k: rereviews)
+        monkeypatch.setattr(fgt, "addressed_by_reply_threads", lambda *a, **k: [])
+        monkeypatch.setattr(fgt, "pagination_warnings", lambda pull_request: [])
+
     def test_clean_record_run_reports_accumulated_eval(
         self, tmp_path, monkeypatch, capsys
     ):
@@ -1004,13 +1124,7 @@ class TestRecordRunIntegration:
 
         # Terminal pass: the PR is now clean (both findings resolved). Stub the
         # GitHub seams so filter_threads yields zero actionable threads.
-        monkeypatch.setattr(fgt, "resolve_pr", lambda spec: pr)
-        monkeypatch.setattr(fgt, "fetch_threads", lambda p: {"stub": True})
-        monkeypatch.setattr(fgt, "filter_threads", lambda *a, **k: [])
-        monkeypatch.setattr(fgt, "sort_by_severity", lambda threads: threads)
-        monkeypatch.setattr(fgt, "rereview_requests", lambda *a, **k: ["c1"])
-        monkeypatch.setattr(fgt, "addressed_by_reply_threads", lambda *a, **k: [])
-        monkeypatch.setattr(fgt, "pagination_warnings", lambda pull_request: [])
+        self._stub_record_run_fetch(fgt, monkeypatch, pr, [], ["c1"])
 
         monkeypatch.setattr(sys, "argv", [
             "fetch_gemini_threads.py", "--record-run",
@@ -1036,6 +1150,73 @@ class TestRecordRunIntegration:
         assert record["observed_fixed_count"] == 2     # both resolved this run
         # run state is cleared at record end -> no leakage into the next run
         assert read_run_tracking(pr) == {}
+
+    def test_record_run_derives_fixed_pending_from_marker_flags(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+        from metrics import runs_log_path
+
+        pr = PullRequest(owner="o", repo="r", number=7)
+        thread = {
+            "id": "t1",
+            "path": "a.py",
+            "line": 10,
+            "comments": [{"author": {"login": BOT}, "body": "Use the helper here."}],
+        }
+        fp = finding_fingerprint(thread)
+        self._stub_record_run_fetch(fgt, monkeypatch, pr, [thread], ["c1", "c2", "c3"])
+
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py", "--record-run",
+            "--judge-mode", "off", "--no-agent-filter",
+            "--no-resolve-outdated", "--no-resolve-addressed-by-reply",
+            "--fixed-count", "1", "--verification", "passed",
+            "--fixed-finding", fp, "--fixed-path", "a.py",
+            "--gemini-unconfirmed",
+        ])
+
+        rc = fgt.main()
+        assert rc == 0
+        assert "Outcome: fixed_pending_confirmation" in capsys.readouterr().out
+        record = json.loads(runs_log_path().read_text().strip().splitlines()[-1])
+        assert record["outcome"] == "fixed_pending_confirmation"
+        assert record["remaining_actionable"] == 1
+
+    def test_record_run_outcome_override_remains_authoritative(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+        from metrics import runs_log_path
+
+        pr = PullRequest(owner="o", repo="r", number=7)
+        thread = {
+            "id": "t1",
+            "path": "a.py",
+            "line": 10,
+            "comments": [{"author": {"login": BOT}, "body": "Use the helper here."}],
+        }
+        fp = finding_fingerprint(thread)
+        self._stub_record_run_fetch(fgt, monkeypatch, pr, [thread], ["c1", "c2", "c3"])
+
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py", "--record-run",
+            "--judge-mode", "off", "--no-agent-filter",
+            "--no-resolve-outdated", "--no-resolve-addressed-by-reply",
+            "--fixed-count", "1", "--verification", "passed",
+            "--fixed-finding", fp, "--fixed-path", "a.py",
+            "--gemini-unconfirmed", "--outcome", "human",
+            "--outcome-reason", "explicit override",
+        ])
+
+        rc = fgt.main()
+        assert rc == 0
+        assert "Outcome: human" in capsys.readouterr().out
+        record = json.loads(runs_log_path().read_text().strip().splitlines()[-1])
+        assert record["outcome"] == "human"
+        assert record["outcome_reason"] == "explicit override"
 
 
 class TestCycleSummary:
@@ -1134,9 +1315,9 @@ class TestDeriveRecordFields:
 
 
 class TestDeriveOutcome:
-    def test_cap_reached_wins(self):
-        # cap_reached takes priority even if other conditions would apply
-        assert _derive_outcome(0, "passed", cap_reached=True) == "capped"
+    def test_confirmed_clean_even_when_cap_reached(self):
+        # Hitting the cap does not make a verified, Gemini-confirmed clean PR capped.
+        assert _derive_outcome(0, "passed", cap_reached=True) == "clean"
 
     def test_verification_failed(self):
         assert _derive_outcome(0, "failed", cap_reached=False) == "verification_failed"
@@ -1150,6 +1331,63 @@ class TestDeriveOutcome:
     def test_human_fallback_when_verification_skipped(self):
         # skipped verification + no remaining is not "clean" (clean requires passed)
         assert _derive_outcome(0, "skipped", cap_reached=False) == "human"
+
+    def test_cap_with_all_likely_fixed_unconfirmed_is_fixed_pending_confirmation(self):
+        # Cap reached, threads remain, but every one is multi-signal "likely
+        # fixed" and Gemini never re-confirmed → fixed_pending_confirmation,
+        # never guessed as capped or clean.
+        assert (
+            _derive_outcome(
+                2,
+                "passed",
+                cap_reached=True,
+                gemini_confirmed=False,
+                likely_fixed_remaining=2,
+            )
+            == "fixed_pending_confirmation"
+        )
+
+    def test_cap_with_genuine_unfixed_remaining_is_capped(self):
+        # Cap reached with some remaining threads not classified likely-fixed.
+        assert (
+            _derive_outcome(
+                3,
+                "passed",
+                cap_reached=True,
+                gemini_confirmed=False,
+                likely_fixed_remaining=1,
+            )
+            == "capped"
+        )
+
+    def test_cap_with_likely_fixed_but_gemini_confirmed_is_capped(self):
+        # If Gemini did respond at cap, we don't claim pending-confirmation.
+        assert (
+            _derive_outcome(
+                2,
+                "passed",
+                cap_reached=True,
+                gemini_confirmed=True,
+                likely_fixed_remaining=2,
+            )
+            == "capped"
+        )
+
+    def test_verification_failed_beats_cap(self):
+        # A failed verification is surfaced even when the cap was also reached.
+        assert (
+            _derive_outcome(0, "failed", cap_reached=True) == "verification_failed"
+        )
+
+    def test_clean_requires_gemini_confirmed(self):
+        # No remaining + passed but final wait timed out (unconfirmed) is not
+        # clean — it resolves to fixed_pending_confirmation.
+        assert (
+            _derive_outcome(
+                0, "passed", cap_reached=False, gemini_confirmed=False
+            )
+            == "fixed_pending_confirmation"
+        )
 
 
 # ---------------------------------------------------------------------------
