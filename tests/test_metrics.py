@@ -683,7 +683,7 @@ class TestFormatWaitHeartbeat:
             checks=11,
         )
         assert out == (
-            "[loop] wait timed out after 15m 5s — Gemini did not confirm; "
+            "[loop] wait timed out after 15m — Gemini did not confirm; "
             "record with --gemini-unconfirmed"
         )
 

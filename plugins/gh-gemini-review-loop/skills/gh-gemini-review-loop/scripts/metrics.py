@@ -371,19 +371,8 @@ def format_wait_heartbeat(
             f"{_count(quiet_period_remaining_seconds)}s quiet period remaining"
         )
     if status == "timed_out":
-        # Format duration with seconds for heartbeat visibility.
-        secs = max(0, int(elapsed))
-        if secs < 60:
-            formatted = f"{secs}s"
-        else:
-            minutes, sec = divmod(secs, 60)
-            hours, minutes = divmod(minutes, 60)
-            if hours:
-                formatted = f"{hours}h {minutes}m {sec}s"
-            else:
-                formatted = f"{minutes}m {sec}s"
         return (
-            f"[loop] wait timed out after {formatted} — "
+            f"[loop] wait timed out after {format_duration(elapsed)} — "
             "Gemini did not confirm; record with --gemini-unconfirmed"
         )
     return ""
