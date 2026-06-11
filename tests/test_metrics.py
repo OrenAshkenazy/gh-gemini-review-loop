@@ -636,6 +636,74 @@ class TestAggregate:
         assert agg["avg_cycles_per_run"] == 2.0        # both cycles still counted
 
 
+class TestFormatWaitHeartbeat:
+    def test_waiting_status(self):
+        out = metrics.format_wait_heartbeat(
+            "waiting",
+            author="gemini-code-assist",
+            elapsed_seconds=90,
+            checks=2,
+            next_wait_seconds=90,
+        )
+        assert out == (
+            "[loop] waiting for gemini-code-assist — 90s elapsed, "
+            "2 checks done, next check in 90s"
+        )
+
+    def test_waiting_singular_check(self):
+        out = metrics.format_wait_heartbeat(
+            "waiting",
+            author="gemini-code-assist",
+            elapsed_seconds=60,
+            checks=1,
+            next_wait_seconds=90,
+        )
+        assert "1 check done" in out
+        assert "checks" not in out.replace("1 check done", "")
+
+    def test_settling_status(self):
+        out = metrics.format_wait_heartbeat(
+            "settling",
+            author="gemini-code-assist",
+            elapsed_seconds=120,
+            checks=3,
+            next_wait_seconds=30,
+            quiet_period_remaining_seconds=30,
+        )
+        assert out == (
+            "[loop] Gemini responded — waiting for review threads to settle, "
+            "30s quiet period remaining"
+        )
+
+    def test_timed_out_status(self):
+        out = metrics.format_wait_heartbeat(
+            "timed_out",
+            author="gemini-code-assist",
+            elapsed_seconds=905,
+            checks=11,
+        )
+        assert out == (
+            "[loop] wait timed out after 15m 5s — Gemini did not confirm; "
+            "record with --gemini-unconfirmed"
+        )
+
+    def test_unknown_status_returns_empty(self):
+        assert metrics.format_wait_heartbeat("ready", author="x", elapsed_seconds=1, checks=1) == ""
+        assert metrics.format_wait_heartbeat("", author="x", elapsed_seconds=1, checks=1) == ""
+
+    def test_corrupt_counts_clamped(self):
+        out = metrics.format_wait_heartbeat(
+            "waiting",
+            author="gemini-code-assist",
+            elapsed_seconds=-5,
+            checks="bogus",
+            next_wait_seconds=None,
+        )
+        assert "0s elapsed" in out
+        assert "0 checks done" in out
+        assert "next check in 0s" in out
+
+
 class TestFormatStats:
     def test_empty_message(self):
         out = metrics.format_stats("o/r", {"count": 0})
