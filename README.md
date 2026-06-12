@@ -18,7 +18,7 @@ The loop doesn't assume its fixes are correct; it verifies them, gating every ch
 ┌───────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────┐
 │ Zero-touch setup              │ A single menu pick on the first run. No config files and no schema to learn.              │
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
-│ Repo-aware                    │ Auto-detects repo frameworks(Python, Node, Rust & Go) for acceptence test for each cycle. │
+│ Repo-aware                    │ Auto-detects repo framework(Python, Node, Rust & Go) for cycle acceptance tests.          │
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
 │ Regression-proof              │ Every fix is gated on your own tests and linters before it is pushed.                     │
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
@@ -71,7 +71,7 @@ To upgrade later (Claude Code uses `/plugin update` for installed plugins, disti
 
 ![Terminal demo of gh-gemini-review-loop handling Gemini Code Assist feedback](docs/gh-gemini-review-loop-demo.gif)
 
-The demo shows the whole happy path: `gh pr create`, Gemini comments appearing, Claude running the loop, the thread-aware fetcher surfacing actionable feedback, fixes, tests, push, and a re-review request.
+The demo shows a full run in under a minute: the loop activates on a PR with 6 Gemini findings, detects the repo's framework and arms the verification gate (`uv run pytest` — no push unless tests pass), the judge filters out a false positive, fixes land cycle by cycle, and a semantic-risk change pulls the developer in only where needed. It closes with the audit trail — every finding traced to the commit that fixed it — and the aggregated per-repo loop stats (`--stats`): average cycles, time to terminal outcome, findings fixed, false positives avoided.
 
 
 ## Use It
