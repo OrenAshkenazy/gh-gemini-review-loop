@@ -10,6 +10,8 @@ import sys
 
 import pytest
 
+import fetch_gemini_threads as fgt
+
 from fetch_gemini_threads import (
     ADDRESSED_BY_REPLY_MIN_CHARS,
     PAGE_LIMIT_REVIEW_THREADS,
@@ -1839,8 +1841,6 @@ class TestDetectNoProgress:
         pr = self._pr()
         assert detect_no_progress(pr, "fp_any") is False
 
-
-import fetch_gemini_threads as fgt  # noqa: E402 — module alias for TestWaitChunkState
 
 
 class TestWaitChunkState:
