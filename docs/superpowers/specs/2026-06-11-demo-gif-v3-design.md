@@ -47,20 +47,34 @@ Boxed frame:
 - `re-review requested` → `gemini re-reviewed: no additional feedback`
 - `cycle 2/3  clean — loop done`
 
-### 33–36s — Stats close
-Done box:
+### 27–30s — Done box
 - `7 fixes · 1 FP skipped · 2/3 cycles · 0 manual babysitting`
-- Followed by `> show Gemini loop stats` repo aggregate (avg cycles, time to
-  terminal, findings fixed, judge coverage) — compressed to fit the 3s window;
-  if too dense, keep only the done box and fold one aggregate line into it.
+- `every cycle gated by uv run pytest — regression-proof`
+
+### 30–36s — Audit trail table (hold ~3s)
+Three-column box table tracing every finding to its commit:
+`thread | originally flagged | fixed in` — 7 fixed rows (5 medium → `5330451`,
+2 high → `d04a50c`) plus the FP row marked `reply`.
+
+### 36–45s — Stats close (hold ~5s)
+`> show Gemini loop stats` → full `--stats` block (last 10 runs): avg cycles,
+elapsed-to-terminal split by outcome (clean/capped/failed), active cycle time,
+findings fixed 32/41, human decisions, addressed-by-reply, FPs avoided 14,
+provider, hottest finding area.
+
+## Staging note: clear-screen chapters
+
+Content (~74 rows) exceeds terminal height; scrolling makes every line a
+full-frame GIF diff (2.8 MB). Instead each beat clears the screen (`ESC[2J`)
+and plays on its own 86×22 canvas — punchier chapters and ~270 KB output.
 
 ## Acceptance
 
-- Total duration 34–38s; last frame holds ≥ 2s.
-- Each money frame readable at GIF speed (≥ 2s hold, ≤ 7 lines).
-- No line exceeds 96 cols (no wrapping artifacts).
+- Total duration 40–50s; last frame holds ≥ 3s.
+- Each money frame readable at GIF speed (≥ 2s hold) and fits one screen.
+- No line exceeds 86 cols (no wrapping artifacts).
 - GIF < 1 MB; README alt text still accurate (update the line under the embed
-  to mention repo-aware gate, judge, and stats).
+  to mention repo-aware gate, judge, audit trail, and stats).
 
 ## Out of scope
 
