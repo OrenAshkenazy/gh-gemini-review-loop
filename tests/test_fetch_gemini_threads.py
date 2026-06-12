@@ -2109,3 +2109,44 @@ class TestWaitChunkCli:
         # main() catches RuntimeError and returns 1 — we just verify legacy was called
         fgt.main()
         assert called.get("legacy") is True
+
+
+class TestWaitHeartbeatCommand:
+    def test_renders_persisted_snapshot(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.delenv("GGRL_NO_COLOR", raising=False)
+        pr = PullRequest(owner="o", repo="r", number=5)
+        monkeypatch.setattr(fgt, "resolve_pr", lambda arg: pr)
+        fgt.begin_wait_chunk(pr, "2026-06-11T12:00:00Z")
+        fgt.save_wait_snapshot(pr, {
+            "status": "settling",
+            "author": "gemini-code-assist",
+            "elapsed_seconds": 120,
+            "checks": 3,
+            "next_wait_seconds": 30,
+            "quiet_period_remaining_seconds": 30,
+        })
+        monkeypatch.setattr(
+            sys, "argv",
+            ["fetch_gemini_threads.py", "--wait-heartbeat",
+             "--pr", "https://github.com/o/r/pull/5"],
+        )
+        assert fgt.main() == 0
+        out = capsys.readouterr().out
+        assert "Gemini responded — waiting for review threads to settle" in out
+        assert "30s quiet period remaining" in out
+        assert "\033[95m" in out
+
+    def test_no_wait_in_progress(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            fgt, "resolve_pr", lambda arg: PullRequest(owner="o", repo="r", number=5)
+        )
+        monkeypatch.setattr(
+            sys, "argv",
+            ["fetch_gemini_threads.py", "--wait-heartbeat",
+             "--pr", "https://github.com/o/r/pull/5"],
+        )
+        assert fgt.main() == 0
+        assert "no Gemini wait in progress" in capsys.readouterr().out

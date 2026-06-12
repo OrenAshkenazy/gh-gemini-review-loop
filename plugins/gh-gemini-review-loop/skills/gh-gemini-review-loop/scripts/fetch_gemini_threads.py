@@ -1922,6 +1922,15 @@ def main() -> int:
         action="store_true",
         help="Print the planned repo-aware verification block for --repo and exit.",
     )
+    parser.add_argument(
+        "--wait-heartbeat",
+        action="store_true",
+        help=(
+            "Print the human heartbeat block for the PR's in-progress chunked "
+            "wait (from persisted state) and exit. Use after a --format json "
+            "wait chunk so JSON stdout stays machine-only."
+        ),
+    )
     parser.add_argument("--include-resolved", action="store_true")
     parser.add_argument("--include-outdated", action="store_true")
     parser.add_argument("--wait", action="store_true", help="Poll until Gemini review activity appears and is stable.")
@@ -2249,6 +2258,35 @@ def main() -> int:
         if args.planned_verification:
             blocks.append(metrics.format_planned_verification_block(profile))
         print(color_loop_block("\n".join(blocks), enabled=color_enabled))
+        return 0
+
+    if args.wait_heartbeat:
+        pr = resolve_pr(args.pr)
+        snapshot = read_wait_state(pr).get("last_snapshot")
+        if not isinstance(snapshot, dict) or not snapshot:
+            print(
+                color_loop_block(
+                    "[loop] no Gemini wait in progress for this PR.",
+                    enabled=color_enabled,
+                )
+            )
+            return 0
+        print(
+            color_loop_block(
+                metrics.format_wait_heartbeat(
+                    str(snapshot.get("status", "")),
+                    author=str(snapshot.get("author", DEFAULT_AUTHOR)),
+                    elapsed_seconds=snapshot.get("elapsed_seconds", 0),
+                    checks=snapshot.get("checks", 0),
+                    next_wait_seconds=snapshot.get("next_wait_seconds", 0),
+                    quiet_period_remaining_seconds=snapshot.get(
+                        "quiet_period_remaining_seconds"
+                    ),
+                )
+                or "[loop] no Gemini wait in progress for this PR.",
+                enabled=color_enabled,
+            )
+        )
         return 0
 
     if args.stats:
