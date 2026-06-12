@@ -844,6 +844,53 @@ def clear_wait_state(pr: PullRequest) -> None:
             print(f"warning: could not clear wait state: {exc}", file=sys.stderr)
 
 
+WAIT_FIRST_CHUNK_SECONDS = 60
+WAIT_LATER_CHUNK_SECONDS = 90
+
+
+def _parse_iso_utc(value: Any) -> _dt.datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return _dt.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=_dt.timezone.utc
+        )
+    except ValueError:
+        return None
+
+
+def wait_elapsed_seconds(
+    wait: dict[str, Any],
+    after_iso: str | None,
+    now: _dt.datetime | None = None,
+) -> int:
+    """Total wait elapsed, robust to state loss.
+
+    ``max(now - started_at, now - after)``: if sticky state is corrupted or
+    deleted, a fresh started_at cannot silently restart the --timeout budget —
+    the --after anchor still bounds the total. Cycle 1 has no anchor and falls
+    back to started_at alone (acceptable: the cycle-1 fast path returns on
+    first detected activity).
+    """
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    candidates = []
+    for value in (wait.get("started_at"), after_iso):
+        parsed = _parse_iso_utc(value)
+        if parsed is not None:
+            candidates.append((now - parsed).total_seconds())
+    return max(0, int(max(candidates))) if candidates else 0
+
+
+def suggested_next_wait_seconds(checks: int) -> int:
+    """Decay schedule: 60s for the first chunk, 90s after.
+
+    Early silence is what feels broken; by the second heartbeat the user knows
+    the loop is waiting, so later checks stretch out. All gaps stay far below
+    the 5-minute prompt-cache TTL.
+    """
+    return WAIT_FIRST_CHUNK_SECONDS if checks <= 1 else WAIT_LATER_CHUNK_SECONDS
+
+
 def accumulate_fixed_markers(
     pr: PullRequest,
     *,

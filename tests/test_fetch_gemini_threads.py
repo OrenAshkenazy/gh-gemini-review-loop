@@ -4,6 +4,7 @@ These tests intentionally avoid network/gh calls — they exercise only the
 pure helpers that operate on already-fetched GraphQL payloads.
 """
 
+import datetime
 import json
 import os
 import sys
@@ -1897,3 +1898,32 @@ class TestWaitChunkState:
         save_sticky_state({"o/r#5": {"run": {"wait": "not-a-dict"}}})
         wait = fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
         assert wait["checks"] == 1
+
+
+class TestWaitElapsedAndDecay:
+    def test_elapsed_from_started_at(self):
+        wait = {"started_at": "2026-06-11T12:00:00Z"}
+        now = datetime.datetime(2026, 6, 11, 12, 2, 30, tzinfo=datetime.timezone.utc)
+        assert fgt.wait_elapsed_seconds(wait, None, now=now) == 150
+
+    def test_after_floor_dominates_when_state_lost(self):
+        # Fresh started_at (state was wiped) must not restart the budget:
+        # the --after anchor bounds total elapsed.
+        wait = {"started_at": "2026-06-11T12:09:00Z"}
+        now = datetime.datetime(2026, 6, 11, 12, 10, 0, tzinfo=datetime.timezone.utc)
+        assert fgt.wait_elapsed_seconds(wait, "2026-06-11T12:00:00Z", now=now) == 600
+
+    def test_missing_started_at_uses_after(self):
+        now = datetime.datetime(2026, 6, 11, 12, 5, 0, tzinfo=datetime.timezone.utc)
+        assert fgt.wait_elapsed_seconds({}, "2026-06-11T12:00:00Z", now=now) == 300
+
+    def test_no_inputs_returns_zero(self):
+        now = datetime.datetime(2026, 6, 11, 12, 5, 0, tzinfo=datetime.timezone.utc)
+        assert fgt.wait_elapsed_seconds({}, None, now=now) == 0
+        assert fgt.wait_elapsed_seconds({"started_at": "garbage"}, "also-garbage", now=now) == 0
+
+    def test_decay_schedule(self):
+        assert fgt.suggested_next_wait_seconds(0) == 60
+        assert fgt.suggested_next_wait_seconds(1) == 60
+        assert fgt.suggested_next_wait_seconds(2) == 90
+        assert fgt.suggested_next_wait_seconds(10) == 90
