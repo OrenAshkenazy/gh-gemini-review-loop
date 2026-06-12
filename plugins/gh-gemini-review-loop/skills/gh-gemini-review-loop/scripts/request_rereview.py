@@ -15,6 +15,8 @@ DEFAULT_PHRASE = "@gemini-code-assist please review the latest changes."
 
 def parse_repo(value: str) -> tuple[str, str]:
     """Validate and split an ``OWNER/REPO`` value."""
+    if not isinstance(value, str):
+        raise ValueError("--repo must be a string")
     if value.strip() != value or value.count("/") != 1:
         raise ValueError("--repo must be in OWNER/REPO format")
     owner, repo = value.split("/", 1)
