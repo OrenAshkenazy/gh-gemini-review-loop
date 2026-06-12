@@ -1927,3 +1927,114 @@ class TestWaitElapsedAndDecay:
         assert fgt.suggested_next_wait_seconds(1) == 60
         assert fgt.suggested_next_wait_seconds(2) == 90
         assert fgt.suggested_next_wait_seconds(10) == 90
+
+
+class TestRunWaitChunk:
+    PR = fgt.PullRequest(owner="o", repo="r", number=5)
+
+    @staticmethod
+    def _recent_after(seconds_ago: int = 5) -> str:
+        return (
+            datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(seconds=seconds_ago)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _patch(self, monkeypatch, tmp_path, fingerprints, reviews=None):
+        """fingerprints: sequence returned by successive fingerprint calls."""
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        fps = iter(fingerprints)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: {"reviews": reviews or []})
+        monkeypatch.setattr(
+            fgt,
+            "review_activity_fingerprint",
+            lambda pull_request, author, after_iso=None: next(fps),
+        )
+        monkeypatch.setattr(fgt.time, "sleep", lambda s: None)
+
+    def test_waiting_when_no_activity(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path, [None, None, None])
+        clock = iter([0.0, 0.0, 1.0, 2.0, 100.0, 100.0, 100.0])
+        monkeypatch.setattr(fgt.time, "monotonic", lambda: next(clock))
+        result = fgt.run_wait_chunk(
+            self.PR, "gemini-code-assist",
+            timeout_seconds=900, interval_seconds=1, quiet_seconds=45,
+            after_iso=self._recent_after(), chunk_seconds=60,
+        )
+        assert result["status"] == "waiting"
+        assert result["checks"] == 1
+        assert result["next_wait_seconds"] == 60
+        assert result["pull_request"] is None
+
+    def test_settling_when_activity_not_yet_stable(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path, ["fp-1", "fp-1"])
+        clock = iter([0.0, 0.0, 1.0, 100.0, 100.0, 100.0])
+        monkeypatch.setattr(fgt.time, "monotonic", lambda: next(clock))
+        result = fgt.run_wait_chunk(
+            self.PR, "gemini-code-assist",
+            timeout_seconds=900, interval_seconds=1, quiet_seconds=4500,
+            after_iso=self._recent_after(), chunk_seconds=60,
+        )
+        assert result["status"] == "settling"
+        assert result["quiet_period_remaining_seconds"] > 0
+        # settle state persisted for the next chunk
+        wait = fgt.read_wait_state(self.PR)
+        assert wait["stable_fingerprint"] == "fp-1"
+
+    def test_settle_survives_chunk_boundary(self, tmp_path, monkeypatch):
+        # Chunk 1 sees fp-1 and persists settle state with a stable_since that
+        # already satisfies the 45s quiet period. The anchor must be recent
+        # (timeout floor) while stable_since is older than quiet_seconds.
+        after = self._recent_after(seconds_ago=120)
+        stable_since = self._recent_after(seconds_ago=60)
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        fgt.begin_wait_chunk(self.PR, after)
+        fgt.save_wait_settle(self.PR, "fp-1", stable_since)
+        # Chunk 2 sees the same fingerprint; quiet period (45s) already elapsed
+        # relative to the persisted stable_since → ready immediately, without
+        # restarting the quiet period.
+        self._patch(monkeypatch, tmp_path, ["fp-1"])
+        monkeypatch.setattr(fgt.time, "monotonic", lambda: 0.0)
+        result = fgt.run_wait_chunk(
+            self.PR, "gemini-code-assist",
+            timeout_seconds=900, interval_seconds=1, quiet_seconds=45,
+            after_iso=after, chunk_seconds=60,
+        )
+        assert result["status"] == "ready"
+        assert result["pull_request"] is not None
+        assert fgt.read_wait_state(self.PR) == {}  # cleared on ready
+
+    def test_cycle1_fast_path_no_anchor(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path, ["fp-1"])
+        monkeypatch.setattr(fgt.time, "monotonic", lambda: 0.0)
+        result = fgt.run_wait_chunk(
+            self.PR, "gemini-code-assist",
+            timeout_seconds=900, interval_seconds=1, quiet_seconds=45,
+            after_iso=None, chunk_seconds=60,
+        )
+        assert result["status"] == "ready"
+
+    def test_timed_out_via_after_floor_with_lost_state(self, tmp_path, monkeypatch):
+        # State was never written before; --after is 20 minutes ago, timeout 900s.
+        old_after = self._recent_after(seconds_ago=1200)  # 20 minutes ago
+        self._patch(monkeypatch, tmp_path, [None])
+        monkeypatch.setattr(fgt.time, "monotonic", lambda: 0.0)
+        result = fgt.run_wait_chunk(
+            self.PR, "gemini-code-assist",
+            timeout_seconds=900, interval_seconds=1, quiet_seconds=45,
+            after_iso=old_after, chunk_seconds=60,
+        )
+        assert result["status"] == "timed_out"
+        assert result["elapsed_seconds"] >= 1100
+
+    def test_snapshot_persisted_for_heartbeat(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path, [None, None])
+        clock = iter([0.0, 0.0, 100.0, 100.0, 100.0])
+        monkeypatch.setattr(fgt.time, "monotonic", lambda: next(clock))
+        result = fgt.run_wait_chunk(
+            self.PR, "gemini-code-assist",
+            timeout_seconds=900, interval_seconds=1, quiet_seconds=45,
+            after_iso=self._recent_after(), chunk_seconds=60,
+        )
+        snapshot = fgt.read_wait_state(self.PR)["last_snapshot"]
+        assert snapshot["status"] == result["status"] == "waiting"
+        assert snapshot["author"] == "gemini-code-assist"

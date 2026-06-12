@@ -891,6 +891,103 @@ def suggested_next_wait_seconds(checks: int) -> int:
     return WAIT_FIRST_CHUNK_SECONDS if checks <= 1 else WAIT_LATER_CHUNK_SECONDS
 
 
+def _latest_submitted_after(
+    pull_request: dict[str, Any], author: str, after_iso: str | None
+) -> str | None:
+    """Newest review submittedAt past the anchor, for the settling JSON payload."""
+    try:
+        times = [
+            r.get("submittedAt")
+            for r in filter_reviews(pull_request, author)
+            if isinstance(r.get("submittedAt"), str)
+        ]
+    except (AttributeError, TypeError):
+        return None
+    if after_iso:
+        times = [t for t in times if t > after_iso]
+    return max(times) if times else None
+
+
+def run_wait_chunk(
+    pr: PullRequest,
+    author: str,
+    *,
+    timeout_seconds: int,
+    interval_seconds: int,
+    quiet_seconds: int,
+    after_iso: str | None,
+    chunk_seconds: int,
+) -> dict[str, Any]:
+    """One bounded foreground wait chunk; the cross-chunk state machine's step.
+
+    Returns a dict with ``status`` in {waiting, settling, ready, timed_out}.
+    ``ready`` carries ``pull_request`` (proceed into the fetch path exactly as
+    the legacy wait would); the others carry heartbeat fields and persist a
+    snapshot so ``--wait-heartbeat`` can render the human block later.
+    The quiet period is measured against the PERSISTED ``stable_since`` so a
+    chunk boundary never restarts settling.
+    """
+    wait = begin_wait_chunk(pr, after_iso)
+    chunk_deadline = time.monotonic() + chunk_seconds
+    stable_fingerprint = wait.get("stable_fingerprint")
+    stable_since = _parse_iso_utc(wait.get("stable_since"))
+
+    while True:
+        pull_request = fetch_threads(pr)
+        fingerprint = review_activity_fingerprint(pull_request, author, after_iso=after_iso)
+        now_dt = _dt.datetime.now(_dt.timezone.utc)
+        elapsed = wait_elapsed_seconds(wait, after_iso, now=now_dt)
+
+        if fingerprint is not None and after_iso is None:
+            # Cycle 1 fast path: same semantics as the legacy wait.
+            clear_wait_state(pr)
+            return {"status": "ready", "pull_request": pull_request}
+
+        quiet_remaining: int | None = None
+        if fingerprint is not None:
+            if fingerprint != stable_fingerprint:
+                stable_fingerprint = fingerprint
+                stable_since = now_dt
+                save_wait_settle(pr, fingerprint, now_dt.strftime("%Y-%m-%dT%H:%M:%SZ"))
+            quiet_elapsed = (now_dt - stable_since).total_seconds() if stable_since else 0.0
+            quiet_remaining = max(0, int(quiet_seconds - quiet_elapsed))
+            if quiet_remaining <= 0:
+                clear_wait_state(pr)
+                return {"status": "ready", "pull_request": pull_request}
+
+        if elapsed >= timeout_seconds:
+            snapshot = {
+                "status": "timed_out",
+                "author": author,
+                "elapsed_seconds": elapsed,
+                "checks": wait["checks"],
+            }
+            save_wait_snapshot(pr, snapshot)
+            return {**snapshot, "pull_request": None}
+
+        if time.monotonic() >= chunk_deadline:
+            next_wait = suggested_next_wait_seconds(wait["checks"])
+            snapshot = {
+                "status": "settling" if fingerprint is not None else "waiting",
+                "author": author,
+                "elapsed_seconds": elapsed,
+                "checks": wait["checks"],
+                "next_wait_seconds": next_wait,
+            }
+            if fingerprint is not None:
+                snapshot["quiet_period_remaining_seconds"] = quiet_remaining
+                snapshot["next_wait_seconds"] = max(
+                    1, min(next_wait, quiet_remaining or next_wait)
+                )
+                submitted = _latest_submitted_after(pull_request, author, after_iso)
+                if submitted:
+                    snapshot["submitted_at"] = submitted
+            save_wait_snapshot(pr, snapshot)
+            return {**snapshot, "pull_request": None}
+
+        time.sleep(min(interval_seconds, max(0.0, chunk_deadline - time.monotonic())))
+
+
 def accumulate_fixed_markers(
     pr: PullRequest,
     *,
