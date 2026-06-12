@@ -1838,3 +1838,62 @@ class TestDetectNoProgress:
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         pr = self._pr()
         assert detect_no_progress(pr, "fp_any") is False
+
+
+import fetch_gemini_threads as fgt  # noqa: E402 — module alias for TestWaitChunkState
+
+
+class TestWaitChunkState:
+    PR = PullRequest(owner="o", repo="r", number=5)
+
+    def test_first_chunk_initializes_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        wait = fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        assert wait["after"] == "2026-06-11T12:00:00Z"
+        assert wait["checks"] == 1
+        assert isinstance(wait["started_at"], str) and wait["started_at"]
+
+    def test_second_chunk_same_anchor_accumulates(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        first = fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        second = fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        assert second["checks"] == 2
+        assert second["started_at"] == first["started_at"]
+
+    def test_anchor_change_resets_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        fgt.save_wait_settle(self.PR, "fp-1", "2026-06-11T12:01:00Z")
+        wait = fgt.begin_wait_chunk(self.PR, "2026-06-11T12:30:00Z")
+        assert wait["after"] == "2026-06-11T12:30:00Z"
+        assert wait["checks"] == 1
+        assert "stable_fingerprint" not in wait
+
+    def test_settle_persists_across_chunks(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        fgt.save_wait_settle(self.PR, "fp-1", "2026-06-11T12:01:00Z")
+        wait = fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        assert wait["stable_fingerprint"] == "fp-1"
+        assert wait["stable_since"] == "2026-06-11T12:01:00Z"
+
+    def test_clear_wait_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        fgt.clear_wait_state(self.PR)
+        assert fgt.read_wait_state(self.PR) == {}
+
+    def test_clear_preserves_other_run_keys(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({"o/r#5": {"run": {"started_at": "2026-06-11T10:00:00Z", "update_seq": 3}}})
+        fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        fgt.clear_wait_state(self.PR)
+        run = load_sticky_state()["o/r#5"]["run"]
+        assert run["update_seq"] == 3
+        assert "wait" not in run
+
+    def test_corrupt_state_fails_open(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({"o/r#5": {"run": {"wait": "not-a-dict"}}})
+        wait = fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        assert wait["checks"] == 1

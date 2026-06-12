@@ -765,6 +765,85 @@ def clear_run_tracking(pr: PullRequest) -> None:
         save_sticky_state(state)
 
 
+def begin_wait_chunk(pr: PullRequest, after_iso: str | None) -> dict[str, Any]:
+    """Open one wait chunk: load cross-chunk wait state, applying the reset rule.
+
+    Reset rule (prevents cross-cycle leakage): if the stored anchor differs
+    from ``after_iso``, all wait progress (started_at, checks, settle state)
+    belongs to a previous cycle's wait and is discarded. ``checks`` counts
+    chunk invocations, incremented once per call. Fails open: state I/O
+    errors yield a fresh single-chunk state rather than crashing the wait.
+    """
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key)
+    entry = dict(entry) if isinstance(entry, dict) else {}
+    run = entry.get("run")
+    run = dict(run) if isinstance(run, dict) else {}
+    wait = run.get("wait")
+    wait = dict(wait) if isinstance(wait, dict) else {}
+    if wait.get("after") != after_iso:
+        wait = {"after": after_iso}
+    if not isinstance(wait.get("started_at"), str) or not wait.get("started_at"):
+        wait["started_at"] = metrics.now_iso()
+    wait["checks"] = _safe_int(wait.get("checks")) + 1
+    run["wait"] = wait
+    entry["run"] = run
+    state[key] = entry
+    try:
+        save_sticky_state(state)
+    except OSError as exc:
+        print(f"warning: could not persist wait state: {exc}", file=sys.stderr)
+    return wait
+
+
+def read_wait_state(pr: PullRequest) -> dict[str, Any]:
+    run = read_run_tracking(pr)
+    wait = run.get("wait") if isinstance(run, dict) else None
+    return dict(wait) if isinstance(wait, dict) else {}
+
+
+def _update_wait_state(pr: PullRequest, updates: dict[str, Any]) -> None:
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key)
+    entry = dict(entry) if isinstance(entry, dict) else {}
+    run = entry.get("run")
+    run = dict(run) if isinstance(run, dict) else {}
+    wait = run.get("wait")
+    wait = dict(wait) if isinstance(wait, dict) else {}
+    wait.update(updates)
+    run["wait"] = wait
+    entry["run"] = run
+    state[key] = entry
+    try:
+        save_sticky_state(state)
+    except OSError as exc:
+        print(f"warning: could not persist wait state: {exc}", file=sys.stderr)
+
+
+def save_wait_settle(pr: PullRequest, fingerprint: str, since_iso: str) -> None:
+    """Persist the settle phase so a chunk boundary never restarts the quiet period."""
+    _update_wait_state(pr, {"stable_fingerprint": fingerprint, "stable_since": since_iso})
+
+
+def save_wait_snapshot(pr: PullRequest, snapshot: dict[str, Any]) -> None:
+    """Persist the last non-ready chunk result for --wait-heartbeat rendering."""
+    _update_wait_state(pr, {"last_snapshot": dict(snapshot)})
+
+
+def clear_wait_state(pr: PullRequest) -> None:
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key)
+    if isinstance(entry, dict) and isinstance(entry.get("run"), dict) and "wait" in entry["run"]:
+        del entry["run"]["wait"]
+        try:
+            save_sticky_state(state)
+        except OSError as exc:
+            print(f"warning: could not clear wait state: {exc}", file=sys.stderr)
+
+
 def accumulate_fixed_markers(
     pr: PullRequest,
     *,
