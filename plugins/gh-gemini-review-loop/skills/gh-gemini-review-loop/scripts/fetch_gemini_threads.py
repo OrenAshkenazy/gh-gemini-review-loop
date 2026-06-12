@@ -2362,7 +2362,7 @@ def main() -> int:
                 )
             except OSError as exc:
                 print(f"warning: could not persist fixed markers: {exc}", file=sys.stderr)
-        if args.wait and args.wait_chunk_seconds:
+        if args.wait and args.wait_chunk_seconds is not None:
             chunk = run_wait_chunk(
                 pr,
                 args.author,
