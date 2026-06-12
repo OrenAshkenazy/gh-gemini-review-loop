@@ -2038,3 +2038,74 @@ class TestRunWaitChunk:
         snapshot = fgt.read_wait_state(self.PR)["last_snapshot"]
         assert snapshot["status"] == result["status"] == "waiting"
         assert snapshot["author"] == "gemini-code-assist"
+
+
+class TestWaitChunkCli:
+    AFTER = "2026-06-11T12:00:00Z"
+
+    def _patch_common(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.delenv("GGRL_NO_COLOR", raising=False)
+        monkeypatch.setattr(
+            fgt, "resolve_pr", lambda arg: PullRequest(owner="o", repo="r", number=5)
+        )
+        monkeypatch.setattr(
+            fgt,
+            "run_wait_chunk",
+            lambda *a, **k: {
+                "status": "waiting",
+                "author": "gemini-code-assist",
+                "elapsed_seconds": 90,
+                "checks": 2,
+                "next_wait_seconds": 90,
+                "pull_request": None,
+            },
+        )
+
+    def test_pending_markdown_prints_purple_heartbeat(self, tmp_path, monkeypatch, capsys):
+        self._patch_common(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["fetch_gemini_threads.py", "--pr", "https://github.com/o/r/pull/5",
+             "--wait", "--after", self.AFTER, "--wait-chunk-seconds", "60"],
+        )
+        assert fgt.main() == 0
+        out = capsys.readouterr().out
+        assert "[loop] waiting for gemini-code-assist — 90s elapsed" in out
+        assert "\033[95m" in out  # purple
+
+    def test_pending_json_stdout_is_machine_only(self, tmp_path, monkeypatch, capsys):
+        self._patch_common(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["fetch_gemini_threads.py", "--pr", "https://github.com/o/r/pull/5",
+             "--wait", "--after", self.AFTER, "--wait-chunk-seconds", "60",
+             "--format", "json"],
+        )
+        assert fgt.main() == 0
+        out = capsys.readouterr().out
+        assert "\033[" not in out
+        assert "[loop]" not in out
+        payload = json.loads(out)
+        assert payload["wait"]["status"] == "waiting"
+        assert payload["wait"]["next_wait_seconds"] == 90
+        assert "pull_request" not in payload["wait"]
+
+    def test_no_chunk_flag_uses_legacy_blocking_wait(self, tmp_path, monkeypatch):
+        self._patch_common(monkeypatch, tmp_path)
+        called = {}
+
+        def fake_legacy(pr, author=None, timeout_seconds=None, interval_seconds=None, quiet_seconds=None, after_iso=None, **kw):
+            called["legacy"] = True
+            raise RuntimeError("stop here")  # abort main() after the call we care about
+
+        monkeypatch.setattr(fgt, "wait_for_stable_review", fake_legacy)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["fetch_gemini_threads.py", "--pr", "https://github.com/o/r/pull/5",
+             "--wait", "--after", self.AFTER],
+        )
+        # main() catches RuntimeError and returns 1 — we just verify legacy was called
+        fgt.main()
+        assert called.get("legacy") is True

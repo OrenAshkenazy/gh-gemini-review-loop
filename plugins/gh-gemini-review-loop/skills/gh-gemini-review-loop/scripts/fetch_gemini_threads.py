@@ -1929,6 +1929,17 @@ def main() -> int:
     parser.add_argument("--interval", type=int, default=20, help="Polling interval in seconds with --wait. Default: 20.")
     parser.add_argument("--quiet-period", type=int, default=45, help="Stable activity period in seconds with --wait. Default: 45.")
     parser.add_argument(
+        "--wait-chunk-seconds",
+        type=int,
+        default=None,
+        help=(
+            "With --wait, return after at most this many seconds with a "
+            "deterministic waiting/settling/timed_out status instead of "
+            "blocking until --timeout. --timeout stays the TOTAL wait budget "
+            "across chunks. Omit for legacy blocking behavior."
+        ),
+    )
+    parser.add_argument(
         "--after",
         metavar="ISO8601",
         default=None,
@@ -2309,7 +2320,43 @@ def main() -> int:
                 )
             except OSError as exc:
                 print(f"warning: could not persist fixed markers: {exc}", file=sys.stderr)
-        if args.wait:
+        if args.wait and args.wait_chunk_seconds:
+            chunk = run_wait_chunk(
+                pr,
+                args.author,
+                timeout_seconds=args.timeout,
+                interval_seconds=args.interval,
+                quiet_seconds=args.quiet_period,
+                after_iso=args.after,
+                chunk_seconds=args.wait_chunk_seconds,
+            )
+            if chunk["status"] != "ready":
+                wait_fields = {
+                    k: v
+                    for k, v in chunk.items()
+                    if k not in ("pull_request", "author") and v is not None
+                }
+                if args.format == "json":
+                    print(json.dumps({"wait": wait_fields}, indent=2, sort_keys=True))
+                else:
+                    print(
+                        color_loop_block(
+                            metrics.format_wait_heartbeat(
+                                chunk["status"],
+                                author=args.author,
+                                elapsed_seconds=chunk.get("elapsed_seconds", 0),
+                                checks=chunk.get("checks", 0),
+                                next_wait_seconds=chunk.get("next_wait_seconds", 0),
+                                quiet_period_remaining_seconds=chunk.get(
+                                    "quiet_period_remaining_seconds"
+                                ),
+                            ),
+                            enabled=color_enabled,
+                        )
+                    )
+                return 0
+            pull_request = chunk["pull_request"]
+        elif args.wait:
             pull_request = wait_for_stable_review(
                 pr,
                 author=args.author,
