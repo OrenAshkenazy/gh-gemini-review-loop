@@ -945,7 +945,7 @@ def run_wait_chunk(
 
         quiet_remaining: int | None = None
         if fingerprint is not None:
-            if fingerprint != stable_fingerprint:
+            if fingerprint != stable_fingerprint or stable_since is None:
                 stable_fingerprint = fingerprint
                 stable_since = now_dt
                 save_wait_settle(pr, fingerprint, now_dt.strftime("%Y-%m-%dT%H:%M:%SZ"))
