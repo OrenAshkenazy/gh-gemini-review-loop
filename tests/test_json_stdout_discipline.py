@@ -208,3 +208,64 @@ def test_request_rereview_json_failure_has_stderr_and_no_stdout(monkeypatch, cap
     assert rc != 0
     assert captured.out == ""
     assert "gh api failed: permission denied" in captured.err
+
+
+def test_wait_chunk_json_stdout_is_machine_only(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("GGRL_NO_COLOR", raising=False)
+    monkeypatch.setattr(
+        fgt, "resolve_pr", lambda arg: PullRequest(owner="o", repo="r", number=5)
+    )
+    monkeypatch.setattr(
+        fgt,
+        "run_wait_chunk",
+        lambda *a, **k: {
+            "status": "settling",
+            "author": "gemini-code-assist",
+            "elapsed_seconds": 120,
+            "checks": 3,
+            "next_wait_seconds": 30,
+            "quiet_period_remaining_seconds": 30,
+            "submitted_at": "2026-06-11T12:04:27Z",
+            "pull_request": None,
+        },
+    )
+    monkeypatch.setattr(
+        sys, "argv",
+        ["fetch_gemini_threads.py", "--pr", "https://github.com/o/r/pull/5",
+         "--wait", "--after", "2026-06-11T12:00:00Z",
+         "--wait-chunk-seconds", "60", "--format", "json"],
+    )
+    assert fgt.main() == 0
+    payload = assert_json_stdout(capsys.readouterr().out)
+    assert payload["wait"]["status"] == "settling"
+    assert payload["wait"]["submitted_at"] == "2026-06-11T12:04:27Z"
+    assert payload["wait"]["quiet_period_remaining_seconds"] == 30
+
+
+def test_wait_timed_out_json_stdout_is_machine_only(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        fgt, "resolve_pr", lambda arg: PullRequest(owner="o", repo="r", number=5)
+    )
+    monkeypatch.setattr(
+        fgt,
+        "run_wait_chunk",
+        lambda *a, **k: {
+            "status": "timed_out",
+            "author": "gemini-code-assist",
+            "elapsed_seconds": 905,
+            "checks": 11,
+            "pull_request": None,
+        },
+    )
+    monkeypatch.setattr(
+        sys, "argv",
+        ["fetch_gemini_threads.py", "--pr", "https://github.com/o/r/pull/5",
+         "--wait", "--after", "2026-06-11T12:00:00Z",
+         "--wait-chunk-seconds", "60", "--format", "json"],
+    )
+    assert fgt.main() == 0
+    payload = assert_json_stdout(capsys.readouterr().out)
+    assert payload["wait"]["status"] == "timed_out"
