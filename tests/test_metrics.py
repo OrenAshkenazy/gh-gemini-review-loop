@@ -232,6 +232,175 @@ class TestFormatRunSummary:
         assert "Ignored by judge" not in out
         assert "Needs human by judge" not in out  # label removed entirely
 
+    def test_terminal_summary_uses_terminal_breakdown_labels(self):
+        out = metrics.format_run_summary(
+            self._rec(
+                findings_fetched=21,
+                fixed_count=21,
+                observed_fixed_count=20,
+                remaining_actionable=1,
+                needs_human=0,
+                terminal_breakdown={
+                    "confirmed_fixed_outdated": 20,
+                    "fixed_pending_confirmation": 1,
+                    "remaining_valid_actionable": 0,
+                    "needs_human": 0,
+                },
+                outcome="fixed_pending_confirmation",
+            )
+        )
+        assert "Confirmed fixed/outdated: 20" in out
+        assert "Fixed but awaiting review confirmation: 1" in out
+        assert "Remaining valid actionable: 0" in out
+        assert "Remaining valid actionable: 1" not in out
+
+    def test_cycle_summary_uses_pre_push_wording_for_local_fixes(self):
+        out = metrics.format_run_summary(
+            self._rec(
+                fixed_count=7,
+                observed_fixed_count=0,
+                remaining_actionable=7,
+                needs_human=0,
+                valid_actionable_remaining=7,
+            ),
+            terminal=False,
+        )
+        assert "Fixed locally: 7" in out
+        assert "Awaiting push/re-review confirmation: 7" in out
+        assert "Remaining valid actionable: 7" not in out
+
+
+class TestTerminalBreakdown:
+    def test_renders_all_terminal_buckets(self):
+        out = metrics.format_terminal_breakdown(
+            confirmed_fixed_outdated=20,
+            fixed_pending_confirmation=1,
+            remaining_valid_actionable=0,
+            needs_human=0,
+        ).splitlines()
+        assert out == [
+            "Confirmed fixed/outdated: 20",
+            "Fixed but awaiting review confirmation: 1",
+            "Remaining valid actionable: 0",
+            "Human decision required: 0",
+        ]
+
+
+class TestProfileIntroBlock:
+    def _profile(self, checks):
+        return {"source": "confirmed", "working_directory": ".", "checks": checks}
+
+    def test_present_profile(self):
+        out = metrics.format_profile_intro_block(
+            self._profile([
+                {"name": "root", "command": "uv run pytest", "required": True}
+            ]),
+            "OrenAshkenazy/AegisLocal",
+        ).splitlines()
+        assert out == [
+            "[loop] Repo-aware verification profile",
+            "Profile: OrenAshkenazy/AegisLocal",
+            "Checks:",
+            "1. root — uv run pytest (cwd: ., required)",
+        ]
+
+    def test_no_profile(self):
+        assert metrics.format_profile_intro_block(None, "o/r") == (
+            "[loop] Verification profile: none saved, using ad hoc verification."
+        )
+
+    def test_skipped_profile(self):
+        assert metrics.format_profile_intro_block({"source": "skipped"}, "o/r") == (
+            "[loop] Verification profile: skipped for this repo, using ad hoc verification."
+        )
+
+    def test_malformed_or_empty_checks(self):
+        assert metrics.format_profile_intro_block({"source": "confirmed", "checks": []}, "o/r") == (
+            "[loop] Verification profile: missing or malformed, using ad hoc verification."
+        )
+        assert metrics.format_profile_intro_block("garbage", "o/r") == (
+            "[loop] Verification profile: missing or malformed, using ad hoc verification."
+        )
+
+
+class TestPlannedVerificationBlock:
+    def test_one_check(self):
+        out = metrics.format_planned_verification_block({
+            "source": "confirmed",
+            "working_directory": ".",
+            "checks": [{"name": "root", "command": "uv run pytest", "required": True}],
+        }).splitlines()
+        assert out == [
+            "[loop] Verification suite",
+            "Running 1 required repo-aware check:",
+            "1. root — uv run pytest (cwd: .)",
+        ]
+
+    def test_multiple_checks(self):
+        out = metrics.format_planned_verification_block({
+            "source": "confirmed",
+            "working_directory": ".",
+            "checks": [
+                {"name": "root", "command": "uv run pytest", "required": True},
+                {"name": "lint", "command": "ruff check .", "required": True},
+                {"name": "typecheck", "command": "mypy .", "required": True},
+            ],
+        }).splitlines()
+        assert out == [
+            "[loop] Verification suite",
+            "Running 3 required repo-aware checks:",
+            "1. root — uv run pytest (cwd: .)",
+            "2. lint — ruff check . (cwd: .)",
+            "3. typecheck — mypy . (cwd: .)",
+        ]
+
+    def test_no_checks(self):
+        assert metrics.format_planned_verification_block({"source": "confirmed", "checks": []}) == (
+            "[loop] Verification suite\n"
+            "No required repo-aware checks saved; use ad hoc verification."
+        )
+
+
+class TestJudgeSkip:
+    def test_formats_reason(self):
+        assert metrics.format_judge_skip("no API key") == "[loop] judge eval skipped: no API key"
+
+
+class TestNextOptions:
+    def test_capped(self):
+        out = metrics.format_next_options("capped", cap_reached=True, needs_human=0)
+        assert 'Bump cap and continue: "run the Gemini loop with cap 6"' in out
+
+    def test_human(self):
+        out = metrics.format_next_options("human", cap_reached=False, needs_human=1)
+        assert "Ask Claude to implement option A" in out
+        assert "reply to the thread with rationale" in out
+
+    def test_fixed_pending_confirmation(self):
+        out = metrics.format_next_options(
+            "fixed_pending_confirmation", cap_reached=True, needs_human=0
+        )
+        assert "Bump cap and run one confirmation cycle" in out
+
+    def test_clean_empty(self):
+        assert metrics.format_next_options("clean", cap_reached=False, needs_human=0) == ""
+
+
+class TestSemanticRiskBlock:
+    def test_empty_returns_empty(self):
+        assert metrics.format_semantic_risk_block([]) == ""
+        assert metrics.format_semantic_risk_block(None) == ""
+
+    def test_non_empty_renders_manual_heuristic_block(self):
+        out = metrics.format_semantic_risk_block([
+            "hash_password(password) -> hash_password(password, salt)",
+            "get_user() now returns one row instead of a list",
+        ])
+        assert "[loop] Semantic risk note (manual / heuristic)" in out
+        assert "- hash_password(password) -> hash_password(password, salt)" in out
+        assert "- get_user() now returns one row instead of a list" in out
+        assert "Verification passed, but this may require human review." in out
+
 
 class TestFormatSuiteBlock:
     def test_empty_when_no_details(self):
