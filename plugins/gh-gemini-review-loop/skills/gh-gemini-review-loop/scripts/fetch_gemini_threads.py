@@ -1009,8 +1009,10 @@ def accumulate_fixed_markers(
     entry = dict(entry) if isinstance(entry, dict) else {}
     run = entry.get("run")
     run = dict(run) if isinstance(run, dict) else {}
-    fps = {x for x in run.get("fixed_finding_fps", []) if isinstance(x, str)}
-    fpaths = {x for x in run.get("fixed_paths", []) if isinstance(x, str)}
+    fps_val = run.get("fixed_finding_fps")
+    fps = {x for x in fps_val if isinstance(x, str)} if isinstance(fps_val, list) else set()
+    fpaths_val = run.get("fixed_paths")
+    fpaths = {x for x in fpaths_val if isinstance(x, str)} if isinstance(fpaths_val, list) else set()
     for fp in fingerprints or []:
         if fp:
             fps.add(fp)
@@ -1057,9 +1059,11 @@ def changed_files_in_range(
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
-    except (OSError, ValueError):
+    except (OSError, ValueError, subprocess.SubprocessError):
         return set()
     if result.returncode != 0:
         return set()

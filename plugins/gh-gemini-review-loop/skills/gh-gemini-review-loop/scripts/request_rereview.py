@@ -56,8 +56,8 @@ def post_rereview(
         f"body={phrase}",
     ]
     try:
-        result = runner(cmd, capture_output=True, text=True, check=False)
-    except (OSError, ValueError) as exc:
+        result = runner(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise RuntimeError(f"could not run gh api: {exc}") from exc
 
     if result.returncode != 0:
