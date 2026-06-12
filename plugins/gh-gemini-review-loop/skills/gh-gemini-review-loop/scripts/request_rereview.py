@@ -52,7 +52,7 @@ def post_rereview(
         f"repos/{owner}/{repo_name}/issues/{pr}/comments",
         "--method",
         "POST",
-        "--field",
+        "--raw-field",
         f"body={phrase}",
     ]
     try:
