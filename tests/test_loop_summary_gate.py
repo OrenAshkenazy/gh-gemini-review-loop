@@ -53,6 +53,10 @@ class TestStaleSummaryForPush:
         monkeypatch.setattr("sys.stdin", _UnreadableStdin())
         assert summary_gate_main() == 0
 
+    def test_main_fails_open_when_stdin_is_none(self, monkeypatch):
+        monkeypatch.setattr("sys.stdin", None)
+        assert summary_gate_main() == 0
+
     def test_none_when_no_active_loop(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         assert stale_summary_for_push("o/r") is None

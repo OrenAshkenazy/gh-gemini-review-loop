@@ -115,7 +115,8 @@ def format_run_snapshot(info: dict[str, Any]) -> str:
 
 def main() -> int:
     try:
-        payload = load_hook_payload(sys.stdin.read())
+        raw_payload = sys.stdin.read() if sys.stdin is not None else ""
+        payload = load_hook_payload(raw_payload)
     except (OSError, ValueError):
         return 0
 

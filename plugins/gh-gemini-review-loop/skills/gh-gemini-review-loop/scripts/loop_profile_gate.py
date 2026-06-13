@@ -59,7 +59,8 @@ BLOCK_MESSAGE = (
 
 def main() -> int:
     try:
-        payload = load_hook_payload(sys.stdin.read())
+        raw_payload = sys.stdin.read() if sys.stdin is not None else ""
+        payload = load_hook_payload(raw_payload)
     except (OSError, ValueError):
         return 0  # malformed/unreadable payload -> fail open
 
