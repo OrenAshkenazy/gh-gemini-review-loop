@@ -24,7 +24,6 @@ A correctness aid must never wedge normal git operations.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import sys
@@ -40,6 +39,12 @@ from fetch_gemini_threads import (  # noqa: E402
     resolve_current_repo,
     summary_is_stale,
 )
+from hook_runtime import (  # noqa: E402
+    load_hook_payload,
+    python_script_command,
+    tool_command,
+    tool_name,
+)
 
 _GIT_PUSH_RE = re.compile(r"\bgit\s+push\b")
 
@@ -49,8 +54,7 @@ BLOCK_TEMPLATE = (
     "last_summary_seq={last_summary_seq}).\n\n"
     "{snapshot}"
     "Run --cycle-summary, PRINT ITS FULL OUTPUT IN YOUR TEXT RESPONSE, then push:\n\n"
-    "  python3 \"$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/"
-    "fetch_gemini_threads.py\" \\\n"
+    "  {fetch_cmd} \\\n"
     "      --pr {pr_url} \\\n"
     "      --cycle-summary \\\n"
     "      --fixed-count <n> \\\n"
@@ -111,16 +115,14 @@ def format_run_snapshot(info: dict[str, Any]) -> str:
 
 def main() -> int:
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
-        if not isinstance(payload, dict):
-            return 0
-    except (json.JSONDecodeError, ValueError, OSError):
+        payload = load_hook_payload(sys.stdin.read())
+    except OSError:
         return 0
 
     # Only intercept Bash tool calls that contain git push.
-    if payload.get("tool_name") != "Bash":
+    if tool_name(payload) != "Bash":
         return 0
-    command = (payload.get("tool_input") or {}).get("command", "")
+    command = tool_command(payload)
     if not _GIT_PUSH_RE.search(command):
         return 0
 
@@ -144,6 +146,7 @@ def main() -> int:
             last_summary_seq=info["last_summary_seq"],
             pr_url=pr_url,
             snapshot=snapshot,
+            fetch_cmd=python_script_command("fetch_gemini_threads.py"),
         ),
         file=sys.stderr,
     )

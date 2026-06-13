@@ -472,7 +472,7 @@ class JudgeClient:
                 "OPENAI_API_KEY not found in any source (CLI flag, env var, "
                 "~/.config/gh-gemini-review-loop/.env, OS keystore). "
                 "Run 'python3 "
-                "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py "
+                "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py "
                 "--set' to store one, or 'judge_doctor.py' for full setup guidance."
             )
         # Defensive type check: settings.json env-injection can pass a bool

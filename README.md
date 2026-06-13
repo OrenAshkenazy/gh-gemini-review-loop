@@ -1,14 +1,14 @@
 # gh-gemini-review-loop
 
-**Move faster through Gemini Code Assist PR feedback from Claude Code.**
+**Move faster through Gemini Code Assist PR feedback from Claude Code or Codex.**
 
 [![CI](https://github.com/OrenAshkenazy/gh-gemini-review-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/OrenAshkenazy/gh-gemini-review-loop/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/OrenAshkenazy/gh-gemini-review-loop?sort=semver)](https://github.com/OrenAshkenazy/gh-gemini-review-loop/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Built for solo builders and small teams who want review feedback handled while they stay in flow. Claude waits for Gemini, reads real GitHub review-thread state, fixes actionable comments, verifies, pushes, and asks Gemini to re-review. It stops at a configurable cap (default: 3 cycles) so it cannot spam your PR.
+Built for solo builders and small teams who want review feedback handled while they stay in flow. Claude Code or Codex waits for Gemini, reads real GitHub review-thread state, fixes actionable comments, verifies, pushes, and asks Gemini to re-review. It stops at a configurable cap (default: 3 cycles) so it cannot spam your PR.
 
-[Gemini Code Assist](https://github.com/apps/gemini-code-assist) gives you review comments. This plugin turns those comments into an interactive fix loop inside Claude Code: no dashboard hopping, no manual comment triage, no heavy process to adopt.
+[Gemini Code Assist](https://github.com/apps/gemini-code-assist) gives you review comments. This plugin turns those comments into an interactive fix loop inside your coding agent: no dashboard hopping, no manual comment triage, no heavy process to adopt.
 
 ### Verification Profiles — the loop that checks its own work
 
@@ -34,16 +34,34 @@ On the first run in a repository, you choose from a short menu — **All detecte
 
 ## Prerequisites
 
-- **Claude Code** with plugin support enabled.
+- **Claude Code or Codex** with plugin support enabled.
 - **`gh` CLI** authenticated against the repos you'll run the loop on.
 - **Python 3.10+**.
 - **A repo where `gemini-code-assist` is configured as a reviewer.** This plugin is opinionated for Gemini Code Assist and does not aggregate other review bots.
 
 ## Installation
 
-This repo is a single-plugin Claude Code marketplace. Install in **two slash-commands**.
+This repo publishes the same plugin for both Claude Code and Codex. Install it in the runtime you use, or install both.
 
-### Step 1 — Add the marketplace
+### Codex
+
+Add the marketplace:
+
+```bash
+codex plugin marketplace add OrenAshkenazy/gh-gemini-review-loop
+```
+
+Install the plugin:
+
+```bash
+codex plugin add gh-gemini-review-loop@gh-gemini-review-loop
+```
+
+### Claude Code
+
+Install from the Claude Code marketplace in **two slash-commands**.
+
+#### Step 1 — Add the marketplace
 
 In your Claude Code prompt:
 
@@ -51,7 +69,7 @@ In your Claude Code prompt:
 /plugin marketplace add OrenAshkenazy/gh-gemini-review-loop
 ```
 
-### Step 2 — Install the plugin
+#### Step 2 — Install the plugin
 
 ```
 /plugin install gh-gemini-review-loop@gh-gemini-review-loop
@@ -76,11 +94,11 @@ The demo shows a full run in under a minute: the loop activates on a PR with 6 G
 
 ## Use It
 
-From a repo with an open GitHub PR, say this to Claude:
+From a repo with an open GitHub PR, say this to Claude Code or Codex:
 
 > Run the Gemini loop
 
-Claude will:
+The agent will:
 
 1. Wait for Gemini Code Assist to finish reviewing.
 2. Fetch unresolved, actionable Gemini review threads.
@@ -93,7 +111,7 @@ Claude will:
 
 You can also use more specific prompts:
 
-| Say this to Claude | What happens |
+| Say this to the agent | What happens |
 |---|---|
 | *"Run the Gemini loop"* | Full loop with defaults |
 | *"Only fix high-severity Gemini findings"* | Skips lower-severity findings |
@@ -102,7 +120,7 @@ You can also use more specific prompts:
 | *"Show a live status comment on the PR"* | Maintains one edited status comment on the PR |
 | *"Run the Gemini loop with judge eval at completion"* | After the loop stops, OpenAI classifies any remaining Gemini findings as fix / reply / ignore / escalate, so you know whether to keep working or stop |
 
-The skill also triggers naturally when Claude opens a PR and you ask it to keep going, handle review feedback, fix Gemini comments, or request Gemini re-review.
+The skill also triggers naturally when the agent opens a PR and you ask it to keep going, handle review feedback, fix Gemini comments, or request Gemini re-review.
 
 ---
 
@@ -138,17 +156,17 @@ End users can opt into an OpenAI-powered judge that labels each Gemini finding a
 ### Judge eval TL;DR
 
 1. Set `OPENAI_API_KEY` once (see [Setting your API key](#setting-your-openai_api_key) below).
-2. Say one of these to Claude:
+2. Say one of these to Claude Code or Codex:
 
-   > *"Enable judge eval"* — Claude prompts you to pick a mode and saves it.
+   > *"Enable judge eval"* — the agent prompts you to pick a mode and saves it.
    >
    > *"Run the Gemini loop with judge eval at completion"* — saves and runs in one step.
 
-That's it. Claude handles the config file.
+That's it. The agent handles the config file.
 
 ### Configuring it yourself
 
-Prefer editing a config file over talking to Claude? Edit (or create) `~/.config/gh-gemini-review-loop/preferences.json`:
+Prefer editing a config file over talking to the agent? Edit (or create) `~/.config/gh-gemini-review-loop/preferences.json`:
 
 ```json
 {
@@ -177,23 +195,27 @@ The judge resolves the key from the first available source, in this order:
 3. **macOS Keychain** (`gh-gemini-review-loop` / `openai`).
 4. **Linux Secret Service** (`secret-tool`, GNOME Keyring / KWallet).
 
+Manual commands below use `$GGRL_PLUGIN_ROOT`; see
+[Advanced: Manual Script Invocation](#advanced-manual-script-invocation) if
+you need to resolve it outside an agent session.
+
 **Recommended one-liner** — stores the key in the OS keystore (Keychain on macOS, Secret Service on Linux) or chmod-600 dotfile elsewhere. Survives shell reloads, no rc-file edits, no `ps` leakage:
 
 ```bash
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py" --set
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py" --set
 # Or, non-interactively from a password manager:
 op read 'op://Personal/OpenAI/api key' | \
-  python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py" --set --from-stdin
+  python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py" --set --from-stdin
 ```
 
 **Inspect / debug:**
 
 ```bash
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py" --print-source
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py" --print-source
 # → source: macos_keychain
 #   key:    sk-abc...wxyz   (redacted)
 
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py" --clear
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py" --clear
 ```
 
 **Self-hosted endpoints** (Ollama / LiteLLM / LM Studio / enterprise gateway): also set `OPENAI_BASE_URL` and the judge will POST there instead of `api.openai.com`. Key-shape validation is bypassed automatically.
@@ -205,7 +227,7 @@ python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.p
 If judge eval isn't working, run the doctor — it diagnoses every common failure (missing key, placeholder injected by `~/.claude/settings.json`, network unreachable, wrong Python) and prints the exact fix:
 
 ```bash
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/judge_doctor.py" --probe
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/judge_doctor.py" --probe
 ```
 
 See [SKILL.md -> Optional Judge Eval](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md) for the full flow and verdict schema.
@@ -300,7 +322,7 @@ Metrics are local-only (`~/.config/gh-gemini-review-loop/runs.jsonl`), contain n
 
 ## Configuring the skill
 
-Claude Code skills don't have a settings UI. Persistent script settings live in `~/.config/gh-gemini-review-loop/preferences.json`.
+Agent skills do not have a runtime settings UI. Persistent script settings live in `~/.config/gh-gemini-review-loop/preferences.json`.
 
 ### Set the loop cap
 
@@ -334,7 +356,7 @@ You can keep judge eval settings in the same file. The script preserves `max_rer
 For one run only, use the CLI flag instead:
 
 ```bash
-python3 "$SCRIPT" --max-rereview-requests 4
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --max-rereview-requests 4
 ```
 
 Override precedence, highest first:
@@ -363,30 +385,43 @@ For the optional OpenAI judge, see [Judge eval TL;DR](#judge-eval-tldr). It shar
 
 You'll rarely need this, the skill drives the script for you, but it works for debugging.
 
-`$CLAUDE_PLUGIN_ROOT` is set **only inside Claude Code's plugin runtime** — it isn't exported to your interactive shell, so the variable-form below only works from a Claude session (e.g., a Bash tool call). To run from a plain terminal, locate the cached script path yourself:
+For manual commands, resolve `$GGRL_PLUGIN_ROOT` once. Claude Code usually
+provides `$CLAUDE_PLUGIN_ROOT`; Codex installs are discoverable from the Codex
+plugin cache. Local development checkouts use the repo's
+`plugins/gh-gemini-review-loop` folder.
 
 ```bash
-# From a plain terminal — find the installed path (handles version bumps):
-SCRIPT=$(find ~/.claude/plugins/cache/gh-gemini-review-loop -name fetch_gemini_threads.py 2>/dev/null | sort | tail -1)
-[ -n "$SCRIPT" ] && python3 "$SCRIPT" --wait || echo "Error: fetch_gemini_threads.py not found — install the plugin first." >&2
+GGRL_PLUGIN_ROOT="${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"
+if [ -z "$GGRL_PLUGIN_ROOT" ]; then
+  GGRL_PLUGIN_ROOT=$(
+    find ~/.codex/plugins ~/.codex/plugins/cache ~/.claude/plugins/cache \
+      -type d -path "*/skills/gh-gemini-review-loop" 2>/dev/null \
+      | sort -rV \
+      | head -1 \
+      | sed 's|/skills/gh-gemini-review-loop$||'
+  )
+fi
+if [ -z "$GGRL_PLUGIN_ROOT" ] && [ -d "$(git rev-parse --show-toplevel 2>/dev/null)/plugins/gh-gemini-review-loop" ]; then
+  GGRL_PLUGIN_ROOT="$(git rev-parse --show-toplevel)/plugins/gh-gemini-review-loop"
+fi
+export GGRL_PLUGIN_ROOT
 
-# From inside a Claude Code session (the env var IS populated there):
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --wait
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --wait
 
 # Notable flags:
-python3 "$SCRIPT" --dry-run                     # log writes without executing
-python3 "$SCRIPT" --post-receipt                # one-shot audit comment
-python3 "$SCRIPT" --sticky-receipt              # live, edited-in-place comment
-python3 "$SCRIPT" --min-severity high           # ignore Gemini's low/medium nits
-python3 "$SCRIPT" --drop-unknown-severity       # also ignore unmarked findings
-python3 "$SCRIPT" --no-resolve-outdated         # read-only inspection mode
-python3 "$SCRIPT" --include-resolved --include-outdated --include-addressed-by-reply   # full history
-python3 "$SCRIPT" --max-rereview-requests 4     # override the configured cap once
-python3 "$SCRIPT" --agent-login NAME            # override gh-detected agent login
-python3 "$SCRIPT" --author google-gemini-code-assist   # alternate bot login
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --dry-run
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --post-receipt
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --sticky-receipt
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --min-severity high
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --drop-unknown-severity
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --no-resolve-outdated
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --include-resolved --include-outdated --include-addressed-by-reply
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --max-rereview-requests 4
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --agent-login NAME
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --author google-gemini-code-assist
 ```
 
-Run `python3 "$SCRIPT" --help` for the complete list.
+Run `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --help` for the complete list.
 
 ---
 

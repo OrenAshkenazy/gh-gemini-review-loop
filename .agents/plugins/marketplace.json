@@ -1,0 +1,20 @@
+{
+  "name": "gh-gemini-review-loop",
+  "interface": {
+    "displayName": "gh-gemini-review-loop"
+  },
+  "plugins": [
+    {
+      "name": "gh-gemini-review-loop",
+      "source": {
+        "source": "local",
+        "path": "./plugins/gh-gemini-review-loop"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
