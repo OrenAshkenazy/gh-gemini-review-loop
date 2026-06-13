@@ -4,11 +4,14 @@ These tests intentionally avoid network/gh calls — they exercise only the
 pure helpers that operate on already-fetched GraphQL payloads.
 """
 
+import datetime
 import json
 import os
 import sys
 
 import pytest
+
+import fetch_gemini_threads as fgt
 
 from fetch_gemini_threads import (
     ADDRESSED_BY_REPLY_MIN_CHARS,
@@ -1838,3 +1841,312 @@ class TestDetectNoProgress:
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         pr = self._pr()
         assert detect_no_progress(pr, "fp_any") is False
+
+
+
+class TestWaitChunkState:
+    PR = PullRequest(owner="o", repo="r", number=5)
+
+    def test_first_chunk_initializes_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        wait = fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        assert wait["after"] == "2026-06-11T12:00:00Z"
+        assert wait["checks"] == 1
+        assert isinstance(wait["started_at"], str) and wait["started_at"]
+
+    def test_second_chunk_same_anchor_accumulates(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        first = fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        second = fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        assert second["checks"] == 2
+        assert second["started_at"] == first["started_at"]
+
+    def test_anchor_change_resets_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        fgt.save_wait_settle(self.PR, "fp-1", "2026-06-11T12:01:00Z")
+        wait = fgt.begin_wait_chunk(self.PR, "2026-06-11T12:30:00Z")
+        assert wait["after"] == "2026-06-11T12:30:00Z"
+        assert wait["checks"] == 1
+        assert "stable_fingerprint" not in wait
+
+    def test_settle_persists_across_chunks(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        fgt.save_wait_settle(self.PR, "fp-1", "2026-06-11T12:01:00Z")
+        wait = fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        assert wait["stable_fingerprint"] == "fp-1"
+        assert wait["stable_since"] == "2026-06-11T12:01:00Z"
+
+    def test_clear_wait_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        fgt.clear_wait_state(self.PR)
+        assert fgt.read_wait_state(self.PR) == {}
+
+    def test_clear_preserves_other_run_keys(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({"o/r#5": {"run": {"started_at": "2026-06-11T10:00:00Z", "update_seq": 3}}})
+        fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        fgt.clear_wait_state(self.PR)
+        run = load_sticky_state()["o/r#5"]["run"]
+        assert run["update_seq"] == 3
+        assert "wait" not in run
+
+    def test_corrupt_state_fails_open(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        save_sticky_state({"o/r#5": {"run": {"wait": "not-a-dict"}}})
+        wait = fgt.begin_wait_chunk(self.PR, "2026-06-11T12:00:00Z")
+        assert wait["checks"] == 1
+
+
+class TestWaitElapsedAndDecay:
+    def test_elapsed_from_started_at(self):
+        wait = {"started_at": "2026-06-11T12:00:00Z"}
+        now = datetime.datetime(2026, 6, 11, 12, 2, 30, tzinfo=datetime.timezone.utc)
+        assert fgt.wait_elapsed_seconds(wait, None, now=now) == 150
+
+    def test_after_floor_dominates_when_state_lost(self):
+        # Fresh started_at (state was wiped) must not restart the budget:
+        # the --after anchor bounds total elapsed.
+        wait = {"started_at": "2026-06-11T12:09:00Z"}
+        now = datetime.datetime(2026, 6, 11, 12, 10, 0, tzinfo=datetime.timezone.utc)
+        assert fgt.wait_elapsed_seconds(wait, "2026-06-11T12:00:00Z", now=now) == 600
+
+    def test_missing_started_at_uses_after(self):
+        now = datetime.datetime(2026, 6, 11, 12, 5, 0, tzinfo=datetime.timezone.utc)
+        assert fgt.wait_elapsed_seconds({}, "2026-06-11T12:00:00Z", now=now) == 300
+
+    def test_no_inputs_returns_zero(self):
+        now = datetime.datetime(2026, 6, 11, 12, 5, 0, tzinfo=datetime.timezone.utc)
+        assert fgt.wait_elapsed_seconds({}, None, now=now) == 0
+        assert fgt.wait_elapsed_seconds({"started_at": "garbage"}, "also-garbage", now=now) == 0
+
+    def test_decay_schedule(self):
+        assert fgt.suggested_next_wait_seconds(0) == 60
+        assert fgt.suggested_next_wait_seconds(1) == 60
+        assert fgt.suggested_next_wait_seconds(2) == 90
+        assert fgt.suggested_next_wait_seconds(10) == 90
+
+
+class TestRunWaitChunk:
+    PR = fgt.PullRequest(owner="o", repo="r", number=5)
+
+    @staticmethod
+    def _recent_after(seconds_ago: int = 5) -> str:
+        return (
+            datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(seconds=seconds_ago)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _patch(self, monkeypatch, tmp_path, fingerprints, reviews=None):
+        """fingerprints: sequence returned by successive fingerprint calls."""
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        fps = iter(fingerprints)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: {"reviews": reviews or []})
+        monkeypatch.setattr(
+            fgt,
+            "review_activity_fingerprint",
+            lambda pull_request, author, after_iso=None: next(fps),
+        )
+        monkeypatch.setattr(fgt.time, "sleep", lambda s: None)
+
+    def test_waiting_when_no_activity(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path, [None, None, None])
+        clock = iter([0.0, 0.0, 1.0, 2.0, 100.0, 100.0, 100.0])
+        monkeypatch.setattr(fgt.time, "monotonic", lambda: next(clock))
+        result = fgt.run_wait_chunk(
+            self.PR, "gemini-code-assist",
+            timeout_seconds=900, interval_seconds=1, quiet_seconds=45,
+            after_iso=self._recent_after(), chunk_seconds=60,
+        )
+        assert result["status"] == "waiting"
+        assert result["checks"] == 1
+        assert result["next_wait_seconds"] == 60
+        assert result["pull_request"] is None
+
+    def test_settling_when_activity_not_yet_stable(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path, ["fp-1", "fp-1"])
+        clock = iter([0.0, 0.0, 1.0, 100.0, 100.0, 100.0])
+        monkeypatch.setattr(fgt.time, "monotonic", lambda: next(clock))
+        result = fgt.run_wait_chunk(
+            self.PR, "gemini-code-assist",
+            timeout_seconds=900, interval_seconds=1, quiet_seconds=4500,
+            after_iso=self._recent_after(), chunk_seconds=60,
+        )
+        assert result["status"] == "settling"
+        assert result["quiet_period_remaining_seconds"] > 0
+        # settle state persisted for the next chunk
+        wait = fgt.read_wait_state(self.PR)
+        assert wait["stable_fingerprint"] == "fp-1"
+
+    def test_settle_survives_chunk_boundary(self, tmp_path, monkeypatch):
+        # Chunk 1 sees fp-1 and persists settle state with a stable_since that
+        # already satisfies the 45s quiet period. The anchor must be recent
+        # (timeout floor) while stable_since is older than quiet_seconds.
+        after = self._recent_after(seconds_ago=120)
+        stable_since = self._recent_after(seconds_ago=60)
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        fgt.begin_wait_chunk(self.PR, after)
+        fgt.save_wait_settle(self.PR, "fp-1", stable_since)
+        # Chunk 2 sees the same fingerprint; quiet period (45s) already elapsed
+        # relative to the persisted stable_since → ready immediately, without
+        # restarting the quiet period.
+        self._patch(monkeypatch, tmp_path, ["fp-1"])
+        monkeypatch.setattr(fgt.time, "monotonic", lambda: 0.0)
+        result = fgt.run_wait_chunk(
+            self.PR, "gemini-code-assist",
+            timeout_seconds=900, interval_seconds=1, quiet_seconds=45,
+            after_iso=after, chunk_seconds=60,
+        )
+        assert result["status"] == "ready"
+        assert result["pull_request"] is not None
+        assert fgt.read_wait_state(self.PR) == {}  # cleared on ready
+
+    def test_cycle1_fast_path_no_anchor(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path, ["fp-1"])
+        monkeypatch.setattr(fgt.time, "monotonic", lambda: 0.0)
+        result = fgt.run_wait_chunk(
+            self.PR, "gemini-code-assist",
+            timeout_seconds=900, interval_seconds=1, quiet_seconds=45,
+            after_iso=None, chunk_seconds=60,
+        )
+        assert result["status"] == "ready"
+
+    def test_timed_out_via_after_floor_with_lost_state(self, tmp_path, monkeypatch):
+        # State was never written before; --after is 20 minutes ago, timeout 900s.
+        old_after = self._recent_after(seconds_ago=1200)  # 20 minutes ago
+        self._patch(monkeypatch, tmp_path, [None])
+        monkeypatch.setattr(fgt.time, "monotonic", lambda: 0.0)
+        result = fgt.run_wait_chunk(
+            self.PR, "gemini-code-assist",
+            timeout_seconds=900, interval_seconds=1, quiet_seconds=45,
+            after_iso=old_after, chunk_seconds=60,
+        )
+        assert result["status"] == "timed_out"
+        assert result["elapsed_seconds"] >= 1100
+
+    def test_snapshot_persisted_for_heartbeat(self, tmp_path, monkeypatch):
+        self._patch(monkeypatch, tmp_path, [None, None])
+        clock = iter([0.0, 0.0, 100.0, 100.0, 100.0])
+        monkeypatch.setattr(fgt.time, "monotonic", lambda: next(clock))
+        result = fgt.run_wait_chunk(
+            self.PR, "gemini-code-assist",
+            timeout_seconds=900, interval_seconds=1, quiet_seconds=45,
+            after_iso=self._recent_after(), chunk_seconds=60,
+        )
+        snapshot = fgt.read_wait_state(self.PR)["last_snapshot"]
+        assert snapshot["status"] == result["status"] == "waiting"
+        assert snapshot["author"] == "gemini-code-assist"
+
+
+class TestWaitChunkCli:
+    AFTER = "2026-06-11T12:00:00Z"
+
+    def _patch_common(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.delenv("GGRL_NO_COLOR", raising=False)
+        monkeypatch.setattr(
+            fgt, "resolve_pr", lambda arg: PullRequest(owner="o", repo="r", number=5)
+        )
+        monkeypatch.setattr(
+            fgt,
+            "run_wait_chunk",
+            lambda *a, **k: {
+                "status": "waiting",
+                "author": "gemini-code-assist",
+                "elapsed_seconds": 90,
+                "checks": 2,
+                "next_wait_seconds": 90,
+                "pull_request": None,
+            },
+        )
+
+    def test_pending_markdown_prints_purple_heartbeat(self, tmp_path, monkeypatch, capsys):
+        self._patch_common(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["fetch_gemini_threads.py", "--pr", "https://github.com/o/r/pull/5",
+             "--wait", "--after", self.AFTER, "--wait-chunk-seconds", "60"],
+        )
+        assert fgt.main() == 0
+        out = capsys.readouterr().out
+        assert "[loop] waiting for gemini-code-assist — 90s elapsed" in out
+        assert "\033[95m" in out  # purple
+
+    def test_pending_json_stdout_is_machine_only(self, tmp_path, monkeypatch, capsys):
+        self._patch_common(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["fetch_gemini_threads.py", "--pr", "https://github.com/o/r/pull/5",
+             "--wait", "--after", self.AFTER, "--wait-chunk-seconds", "60",
+             "--format", "json"],
+        )
+        assert fgt.main() == 0
+        out = capsys.readouterr().out
+        assert "\033[" not in out
+        assert "[loop]" not in out
+        payload = json.loads(out)
+        assert payload["wait"]["status"] == "waiting"
+        assert payload["wait"]["next_wait_seconds"] == 90
+        assert "pull_request" not in payload["wait"]
+
+    def test_no_chunk_flag_uses_legacy_blocking_wait(self, tmp_path, monkeypatch):
+        self._patch_common(monkeypatch, tmp_path)
+        called = {}
+
+        def fake_legacy(pr, author=None, timeout_seconds=None, interval_seconds=None, quiet_seconds=None, after_iso=None, **kw):
+            called["legacy"] = True
+            raise RuntimeError("stop here")  # abort main() after the call we care about
+
+        monkeypatch.setattr(fgt, "wait_for_stable_review", fake_legacy)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["fetch_gemini_threads.py", "--pr", "https://github.com/o/r/pull/5",
+             "--wait", "--after", self.AFTER],
+        )
+        # main() catches RuntimeError and returns 1 — we just verify legacy was called
+        fgt.main()
+        assert called.get("legacy") is True
+
+
+class TestWaitHeartbeatCommand:
+    def test_renders_persisted_snapshot(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.delenv("GGRL_NO_COLOR", raising=False)
+        pr = PullRequest(owner="o", repo="r", number=5)
+        monkeypatch.setattr(fgt, "resolve_pr", lambda arg: pr)
+        fgt.begin_wait_chunk(pr, "2026-06-11T12:00:00Z")
+        fgt.save_wait_snapshot(pr, {
+            "status": "settling",
+            "author": "gemini-code-assist",
+            "elapsed_seconds": 120,
+            "checks": 3,
+            "next_wait_seconds": 30,
+            "quiet_period_remaining_seconds": 30,
+        })
+        monkeypatch.setattr(
+            sys, "argv",
+            ["fetch_gemini_threads.py", "--wait-heartbeat",
+             "--pr", "https://github.com/o/r/pull/5"],
+        )
+        assert fgt.main() == 0
+        out = capsys.readouterr().out
+        assert "Gemini responded — waiting for review threads to settle" in out
+        assert "30s quiet period remaining" in out
+        assert "\033[95m" in out
+
+    def test_no_wait_in_progress(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            fgt, "resolve_pr", lambda arg: PullRequest(owner="o", repo="r", number=5)
+        )
+        monkeypatch.setattr(
+            sys, "argv",
+            ["fetch_gemini_threads.py", "--wait-heartbeat",
+             "--pr", "https://github.com/o/r/pull/5"],
+        )
+        assert fgt.main() == 0
+        assert "no Gemini wait in progress" in capsys.readouterr().out

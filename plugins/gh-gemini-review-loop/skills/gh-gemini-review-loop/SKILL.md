@@ -361,6 +361,7 @@ fails:
 - terminal summary (`--record-run`)
 - semantic-risk note (`--semantic-risk`, repeatable)
 - next options for non-clean terminal outcomes
+- wait heartbeat (`--wait-chunk-seconds` pending output, or `--wait-heartbeat`)
 
 Before push or before Gemini confirms the re-review, use the script's fixed-
 pending wording. Locally fixed work must appear as `Fixed locally` plus
@@ -456,6 +457,7 @@ Required narration points:
 | **Before push (HARD GATE)** | Run `--cycle-summary` and print its full output (`[loop] Cycle receipt` block). Only then push. |
 | After push, before re-review | `[loop] session cycle N — pushed. Requesting Gemini re-review. Cap now M/K.` |
 | After final re-review request | Wait for Gemini after `REREVIEW_AT` before terminal recording. If wait succeeds, record with `--gemini-confirmed`; if it times out, record with `--gemini-unconfirmed`. |
+| During any Gemini wait | Run chunked waits (`--wait-chunk-seconds`); after each non-ready chunk relay the script's heartbeat block verbatim, then start the next chunk. Never background the wait; never go silent for more than ~90s. |
 | Stop condition triggered | `[loop] STOP — <stop-condition>: <one-line explanation>.` |
 | Loop complete (all clean) | `[loop] DONE — 0 actionable threads remaining. Cycles used: N/<cap>.` |
 | Loop complete / stopped (after DONE/STOP) | `[loop] Summary` block (from `--record-run`) — print the full stdout; this is the terminal receipt |
@@ -777,13 +779,24 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
         --json
       ```
       Capture `created_at` from the JSON payload as `REREVIEW_AT`. If the repository uses a different Gemini trigger phrase, pass it with `--phrase`.
-    - Wait for Gemini after the re-review timestamp before any terminal recording:
+    - Wait for Gemini using chunked foreground waits — never a background wait:
       ```bash
       python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
         --wait \
-        --after "$REREVIEW_AT"
+        --after "$REREVIEW_AT" \
+        --wait-chunk-seconds 60
       ```
-      If wait succeeds, terminal recording uses `--gemini-confirmed`. If wait times out, terminal recording uses `--gemini-unconfirmed`; do not guess `clean`, do not blindly mark `capped`, and allow `fixed_pending_confirmation`.
+      Statuses: `waiting` (no response yet), `settling` (Gemini responded,
+      quiet period running), `ready` (proceed — the same call returns the
+      fetched threads), `timed_out` (total `--timeout` budget exhausted).
+      After each `waiting`/`settling` chunk: relay the printed `[loop]`
+      heartbeat verbatim (markdown mode) or run `--wait-heartbeat` and relay
+      its output (JSON mode), then immediately run the next chunk passing the
+      script's `next_wait_seconds` as `--wait-chunk-seconds`. The script owns
+      the 60s→90s decay; do not invent intervals.
+      On `timed_out`, terminal recording uses `--gemini-unconfirmed`; do not
+      guess `clean`, do not blindly mark `capped`, and allow
+      `fixed_pending_confirmation`.
     - After the final wait has established confirmed/unconfirmed state, record the run exactly once:
       `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --record-run --fixed-count <n> --verification <passed|failed|skipped> [--outcome <state>] [--gemini-confirmed|--gemini-unconfirmed]`
       then relay the printed `[loop] Summary` block verbatim.
@@ -824,6 +837,17 @@ python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_t
 # returning, so a fast-forward fetch doesn't catch a half-posted re-review.
 python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
     --wait --after "$REREVIEW_AT"
+
+# Chunked wait (preferred): return within 60s with a deterministic status
+# instead of blocking. Relay the printed heartbeat verbatim, then run the next
+# chunk with the suggested --wait-chunk-seconds. Never run the wait in the
+# background.
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+    --wait --after "$REREVIEW_AT" --wait-chunk-seconds 60
+
+# After a --format json chunk, render the human heartbeat for relay:
+python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+    --wait-heartbeat
 
 # Request Gemini re-review via the script-owned helper.
 # Parse JSON stdout and capture `created_at` as REREVIEW_AT.

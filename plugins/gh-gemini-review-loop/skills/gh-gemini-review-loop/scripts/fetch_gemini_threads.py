@@ -765,6 +765,229 @@ def clear_run_tracking(pr: PullRequest) -> None:
         save_sticky_state(state)
 
 
+def begin_wait_chunk(pr: PullRequest, after_iso: str | None) -> dict[str, Any]:
+    """Open one wait chunk: load cross-chunk wait state, applying the reset rule.
+
+    Reset rule (prevents cross-cycle leakage): if the stored anchor differs
+    from ``after_iso``, all wait progress (started_at, checks, settle state)
+    belongs to a previous cycle's wait and is discarded. ``checks`` counts
+    chunk invocations, incremented once per call. Fails open: state I/O
+    errors yield a fresh single-chunk state rather than crashing the wait.
+    """
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key)
+    entry = dict(entry) if isinstance(entry, dict) else {}
+    run = entry.get("run")
+    run = dict(run) if isinstance(run, dict) else {}
+    wait = run.get("wait")
+    wait = dict(wait) if isinstance(wait, dict) else {}
+    if wait.get("after") != after_iso:
+        wait = {"after": after_iso}
+    if not isinstance(wait.get("started_at"), str) or not wait.get("started_at"):
+        wait["started_at"] = metrics.now_iso()
+    wait["checks"] = _safe_int(wait.get("checks")) + 1
+    run["wait"] = wait
+    entry["run"] = run
+    state[key] = entry
+    try:
+        save_sticky_state(state)
+    except OSError as exc:
+        print(f"warning: could not persist wait state: {exc}", file=sys.stderr)
+    return wait
+
+
+def read_wait_state(pr: PullRequest) -> dict[str, Any]:
+    run = read_run_tracking(pr)
+    wait = run.get("wait") if isinstance(run, dict) else None
+    return dict(wait) if isinstance(wait, dict) else {}
+
+
+def _update_wait_state(pr: PullRequest, updates: dict[str, Any]) -> None:
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key)
+    entry = dict(entry) if isinstance(entry, dict) else {}
+    run = entry.get("run")
+    run = dict(run) if isinstance(run, dict) else {}
+    wait = run.get("wait")
+    wait = dict(wait) if isinstance(wait, dict) else {}
+    wait.update(updates)
+    run["wait"] = wait
+    entry["run"] = run
+    state[key] = entry
+    try:
+        save_sticky_state(state)
+    except OSError as exc:
+        print(f"warning: could not persist wait state: {exc}", file=sys.stderr)
+
+
+def save_wait_settle(pr: PullRequest, fingerprint: str, since_iso: str) -> None:
+    """Persist the settle phase so a chunk boundary never restarts the quiet period."""
+    _update_wait_state(pr, {"stable_fingerprint": fingerprint, "stable_since": since_iso})
+
+
+def save_wait_snapshot(pr: PullRequest, snapshot: dict[str, Any]) -> None:
+    """Persist the last non-ready chunk result for --wait-heartbeat rendering."""
+    _update_wait_state(pr, {"last_snapshot": dict(snapshot)})
+
+
+def clear_wait_state(pr: PullRequest) -> None:
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key)
+    if isinstance(entry, dict) and isinstance(entry.get("run"), dict) and "wait" in entry["run"]:
+        del entry["run"]["wait"]
+        try:
+            save_sticky_state(state)
+        except OSError as exc:
+            print(f"warning: could not clear wait state: {exc}", file=sys.stderr)
+
+
+WAIT_FIRST_CHUNK_SECONDS = 60
+WAIT_LATER_CHUNK_SECONDS = 90
+
+
+def _parse_iso_utc(value: Any) -> _dt.datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return _dt.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=_dt.timezone.utc
+        )
+    except ValueError:
+        return None
+
+
+def wait_elapsed_seconds(
+    wait: dict[str, Any],
+    after_iso: str | None,
+    now: _dt.datetime | None = None,
+) -> int:
+    """Total wait elapsed, robust to state loss.
+
+    ``max(now - started_at, now - after)``: if sticky state is corrupted or
+    deleted, a fresh started_at cannot silently restart the --timeout budget —
+    the --after anchor still bounds the total. Cycle 1 has no anchor and falls
+    back to started_at alone (acceptable: the cycle-1 fast path returns on
+    first detected activity).
+    """
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    candidates = []
+    for value in (wait.get("started_at"), after_iso):
+        parsed = _parse_iso_utc(value)
+        if parsed is not None:
+            candidates.append((now - parsed).total_seconds())
+    return max(0, int(max(candidates))) if candidates else 0
+
+
+def suggested_next_wait_seconds(checks: int) -> int:
+    """Decay schedule: 60s for the first chunk, 90s after.
+
+    Early silence is what feels broken; by the second heartbeat the user knows
+    the loop is waiting, so later checks stretch out. All gaps stay far below
+    the 5-minute prompt-cache TTL.
+    """
+    return WAIT_FIRST_CHUNK_SECONDS if checks <= 1 else WAIT_LATER_CHUNK_SECONDS
+
+
+def _latest_submitted_after(
+    pull_request: dict[str, Any], author: str, after_iso: str | None
+) -> str | None:
+    """Newest review submittedAt past the anchor, for the settling JSON payload."""
+    try:
+        times = [
+            r.get("submittedAt")
+            for r in filter_reviews(pull_request, author)
+            if isinstance(r.get("submittedAt"), str)
+        ]
+    except (AttributeError, TypeError):
+        return None
+    if after_iso:
+        times = [t for t in times if t > after_iso]
+    return max(times) if times else None
+
+
+def run_wait_chunk(
+    pr: PullRequest,
+    author: str,
+    *,
+    timeout_seconds: int,
+    interval_seconds: int,
+    quiet_seconds: int,
+    after_iso: str | None,
+    chunk_seconds: int,
+) -> dict[str, Any]:
+    """One bounded foreground wait chunk; the cross-chunk state machine's step.
+
+    Returns a dict with ``status`` in {waiting, settling, ready, timed_out}.
+    ``ready`` carries ``pull_request`` (proceed into the fetch path exactly as
+    the legacy wait would); the others carry heartbeat fields and persist a
+    snapshot so ``--wait-heartbeat`` can render the human block later.
+    The quiet period is measured against the PERSISTED ``stable_since`` so a
+    chunk boundary never restarts settling.
+    """
+    wait = begin_wait_chunk(pr, after_iso)
+    chunk_deadline = time.monotonic() + chunk_seconds
+    stable_fingerprint = wait.get("stable_fingerprint")
+    stable_since = _parse_iso_utc(wait.get("stable_since"))
+
+    while True:
+        pull_request = fetch_threads(pr)
+        fingerprint = review_activity_fingerprint(pull_request, author, after_iso=after_iso)
+        now_dt = _dt.datetime.now(_dt.timezone.utc)
+        elapsed = wait_elapsed_seconds(wait, after_iso, now=now_dt)
+
+        if fingerprint is not None and after_iso is None:
+            # Cycle 1 fast path: same semantics as the legacy wait.
+            clear_wait_state(pr)
+            return {"status": "ready", "pull_request": pull_request}
+
+        quiet_remaining: int | None = None
+        if fingerprint is not None:
+            if fingerprint != stable_fingerprint or stable_since is None:
+                stable_fingerprint = fingerprint
+                stable_since = now_dt
+                save_wait_settle(pr, fingerprint, now_dt.strftime("%Y-%m-%dT%H:%M:%SZ"))
+            quiet_elapsed = (now_dt - stable_since).total_seconds() if stable_since else 0.0
+            quiet_remaining = max(0, int(quiet_seconds - quiet_elapsed))
+            if quiet_remaining <= 0:
+                clear_wait_state(pr)
+                return {"status": "ready", "pull_request": pull_request}
+
+        if elapsed >= timeout_seconds:
+            snapshot = {
+                "status": "timed_out",
+                "author": author,
+                "elapsed_seconds": elapsed,
+                "checks": wait["checks"],
+            }
+            save_wait_snapshot(pr, snapshot)
+            return {**snapshot, "pull_request": None}
+
+        if time.monotonic() >= chunk_deadline:
+            next_wait = suggested_next_wait_seconds(wait["checks"])
+            snapshot = {
+                "status": "settling" if fingerprint is not None else "waiting",
+                "author": author,
+                "elapsed_seconds": elapsed,
+                "checks": wait["checks"],
+                "next_wait_seconds": next_wait,
+            }
+            if fingerprint is not None:
+                snapshot["quiet_period_remaining_seconds"] = quiet_remaining
+                snapshot["next_wait_seconds"] = max(
+                    1, min(next_wait, quiet_remaining or next_wait)
+                )
+                submitted = _latest_submitted_after(pull_request, author, after_iso)
+                if submitted:
+                    snapshot["submitted_at"] = submitted
+            save_wait_snapshot(pr, snapshot)
+            return {**snapshot, "pull_request": None}
+
+        time.sleep(min(interval_seconds, max(0.0, chunk_deadline - time.monotonic())))
+
+
 def accumulate_fixed_markers(
     pr: PullRequest,
     *,
@@ -786,8 +1009,10 @@ def accumulate_fixed_markers(
     entry = dict(entry) if isinstance(entry, dict) else {}
     run = entry.get("run")
     run = dict(run) if isinstance(run, dict) else {}
-    fps = {x for x in run.get("fixed_finding_fps", []) if isinstance(x, str)}
-    fpaths = {x for x in run.get("fixed_paths", []) if isinstance(x, str)}
+    fps_val = run.get("fixed_finding_fps")
+    fps = {x for x in fps_val if isinstance(x, str)} if isinstance(fps_val, list) else set()
+    fpaths_val = run.get("fixed_paths")
+    fpaths = {x for x in fpaths_val if isinstance(x, str)} if isinstance(fpaths_val, list) else set()
     for fp in fingerprints or []:
         if fp:
             fps.add(fp)
@@ -834,9 +1059,11 @@ def changed_files_in_range(
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
-    except (OSError, ValueError):
+    except (OSError, ValueError, subprocess.SubprocessError):
         return set()
     if result.returncode != 0:
         return set()
@@ -1699,12 +1926,32 @@ def main() -> int:
         action="store_true",
         help="Print the planned repo-aware verification block for --repo and exit.",
     )
+    parser.add_argument(
+        "--wait-heartbeat",
+        action="store_true",
+        help=(
+            "Print the human heartbeat block for the PR's in-progress chunked "
+            "wait (from persisted state) and exit. Use after a --format json "
+            "wait chunk so JSON stdout stays machine-only."
+        ),
+    )
     parser.add_argument("--include-resolved", action="store_true")
     parser.add_argument("--include-outdated", action="store_true")
     parser.add_argument("--wait", action="store_true", help="Poll until Gemini review activity appears and is stable.")
     parser.add_argument("--timeout", type=int, default=900, help="Seconds to wait with --wait. Default: 900.")
     parser.add_argument("--interval", type=int, default=20, help="Polling interval in seconds with --wait. Default: 20.")
     parser.add_argument("--quiet-period", type=int, default=45, help="Stable activity period in seconds with --wait. Default: 45.")
+    parser.add_argument(
+        "--wait-chunk-seconds",
+        type=int,
+        default=None,
+        help=(
+            "With --wait, return after at most this many seconds with a "
+            "deterministic waiting/settling/timed_out status instead of "
+            "blocking until --timeout. --timeout stays the TOTAL wait budget "
+            "across chunks. Omit for legacy blocking behavior."
+        ),
+    )
     parser.add_argument(
         "--after",
         metavar="ISO8601",
@@ -2017,6 +2264,35 @@ def main() -> int:
         print(color_loop_block("\n".join(blocks), enabled=color_enabled))
         return 0
 
+    if args.wait_heartbeat:
+        pr = resolve_pr(args.pr)
+        snapshot = read_wait_state(pr).get("last_snapshot")
+        if not isinstance(snapshot, dict) or not snapshot:
+            print(
+                color_loop_block(
+                    "[loop] no Gemini wait in progress for this PR.",
+                    enabled=color_enabled,
+                )
+            )
+            return 0
+        print(
+            color_loop_block(
+                metrics.format_wait_heartbeat(
+                    str(snapshot.get("status", "")),
+                    author=str(snapshot.get("author", DEFAULT_AUTHOR)),
+                    elapsed_seconds=snapshot.get("elapsed_seconds", 0),
+                    checks=snapshot.get("checks", 0),
+                    next_wait_seconds=snapshot.get("next_wait_seconds", 0),
+                    quiet_period_remaining_seconds=snapshot.get(
+                        "quiet_period_remaining_seconds"
+                    ),
+                )
+                or "[loop] no Gemini wait in progress for this PR.",
+                enabled=color_enabled,
+            )
+        )
+        return 0
+
     if args.stats:
         try:
             if args.pr:
@@ -2086,7 +2362,47 @@ def main() -> int:
                 )
             except OSError as exc:
                 print(f"warning: could not persist fixed markers: {exc}", file=sys.stderr)
-        if args.wait:
+        if args.wait and args.wait_chunk_seconds is not None:
+            if args.wait_chunk_seconds <= 0:
+        if args.wait and args.wait_chunk_seconds is not None:
+            if args.wait_chunk_seconds <= 0:
+                parser.error("--wait-chunk-seconds must be a positive integer.")
+            chunk = run_wait_chunk(
+                pr,
+                args.author,
+                timeout_seconds=args.timeout,
+                interval_seconds=args.interval,
+                quiet_seconds=args.quiet_period,
+                after_iso=args.after,
+                chunk_seconds=args.wait_chunk_seconds,
+            )
+            if chunk["status"] != "ready":
+                wait_fields = {
+                    k: v
+                    for k, v in chunk.items()
+                    if k not in ("pull_request", "author") and v is not None
+                }
+                if args.format == "json":
+                    print(json.dumps({"wait": wait_fields}, indent=2, sort_keys=True))
+                else:
+                    print(
+                        color_loop_block(
+                            metrics.format_wait_heartbeat(
+                                chunk["status"],
+                                author=args.author,
+                                elapsed_seconds=chunk.get("elapsed_seconds", 0),
+                                checks=chunk.get("checks", 0),
+                                next_wait_seconds=chunk.get("next_wait_seconds", 0),
+                                quiet_period_remaining_seconds=chunk.get(
+                                    "quiet_period_remaining_seconds"
+                                ),
+                            ),
+                            enabled=color_enabled,
+                        )
+                    )
+                return 0
+            pull_request = chunk["pull_request"]
+        elif args.wait:
             pull_request = wait_for_stable_review(
                 pr,
                 author=args.author,

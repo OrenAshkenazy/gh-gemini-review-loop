@@ -343,6 +343,41 @@ def format_judge_skip(reason: str) -> str:
     return f"[loop] judge eval skipped: {reason or 'unknown reason'}"
 
 
+def format_wait_heartbeat(
+    status: str,
+    *,
+    author: str,
+    elapsed_seconds: Any = 0,
+    checks: Any = 0,
+    next_wait_seconds: Any = 0,
+    quiet_period_remaining_seconds: Any = None,
+) -> str:
+    """Deterministic human heartbeat for one chunked-wait status.
+
+    Returns "" for statuses that have no heartbeat (``ready`` proceeds into a
+    fetch; unknown statuses render nothing rather than guessing).
+    """
+    elapsed = _count(elapsed_seconds)
+    checks_n = _count(checks)
+    if status == "waiting":
+        plural = "check" if checks_n == 1 else "checks"
+        return (
+            f"[loop] waiting for {author} — {elapsed}s elapsed, "
+            f"{checks_n} {plural} done, next check in {_count(next_wait_seconds)}s"
+        )
+    if status == "settling":
+        return (
+            "[loop] Gemini responded — waiting for review threads to settle, "
+            f"{_count(quiet_period_remaining_seconds)}s quiet period remaining"
+        )
+    if status == "timed_out":
+        return (
+            f"[loop] wait timed out after {format_duration(elapsed)} — "
+            "Gemini did not confirm; record with --gemini-unconfirmed"
+        )
+    return ""
+
+
 def format_next_options(outcome: str, cap_reached: bool, needs_human: int) -> str:
     """Deterministic next-step menu for non-clean terminal outcomes."""
     if outcome == "clean":

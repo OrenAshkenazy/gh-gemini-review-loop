@@ -45,7 +45,7 @@ def test_post_rereview_uses_argv_list_and_extracts_created_at():
         "repos/OrenAshkenazy/AegisLocal/issues/11/comments",
         "--method",
         "POST",
-        "--field",
+        "--raw-field",
         f"body={request_rereview.DEFAULT_PHRASE}",
     ]
 
