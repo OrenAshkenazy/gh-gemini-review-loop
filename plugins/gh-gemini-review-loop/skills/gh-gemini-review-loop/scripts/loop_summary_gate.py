@@ -116,7 +116,7 @@ def format_run_snapshot(info: dict[str, Any]) -> str:
 def main() -> int:
     try:
         payload = load_hook_payload(sys.stdin.read())
-    except OSError:
+    except (OSError, ValueError):
         return 0
 
     # Only intercept Bash tool calls that contain git push.

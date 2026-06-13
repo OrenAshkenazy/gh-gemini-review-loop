@@ -60,7 +60,7 @@ BLOCK_MESSAGE = (
 def main() -> int:
     try:
         payload = load_hook_payload(sys.stdin.read())
-    except OSError:
+    except (OSError, ValueError):
         return 0  # malformed/unreadable payload -> fail open
 
     tool = tool_name(payload)

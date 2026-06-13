@@ -9,7 +9,13 @@ Choosing any profile (including Skip) satisfies it.
 
 import judge
 from fetch_gemini_threads import save_sticky_state
+from loop_profile_gate import main as profile_gate_main
 from loop_profile_gate import profile_required_for_repo
+
+
+class _UnreadableStdin:
+    def read(self):
+        raise ValueError("invalid input")
 
 
 def _active(repo, number=1):
@@ -19,6 +25,10 @@ def _active(repo, number=1):
 
 
 class TestProfileRequiredForRepo:
+    def test_main_fails_open_when_stdin_read_raises_value_error(self, monkeypatch):
+        monkeypatch.setattr("sys.stdin", _UnreadableStdin())
+        assert profile_gate_main() == 0
+
     def test_false_when_no_active_loop(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         # No loop in flight: editing is unrelated to a review loop, never block.
