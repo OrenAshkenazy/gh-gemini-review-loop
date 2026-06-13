@@ -43,6 +43,21 @@ On the first run in a repository, you choose from a short menu — **All detecte
 
 This repo publishes the same plugin for both Claude Code and Codex. Install it in the runtime you use, or install both.
 
+### Agent Skills (`npx skills`)
+
+If you want the shared skills install flow instead of the runtime-specific plugin commands, use `npx skills add` and target the agents you want.
+
+```bash
+npx skills add OrenAshkenazy/gh-gemini-review-loop -a claude-code codex
+```
+
+The `-a` flag selects the agents that your local skills installer knows about.
+With `skills` CLI 1.5.11, this installs the skill for both Claude Code and
+Codex. If `codex` does not appear in your picker, update the skills installer or
+use the Codex plugin install flow below.
+
+Omit the `-a` flags if you want the interactive picker to choose agents for you.
+
 ### Codex
 
 Add the marketplace:
