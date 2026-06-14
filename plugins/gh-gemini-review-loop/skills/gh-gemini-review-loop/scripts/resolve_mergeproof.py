@@ -62,9 +62,19 @@ def resolve(
         }
 
     config, path = found
+    # Resolve each source ref to an immutable SHA. An inaccessible infra repo
+    # (404/403) must degrade to partial context, not crash the readiness phase.
+    failed_sources: list[dict[str, str]] = []
     for source in config["architecture_sources"]:
-        commit = runner(["api", f"repos/{source['repo']}/commits/{source['ref']}"])
-        source["resolved_sha"] = commit["sha"]
+        try:
+            commit = runner(["api", f"repos/{source['repo']}/commits/{source['ref']}"])
+            source["resolved_sha"] = (commit or {}).get("sha")
+        except RuntimeError:
+            source["resolved_sha"] = None
+        if not source.get("resolved_sha"):
+            failed_sources.append(
+                {"repo": source["repo"], "error": "infra source ref could not be resolved"}
+            )
 
     status = "OK"
     if config_changed and not trust_pr_config:
@@ -75,4 +85,5 @@ def resolve(
         "config_changed": config_changed,
         "config_path": path,
         "config_ref": config_ref,
+        "failed_sources": failed_sources,
     }

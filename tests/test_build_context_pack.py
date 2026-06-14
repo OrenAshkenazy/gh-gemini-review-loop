@@ -11,6 +11,34 @@ def _b64(text: str) -> str:
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
 
 
+def test_inaccessible_infra_repo_ref_resolution_is_partial_not_crash():
+    """A 404 on the infra repo (at ref resolution) yields a partial pack."""
+    config = (
+        "service: familia-ai\n"
+        "architecture_sources:\n"
+        "  - repo: o/missing-infra\n"
+        "    ref: main\n"
+        "    allow:\n"
+        "      - helm/**\n"
+    )
+
+    def runner(args):
+        url = next((a for a in args if a.startswith("repos/")), args[-1])
+        if "/pulls/" in url:
+            return {"base": {"ref": "main", "sha": "base"}, "head": {"sha": "head"}}
+        if "/contents/mergeproof.yaml" in url:
+            return {"encoding": "base64", "content": _b64(config)}
+        if "/contents/mergeproof" in url:
+            raise RuntimeError("404")
+        # Infra repo is inaccessible: ref resolution 404s.
+        raise RuntimeError("gh: Not Found (HTTP 404)")
+
+    pack = bcp.build_pack("o/app", 5, changed_files=[], runner=runner)
+    assert pack is not None  # did not crash
+    assert pack["provenance"]["file_count"] == 0
+    assert pack["safety"]["failed_sources"]
+
+
 CONFIG_YAML = """\
 service: aegislocal-api
 architecture_sources:

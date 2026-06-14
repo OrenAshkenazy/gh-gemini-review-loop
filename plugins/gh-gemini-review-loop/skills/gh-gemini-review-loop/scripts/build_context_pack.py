@@ -50,10 +50,12 @@ def build_pack(
     all_files: dict[str, str] = {}
     sources_meta: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
-    failed_sources: list[dict[str, str]] = []
+    failed_sources: list[dict[str, str]] = list(resolution.get("failed_sources") or [])
     tree_truncated = False
 
     for source in config["architecture_sources"]:
+        if not source.get("resolved_sha"):
+            continue  # ref resolution already failed; recorded in failed_sources
         try:
             fetched = fetch_infra_files(
                 source,
