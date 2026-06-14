@@ -1,54 +1,45 @@
-"""Tests for mergeproof init."""
+"""Tests for `mergeproof init` (delegates to init_mergeproof discovery)."""
 
 from __future__ import annotations
 
-import pytest
-
 import mergeproof
+import mergeproof_config
 
 
-def test_infer_allowlist_for_familia_style_monorepo(tmp_path):
-    for rel in [
-        "helm/familia-ai/values.yaml",
-        "helm/familia-ai/templates/backend/deployment.yaml",
-        "helm/familia-ai/templates/worker/deployment.yaml",
-        "helm/familia-ai/templates/redis/deployment.yaml",
-        "helm/familia-ai/templates/ingress.yaml",
-        "infra/terraform/environments/beta/main.tf",
-        "infra/terraform/modules/ecs/main.tf",
-        "backend/app/jobs/worker.py",
-    ]:
-        path = tmp_path / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("x", encoding="utf-8")
-
-    allow = mergeproof.infer_allowlist(tmp_path)
-
-    assert "helm/*/templates/backend/**" in allow
-    assert "infra/terraform/modules/ecs/**" in allow
-    assert "backend/app/jobs/**" in allow
+def _write(root, rel, text="x"):
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
 
 
-def test_init_writes_mergeproof_yaml(tmp_path):
-    (tmp_path / "infra/terraform/modules/ecs").mkdir(parents=True)
+def test_init_discovers_real_infra_and_writes_yaml(tmp_path):
+    _write(tmp_path, "infra/terraform/modules/ecs/main.tf", 'resource "x" "y" {}')
+    _write(tmp_path, "helm/familia-ai/values.yaml")
 
-    rc = mergeproof.main(
-        [
-            "init",
-            "--repo-root",
-            str(tmp_path),
-            "--repo",
-            "O/R",
-            "--service",
-            "svc",
-        ]
-    )
+    rc = mergeproof.main(["init", "--repo-root", str(tmp_path), "--repo", "O/R", "--service", "svc"])
 
     text = (tmp_path / "mergeproof.yaml").read_text(encoding="utf-8")
+    cfg = mergeproof_config.load_config(text, fmt="yaml")
     assert rc == 0
-    assert "service: svc" in text
-    assert "repo: O/R" in text
-    assert "infra/terraform/modules/ecs/**" in text
+    assert cfg["service"] == "svc"
+    # No --infra-repo -> same-repo: the app repo is the source.
+    assert cfg["architecture_sources"][0]["repo"] == "O/R"
+    allow = cfg["architecture_sources"][0]["allow"]
+    assert "infra/terraform/modules/ecs/**" in allow
+    assert "helm/familia-ai/**" in allow
+
+
+def test_init_separate_infra_repo(tmp_path):
+    _write(tmp_path, "infra/terraform/main.tf")
+    rc = mergeproof.main([
+        "init", "--repo-root", str(tmp_path),
+        "--repo", "O/app", "--infra-repo", "O/infra", "--service", "svc",
+    ])
+    cfg = mergeproof_config.load_config(
+        (tmp_path / "mergeproof.yaml").read_text(encoding="utf-8"), fmt="yaml"
+    )
+    assert rc == 0
+    assert cfg["architecture_sources"][0]["repo"] == "O/infra"
 
 
 def test_init_refuses_to_overwrite_without_force(tmp_path):
@@ -60,16 +51,13 @@ def test_init_refuses_to_overwrite_without_force(tmp_path):
     assert (tmp_path / "mergeproof.yaml").read_text(encoding="utf-8") == "existing"
 
 
-def test_render_config_is_parseable():
-    import mergeproof_config
-
-    text = mergeproof.render_config(
-        service="svc",
-        repo="O/R",
-        ref="main",
-        allow=["infra/**"],
-    )
-
-    cfg = mergeproof_config.load_config(text, fmt="yaml")
+def test_init_print_outputs_parseable_config(tmp_path, capsys):
+    _write(tmp_path, "infra/terraform/main.tf")
+    rc = mergeproof.main([
+        "init", "--repo-root", str(tmp_path), "--repo", "O/R", "--service", "svc", "--print",
+    ])
+    out = capsys.readouterr().out
+    assert rc == 0
+    cfg = mergeproof_config.load_config(out, fmt="yaml")
     assert cfg["service"] == "svc"
-    assert cfg["architecture_sources"][0]["allow"] == ["infra/**"]
+    assert "infra/terraform/**" in cfg["architecture_sources"][0]["allow"]
