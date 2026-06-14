@@ -1,0 +1,12 @@
+{
+  "pr_url": "https://github.com/OrenAshkenazy/AegisLocal/pull/128",
+  "fixed_count": 7,
+  "false_positives_skipped": 1,
+  "verification": "passed",
+  "verification_command": "uv run pytest",
+  "rereview": "completed",
+  "cycles_used": 2,
+  "cycles_total": 3,
+  "semantic_risk": false,
+  "pending_confirmation": false
+}

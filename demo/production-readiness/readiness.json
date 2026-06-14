@@ -1,0 +1,81 @@
+{
+  "architecture": {
+    "datastores": [
+      "postgresql",
+      "redis"
+    ],
+    "exposure": "public",
+    "ingress": [
+      "alb",
+      "kong"
+    ],
+    "owners": [
+      "platform"
+    ],
+    "queues": [
+      "sqs:scan-events"
+    ],
+    "runtime": "kubernetes",
+    "service_name": "aegislocal-api"
+  },
+  "evidence": {
+    "cycles_total": 3,
+    "cycles_used": 2,
+    "false_positives_skipped": 1,
+    "findings_fixed": 7,
+    "rereview": "completed",
+    "verification": "passed",
+    "verification_command": "uv run pytest"
+  },
+  "human_decision": {
+    "required": true,
+    "review_points": [
+      "API behavior, contract, and error handling",
+      "auth / user semantics and access control",
+      "worker retry and duplicate-processing behavior"
+    ]
+  },
+  "next_options": [
+    "Approve the production risk and merge",
+    "Ask AI to adjust the implementation",
+    "Split risky behavior into a follow-up PR"
+  ],
+  "pr_url": "https://github.com/OrenAshkenazy/AegisLocal/pull/128",
+  "production_risks": [
+    {
+      "files": [
+        "core/api/routes.py"
+      ],
+      "human_decision_required": true,
+      "reason": "PR touches API route/handler code in a public-facing service",
+      "severity": "high",
+      "surface": "public_api"
+    },
+    {
+      "files": [
+        "core/user_utils.py"
+      ],
+      "human_decision_required": true,
+      "reason": "PR changes auth / user / security-related code",
+      "severity": "high",
+      "surface": "auth_security"
+    },
+    {
+      "files": [
+        "core/workers/scan_worker.py"
+      ],
+      "human_decision_required": false,
+      "reason": "PR changes worker/consumer code and the service uses queues",
+      "severity": "medium",
+      "surface": "async_processing"
+    }
+  ],
+  "reason": "AI review loop completed and tests passed, but this PR touches production-facing surfaces.",
+  "risk_summary": {
+    "highest_severity": "high",
+    "human_decision_required": true,
+    "risk_count": 3
+  },
+  "status": "HUMAN_DECISION_REQUIRED",
+  "status_label": "HUMAN DECISION REQUIRED"
+}

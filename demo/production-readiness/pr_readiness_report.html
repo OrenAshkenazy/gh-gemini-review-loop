@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GGRL — Production-Aware PR Readiness</title>
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 0 0 48px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: #0b1220; color: #e6edf6; line-height: 1.5;
+}
+.wrap { max-width: 980px; margin: 0 auto; padding: 0 24px; }
+header.top { padding: 32px 0 20px; border-bottom: 1px solid #1e293b; }
+header.top h1 { margin: 0; font-size: 24px; letter-spacing: -0.01em; }
+header.top p.sub { margin: 6px 0 0; color: #94a3b8; font-size: 15px; }
+.banner {
+  margin: 24px 0; padding: 20px 24px; border-radius: 14px;
+  background: linear-gradient(135deg, #111c30, #0e1830);
+  border: 1px solid #1e293b; border-left: 6px solid var(--accent);
+}
+.banner .status { font-size: 22px; font-weight: 700; color: var(--accent); letter-spacing: 0.02em; }
+.banner .reason { margin-top: 6px; color: #cbd5e1; font-size: 15px; }
+.banner .strip-line { margin-top: 10px; color: #94a3b8; font-size: 14px; }
+.cards { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin: 24px 0; }
+.card {
+  background: #0f1a2e; border: 1px solid #1e293b; border-radius: 12px;
+  padding: 14px 16px; min-height: 78px;
+}
+.card .label { color: #94a3b8; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.card .value { margin-top: 6px; font-size: 20px; font-weight: 700; }
+.card .value.sm { font-size: 15px; font-weight: 600; }
+h2.section { font-size: 15px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: #94a3b8; margin: 32px 0 12px; }
+.arch {
+  background: #0f1a2e; border: 1px solid #1e293b; border-radius: 12px; padding: 20px 22px;
+  font-size: 16px; display: flex; flex-direction: column; gap: 12px;
+}
+.flow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.node { background: #15233c; border: 1px solid #243450; border-radius: 8px; padding: 6px 12px; font-weight: 600; }
+.node.service { background: #1d3a5f; border-color: #2f5a8f; }
+.node.exposure { background: #3a2417; border-color: #7c4a1e; color: #fbbf24; }
+.arrow { color: #64748b; font-size: 18px; }
+.flow.sub { color: #94a3b8; padding-left: 6px; }
+table { width: 100%; border-collapse: collapse; background: #0f1a2e;
+  border: 1px solid #1e293b; border-radius: 12px; overflow: hidden; }
+th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid #1a2740; font-size: 14px; }
+th { color: #94a3b8; font-weight: 600; text-transform: uppercase; font-size: 12px; letter-spacing: 0.04em; }
+tr:last-child td { border-bottom: none; }
+td code, .arch code { background: #14233d; padding: 2px 6px; border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.sev { font-weight: 700; padding: 2px 10px; border-radius: 999px; font-size: 12px; }
+.sev-high { background: #3b1518; color: #fca5a5; }
+.sev-medium { background: #3a2c11; color: #fcd34d; }
+.sev-low { background: #1c2b22; color: #86efac; }
+.decision { background: #0f1a2e; border: 1px solid #1e293b; border-left: 6px solid var(--accent);
+  border-radius: 12px; padding: 20px 22px; }
+.decision p { margin: 0 0 12px; color: #cbd5e1; }
+.decision ol { margin: 0; padding-left: 20px; }
+.decision li { margin: 6px 0; }
+.points { color: #94a3b8; font-size: 14px; margin-top: 8px; }
+footer { margin-top: 36px; padding-top: 18px; border-top: 1px solid #1e293b;
+  color: #64748b; font-size: 13px; text-align: center; font-style: italic; }
+a { color: #7dd3fc; }
+</style>
+</head>
+<body style="--accent: #d97706;">
+<div class="wrap">
+  <header class="top">
+    <h1>GGRL — Production-Aware PR Readiness</h1>
+    <p class="sub">AI fixed the review loop. GGRL tells you if the PR is safe for production.</p>
+  </header>
+
+  <section class="banner">
+    <div class="status">HUMAN DECISION REQUIRED</div>
+    <div class="reason">AI review loop completed and tests passed, but this PR touches production-facing surfaces.</div>
+    <div class="strip-line">7 fixes · tests passed · production risk detected</div>
+    <div class="strip-line">PR: <a href="https://github.com/OrenAshkenazy/AegisLocal/pull/128">https://github.com/OrenAshkenazy/AegisLocal/pull/128</a></div>
+  </section>
+
+  <div class="cards"><div class="card"><div class="label">Findings fixed</div><div class="value ">7</div></div><div class="card"><div class="label">False positives skipped</div><div class="value ">1</div></div><div class="card"><div class="label">Cycles used</div><div class="value ">2/3</div></div><div class="card"><div class="label">Verification</div><div class="value sm">passed<br><span style='font-size:12px;color:#94a3b8'>uv run pytest</span></div></div><div class="card"><div class="label">Re-review</div><div class="value sm">completed</div></div></div>
+
+  <h2 class="section">Production architecture context</h2>
+  <div class="arch">
+    <div class="flow"><span class="node exposure">Public</span><span class="arrow">→</span><span class="node">ALB</span><span class="arrow">→</span><span class="node">Kong</span><span class="arrow">→</span><span class="node service">aegislocal-api</span><span class="arrow">→</span><span class="node">PostgreSQL / Redis</span></div>
+    <div class="flow sub"><span class="arrow">↓</span>SQS <code>scan-events</code></div>
+    <div class="flow sub">Owner: platform ·
+      Runtime: Kubernetes</div>
+  </div>
+
+  <h2 class="section">Production risks</h2>
+  <table>
+    <thead><tr><th>Severity</th><th>Surface</th><th>Evidence</th></tr></thead>
+    <tbody><tr><td><span class="sev sev-high">HIGH</span></td><td>Public API</td><td><code>core/api/routes.py</code> PR touches API route/handler code in a public-facing service</td></tr><tr><td><span class="sev sev-high">HIGH</span></td><td>Auth / user behavior</td><td><code>core/user_utils.py</code> PR changes auth / user / security-related code</td></tr><tr><td><span class="sev sev-medium">MEDIUM</span></td><td>Async processing</td><td><code>core/workers/scan_worker.py</code> PR changes worker/consumer code and the service uses queues</td></tr></tbody>
+  </table>
+
+  <h2 class="section">Human decision required</h2>
+  <div class="decision">
+    <p>AI review loop completed and tests passed, but this PR touches production-facing surfaces.</p>
+    <div class="points">Review before merge:<ol><li>API behavior, contract, and error handling</li><li>auth / user semantics and access control</li><li>worker retry and duplicate-processing behavior</li></ol></div>
+    <ol><li>Approve the production risk and merge</li><li>Ask AI to adjust the implementation</li><li>Split risky behavior into a follow-up PR</li></ol>
+  </div>
+
+  <footer>The AI runs the loop. The human owns production risk and merge judgment.</footer>
+</div>
+</body>
+</html>
