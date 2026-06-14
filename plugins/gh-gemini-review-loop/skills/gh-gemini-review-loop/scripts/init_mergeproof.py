@@ -166,7 +166,11 @@ def repo_from_git(repo_root: str | Path) -> str | None:
         config = git_dir / "config"
     if not config.is_file():
         return None
-    for line in config.read_text(encoding="utf-8", errors="replace").splitlines():
+    try:
+        config_text = config.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return None
+    for line in config_text.splitlines():
         line = line.strip()
         if "github.com" not in line or not line.startswith("url"):
             continue

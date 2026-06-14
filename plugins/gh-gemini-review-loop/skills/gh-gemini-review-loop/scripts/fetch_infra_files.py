@@ -84,7 +84,9 @@ def fetch_infra_files(
     allow = source["allow"]
 
     tree = runner(["api", f"repos/{repo}/git/trees/{sha}?recursive=1"])
-    entries = tree.get("tree", []) if isinstance(tree, dict) else []
+    entries = tree.get("tree") if isinstance(tree, dict) else []
+    if not isinstance(entries, list):
+        entries = []
     blobs = [entry for entry in entries if entry.get("type") == "blob"]
     matched = [entry for entry in blobs if path_matches(entry.get("path", ""), allow)]
 

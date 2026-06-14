@@ -170,8 +170,10 @@ def validate_config(data: Any) -> dict[str, Any]:
             raise MergeProofConfigError("source 'allow' must be a non-empty list of path globs")
         if not all(isinstance(pattern, str) and pattern for pattern in allow):
             raise MergeProofConfigError("source 'allow' must be a non-empty list of path globs")
+        ref = source.get("ref")
+        ref = str(ref) if ref is not None else "main"
         normalized.append(
-            {"repo": repo, "ref": str(source.get("ref", "main")), "allow": list(allow)}
+            {"repo": repo, "ref": ref, "allow": list(allow)}
         )
 
     limits = data.get("limits") or {}

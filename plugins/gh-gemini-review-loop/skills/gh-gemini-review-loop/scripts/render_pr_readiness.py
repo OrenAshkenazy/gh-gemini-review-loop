@@ -136,7 +136,7 @@ def _unwrap_architecture(architecture: dict[str, Any]) -> tuple[dict, dict | Non
             architecture.get("provenance"),
             architecture.get("safety") or {},
         )
-    return architecture or {}, None, {}
+    return architecture if isinstance(architecture, dict) else {}, None, {}
 
 
 def build_readiness(

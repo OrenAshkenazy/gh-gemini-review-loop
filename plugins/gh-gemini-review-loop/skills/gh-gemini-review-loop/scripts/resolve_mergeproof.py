@@ -41,8 +41,10 @@ def resolve(
     config_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     pr = runner(["api", f"repos/{app_repo}/pulls/{pr_number}"])
-    base_sha = pr["base"]["sha"]
-    head_sha = pr_head_sha or pr.get("head", {}).get("sha")
+    if not isinstance(pr, dict):
+        raise RuntimeError(f"Unexpected PR response format: {pr}")
+    base_sha = (pr.get("base") or {}).get("sha")
+    head_sha = pr_head_sha or (pr.get("head") or {}).get("sha")
     config_ref = head_sha if trust_pr_config and head_sha else base_sha
     config_changed = any(path in CONFIG_PATHS for path in changed_files)
 
