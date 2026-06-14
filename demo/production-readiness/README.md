@@ -21,22 +21,23 @@ cloud account, runs Terraform, or merges anything.
 
 ---
 
-## MergeProof cross-repo MVP (familia-ai PR #106)
+## MergeProof MVP (familia-ai PR #106)
 
-Production reality usually lives in a **separate infra repo**, not the app repo.
-MergeProof bridges them with a trusted `mergeproof.yaml` in the app repo
-(read from the base branch, never PR head) that declares the infra repo + an
-allowlist of paths. The app-declared config is **token-governed**: the GitHub
-token / App installation decides whether those paths can actually be read.
+Production reality lives either in a **separate infra repo** or in the **same
+repo** as the app (a monorepo). Both are first-class. MergeProof bridges them
+with a trusted `mergeproof.yaml` in the app repo (read from the base branch,
+never PR head) that declares the architecture source repo + an allowlist of
+paths. The app-declared config is **token-governed**: the GitHub token / App
+installation decides whether those paths can actually be read.
 
-Reference demo:
+Reference demo (`familia-ai` is a **monorepo** — app + infra in one repo):
 
 | | |
 |---|---|
 | App repo | `OrenAshkenazy/familia-ai` |
 | Mock PR | `https://github.com/OrenAshkenazy/familia-ai/pull/106` |
 | Service | `familia-ai` |
-| Infra source | `OrenAshkenazy/familia-ai-infra` |
+| Architecture source | `OrenAshkenazy/familia-ai` (same repo) |
 
 PR #106 changes `backend/app/routers/scraper_connectors.py` (public API /
 connector surface → **high**) and `backend/app/jobs/worker.py` (ARQ async worker
@@ -48,18 +49,26 @@ verification failed). A committed render of this exact outcome lives in
 
 ### 1. Generate config (onboarding, not PR runtime)
 
+`init_mergeproof.py` **walks the repo** to discover real Terraform / Helm / k8s /
+Docker locations and builds the allowlist from what actually exists. Omit
+`--infra-repo` for same-repo (the app repo is the source); pass it for a split
+infra repo.
+
 ```bash
 SCRIPTS=plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts
 
+# same-repo monorepo (familia-ai): point --repo-root at the checkout to scan
 python3 $SCRIPTS/init_mergeproof.py \
-  --service familia-ai \
-  --infra-repo OrenAshkenazy/familia-ai-infra \
-  --env prod \
+  --repo-root /path/to/familia-ai \
+  --repo OrenAshkenazy/familia-ai \
   --output /tmp/mergeproof.yaml
+
+# split-repo: add --infra-repo OWNER/REPO (and scan that checkout)
 ```
 
-`init_mergeproof.py` only *proposes* a config. A human reviews it and commits it
-to the app repo's trusted base branch before readiness uses it.
+`init_mergeproof.py` only *proposes* a config (it enforces nothing). A human
+reviews it and commits it to the app repo's trusted base branch before readiness
+uses it. `mergeproof.py init` is an equivalent wrapper around the same discovery.
 
 ### 2. Run readiness against PR #106 (after the CR loop's terminal summary)
 
@@ -81,10 +90,13 @@ edits the config, MergeProof reports `CONFIG_CHANGED_REVIEW_REQUIRED` and uses
 the base-branch config anyway; `--trust-pr-config` (off by default) overrides
 that.
 
-> If the infra repo is not accessible to your token, infra fetch degrades to a
-> partial pack (recorded in `safety.failed_sources`) rather than crashing. The
+> Source reachability: if **some** declared sources are readable and others are
+> not, readiness proceeds on partial context and records the failures in
+> `safety.failed_sources` (with a stderr warning). If **every** declared source
+> is unreadable (e.g. the repo 404s for your token), readiness **fails with a
+> clear error and writes no artifact** rather than emitting a hollow card. The
 > committed `familia/` artifacts are rendered from a fixture-backed run so the
-> demo outcome is reproducible without infra access.
+> demo outcome is reproducible without live infra access.
 
 ---
 
@@ -203,7 +215,9 @@ the same way: point `repo` at the app repo itself and allowlist the production
 Helm/Terraform paths.
 
 The committed demo uses `https://github.com/OrenAshkenazy/familia-ai`, where the
-app code and production stack live in the same repository:
+app code and production stack live in the same repository. `init_mergeproof.py`
+**discovers** the allowlist below from the real layout (strong infra dirs →
+`dir/**`; Dockerfiles → the specific file, never all app source):
 
 ```yaml
 version: 1
@@ -212,17 +226,14 @@ architecture_sources:
   - repo: OrenAshkenazy/familia-ai
     ref: main
     allow:
-      - helm/familia-ai/values.yaml
-      - helm/familia-ai/templates/backend/**
-      - helm/familia-ai/templates/worker/**
-      - helm/familia-ai/templates/redis/**
-      - helm/familia-ai/templates/ingress.yaml
+      - helm/familia-ai/**
       - infra/terraform/environments/beta/**
       - infra/terraform/modules/alb/**
       - infra/terraform/modules/ecs/**
       - infra/terraform/modules/rds/**
       - infra/terraform/modules/efs/**
-      - backend/app/jobs/**
+      - backend/Dockerfile
+      - docker-compose.yml
 ```
 
 The trusted-input model is:
