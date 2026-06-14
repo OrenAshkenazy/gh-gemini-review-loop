@@ -1,6 +1,6 @@
 name: Release on PR merge
 
-# On every PR merge to main, bump plugins/gh-gemini-review-loop/.claude-plugin/plugin.json
+# On every PR merge to main, bump both plugin manifests
 # according to the PR's `release:major` / `release:minor` / `release:patch` label
 # (default: patch). Then tag the new version and publish a GitHub Release whose body
 # is the merged PR's body.
@@ -26,7 +26,8 @@ jobs:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     env:
-      MANIFEST: plugins/gh-gemini-review-loop/.claude-plugin/plugin.json
+      CLAUDE_MANIFEST: plugins/gh-gemini-review-loop/.claude-plugin/plugin.json
+      CODEX_MANIFEST: plugins/gh-gemini-review-loop/.codex-plugin/plugin.json
     steps:
       - uses: actions/checkout@v4
         with:
@@ -77,7 +78,21 @@ jobs:
         if: steps.bump.outputs.level != 'skip'
         id: version
         run: |
-          current=$(python3 -c "import json; print(json.load(open('${MANIFEST}'))['version'])")
+          current=$(python3 - <<'PY'
+          import json
+          import os
+
+          with open(os.environ["CLAUDE_MANIFEST"]) as f:
+              claude = json.load(f)
+          with open(os.environ["CODEX_MANIFEST"]) as f:
+              codex = json.load(f)
+          if claude["version"] != codex["version"]:
+              raise SystemExit(
+                  f"manifest versions differ: Claude={claude['version']} Codex={codex['version']}"
+              )
+          print(claude["version"])
+          PY
+          )
           IFS=. read -r MA MI PA <<< "$current"
           case "${{ steps.bump.outputs.level }}" in
             major) MA=$((MA+1)); MI=0; PA=0;;
@@ -99,25 +114,26 @@ jobs:
             exit 1
           fi
 
-      - name: Bump plugin.json
+      - name: Bump plugin manifests
         if: steps.bump.outputs.level != 'skip'
         run: |
           python3 - <<PY
           import json, pathlib
-          p = pathlib.Path("${MANIFEST}")
-          d = json.loads(p.read_text())
-          d["version"] = "${{ steps.version.outputs.new }}"
-          # Preserve 2-space indentation + trailing newline (matches the file in repo).
-          p.write_text(json.dumps(d, indent=2) + "\n")
+          for name in ("${CLAUDE_MANIFEST}", "${CODEX_MANIFEST}"):
+              p = pathlib.Path(name)
+              d = json.loads(p.read_text())
+              d["version"] = "${{ steps.version.outputs.new }}"
+              # Preserve 2-space indentation + trailing newline (matches the files in repo).
+              p.write_text(json.dumps(d, indent=2) + "\n")
           PY
-          git diff --stat -- "${MANIFEST}"
+          git diff --stat -- "${CLAUDE_MANIFEST}" "${CODEX_MANIFEST}"
 
       - name: Commit, tag, push
         if: steps.bump.outputs.level != 'skip'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "${MANIFEST}"
+          git add "${CLAUDE_MANIFEST}" "${CODEX_MANIFEST}"
           git commit -m "chore(release): ${{ steps.version.outputs.tag }} [skip ci]" \
                      -m "Automated by .github/workflows/release.yml from PR #${{ github.event.pull_request.number }}."
           git tag -a "${{ steps.version.outputs.tag }}" \

@@ -8,7 +8,14 @@ last_summary_seq and clears the gate.
 """
 
 from fetch_gemini_threads import save_sticky_state
-from loop_summary_gate import format_run_snapshot, stale_summary_for_push
+from loop_summary_gate import format_run_snapshot
+from loop_summary_gate import main as summary_gate_main
+from loop_summary_gate import stale_summary_for_push
+
+
+class _UnreadableStdin:
+    def read(self):
+        raise ValueError("invalid input")
 
 
 def _active_stale(
@@ -42,6 +49,14 @@ def _active_current(repo: str, number: int = 1) -> None:
 
 
 class TestStaleSummaryForPush:
+    def test_main_fails_open_when_stdin_read_raises_value_error(self, monkeypatch):
+        monkeypatch.setattr("sys.stdin", _UnreadableStdin())
+        assert summary_gate_main() == 0
+
+    def test_main_fails_open_when_stdin_is_none(self, monkeypatch):
+        monkeypatch.setattr("sys.stdin", None)
+        assert summary_gate_main() == 0
+
     def test_none_when_no_active_loop(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         assert stale_summary_for_push("o/r") is None
