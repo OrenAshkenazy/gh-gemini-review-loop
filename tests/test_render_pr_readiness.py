@@ -1,0 +1,166 @@
+"""Tests for the production-aware PR readiness card renderer."""
+
+from __future__ import annotations
+
+import json
+
+import render_pr_readiness as rpr
+
+
+LOOP_SUMMARY = {
+    "fixed_count": 7,
+    "false_positives_skipped": 1,
+    "verification": "passed",
+    "verification_command": "uv run pytest",
+    "rereview": "completed",
+    "cycles_used": 2,
+    "cycles_total": 3,
+    "pr_url": "https://github.com/OrenAshkenazy/AegisLocal/pull/11",
+}
+
+ARCH = {
+    "service_name": "aegislocal-api",
+    "owners": ["platform"],
+    "runtime": "kubernetes",
+    "exposure": "public",
+    "ingress": ["alb", "kong"],
+    "datastores": ["postgresql", "redis"],
+    "queues": ["sqs:scan-events"],
+}
+
+RISKS_HIGH = {
+    "production_risks": [
+        {
+            "severity": "high",
+            "surface": "public_api",
+            "reason": "PR touches API route code in a public-facing service",
+            "files": ["core/api/routes.py"],
+            "human_decision_required": True,
+        }
+    ],
+    "summary": {"highest_severity": "high", "human_decision_required": True, "risk_count": 1},
+}
+
+RISKS_NONE = {
+    "production_risks": [],
+    "summary": {"highest_severity": "none", "human_decision_required": False, "risk_count": 0},
+}
+
+
+def test_status_human_decision_required_when_risks_exist():
+    data = rpr.build_readiness(LOOP_SUMMARY, ARCH, RISKS_HIGH)
+    assert data["status"] == "HUMAN_DECISION_REQUIRED"
+
+
+def test_status_ready_when_no_risks_and_verification_passed():
+    data = rpr.build_readiness(LOOP_SUMMARY, ARCH, RISKS_NONE)
+    assert data["status"] == "READY"
+
+
+def test_status_verification_failed_takes_precedence():
+    summary = {**LOOP_SUMMARY, "verification": "failed"}
+    data = rpr.build_readiness(summary, ARCH, RISKS_HIGH)
+    assert data["status"] == "VERIFICATION_FAILED"
+
+
+def test_status_human_decision_when_semantic_risk_even_without_prod_risk():
+    summary = {**LOOP_SUMMARY, "semantic_risk": True}
+    data = rpr.build_readiness(summary, ARCH, RISKS_NONE)
+    assert data["status"] == "HUMAN_DECISION_REQUIRED"
+
+
+def test_status_pending_confirmation():
+    summary = {**LOOP_SUMMARY, "pending_confirmation": True}
+    data = rpr.build_readiness(summary, ARCH, RISKS_NONE)
+    assert data["status"] == "PENDING_CONFIRMATION"
+
+
+def test_markdown_renders_human_decision_required():
+    md = rpr.render_markdown(rpr.build_readiness(LOOP_SUMMARY, ARCH, RISKS_HIGH))
+    assert "## GGRL PR Readiness" in md
+    assert "HUMAN DECISION REQUIRED" in md
+
+
+def test_markdown_renders_production_context():
+    md = rpr.render_markdown(rpr.build_readiness(LOOP_SUMMARY, ARCH, RISKS_HIGH))
+    assert "Production architecture context" in md
+    assert "aegislocal-api" in md
+    assert "PostgreSQL" in md or "postgresql" in md
+
+
+def test_markdown_renders_risk_table():
+    md = rpr.render_markdown(rpr.build_readiness(LOOP_SUMMARY, ARCH, RISKS_HIGH))
+    assert "Production risks" in md
+    assert "core/api/routes.py" in md
+    assert "| Severity | Surface | Evidence |" in md
+
+
+def test_markdown_renders_human_decision_section():
+    md = rpr.render_markdown(rpr.build_readiness(LOOP_SUMMARY, ARCH, RISKS_HIGH))
+    assert "Human decision required" in md
+    assert "Recommended next options" in md
+
+
+def test_markdown_renders_merge_evidence():
+    md = rpr.render_markdown(rpr.build_readiness(LOOP_SUMMARY, ARCH, RISKS_HIGH))
+    assert "Merge evidence" in md
+    assert "uv run pytest" in md
+    assert "2/3" in md
+
+
+def test_output_is_deterministic():
+    a = rpr.render_markdown(rpr.build_readiness(LOOP_SUMMARY, ARCH, RISKS_HIGH))
+    b = rpr.render_markdown(rpr.build_readiness(LOOP_SUMMARY, ARCH, RISKS_HIGH))
+    assert a == b
+
+
+def test_main_markdown_stdout(tmp_path, capsys):
+    ls = tmp_path / "loop.json"
+    ls.write_text(json.dumps(LOOP_SUMMARY), encoding="utf-8")
+    arch = tmp_path / "arch.json"
+    arch.write_text(json.dumps(ARCH), encoding="utf-8")
+    risks = tmp_path / "risks.json"
+    risks.write_text(json.dumps(RISKS_HIGH), encoding="utf-8")
+
+    rc = rpr.main(
+        [
+            "--loop-summary",
+            str(ls),
+            "--architecture-context",
+            str(arch),
+            "--production-risks",
+            str(risks),
+            "--markdown",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "## GGRL PR Readiness" in captured.out
+    assert captured.err == ""
+
+
+def test_main_json_stdout_has_no_ansi(tmp_path, capsys):
+    ls = tmp_path / "loop.json"
+    ls.write_text(json.dumps(LOOP_SUMMARY), encoding="utf-8")
+    arch = tmp_path / "arch.json"
+    arch.write_text(json.dumps(ARCH), encoding="utf-8")
+    risks = tmp_path / "risks.json"
+    risks.write_text(json.dumps(RISKS_HIGH), encoding="utf-8")
+
+    rc = rpr.main(
+        [
+            "--loop-summary",
+            str(ls),
+            "--architecture-context",
+            str(arch),
+            "--production-risks",
+            str(risks),
+            "--json",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "\033[" not in captured.out
+    payload = json.loads(captured.out)
+    assert payload["status"] == "HUMAN_DECISION_REQUIRED"
+    assert captured.err == ""
