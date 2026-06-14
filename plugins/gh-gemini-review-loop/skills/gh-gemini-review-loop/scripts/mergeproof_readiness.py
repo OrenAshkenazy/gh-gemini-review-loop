@@ -19,7 +19,7 @@ Runner = Callable[[list[str]], Any]
 
 
 def _load_loop_summary(path: str | Path) -> dict[str, Any]:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = json.loads(Path(path).read_text(encoding="utf-8", errors="replace"))
     if not isinstance(data, dict):
         raise ValueError("loop summary must be a JSON object")
     return data
@@ -56,7 +56,7 @@ def _summary_from_record(record: dict[str, Any], pr_url: str) -> dict[str, Any]:
 
 def load_latest_run_summary(runs_jsonl: str | Path, repo: str, pr_number: int) -> dict[str, Any]:
     latest: dict[str, Any] | None = None
-    for line in Path(runs_jsonl).read_text(encoding="utf-8").splitlines():
+    for line in Path(runs_jsonl).read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.strip():
             continue
         record = json.loads(line)
@@ -173,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             from mergeproof_config import load_config
 
-            text = Path(args.mergeproof).read_text(encoding="utf-8")
+            text = Path(args.mergeproof).read_text(encoding="utf-8", errors="replace")
             fmt = "json" if args.mergeproof.endswith(".json") else "yaml"
             config_override = load_config(text, fmt=fmt)
         except (OSError, ValueError) as exc:

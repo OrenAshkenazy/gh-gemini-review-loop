@@ -348,7 +348,7 @@ def main(argv: list[str] | None = None) -> int:
         return exc.code if isinstance(exc.code, int) else 2
 
     try:
-        readiness = json.loads(Path(args.readiness).read_text(encoding="utf-8"))
+        readiness = json.loads(Path(args.readiness).read_text(encoding="utf-8", errors="replace"))
         if not isinstance(readiness, dict):
             raise ValueError("readiness JSON must be an object")
     except (OSError, ValueError, json.JSONDecodeError) as exc:

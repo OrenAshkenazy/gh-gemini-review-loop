@@ -38,14 +38,17 @@ class GitHubClient:
         self._runner = runner
 
     def _api(self, args: list[str], parse: bool = True) -> Any:
-        proc = self._runner(
-            ["gh", "api", *args],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
+        try:
+            proc = self._runner(
+                ["gh", "api", *args],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise RuntimeError(f"gh api failed: {exc}") from exc
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()
             raise RuntimeError(f"gh api failed: {detail}" if detail else "gh api failed")

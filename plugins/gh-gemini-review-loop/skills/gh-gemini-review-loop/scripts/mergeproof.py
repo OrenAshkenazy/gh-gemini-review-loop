@@ -95,7 +95,7 @@ def _run(args: argparse.Namespace) -> int:
     if args.mergeproof:
         from mergeproof_config import load_config
 
-        text = Path(args.mergeproof).read_text(encoding="utf-8")
+        text = Path(args.mergeproof).read_text(encoding="utf-8", errors="replace")
         fmt = "json" if args.mergeproof.endswith(".json") else "yaml"
         config_override = load_config(text, fmt=fmt)
 

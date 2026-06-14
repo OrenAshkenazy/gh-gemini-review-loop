@@ -244,8 +244,12 @@ def main(argv: list[str] | None = None) -> int:
     if output.exists() and not args.force:
         print(f"error: {output} already exists; pass --force to overwrite", file=sys.stderr)
         return 1
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(payload, encoding="utf-8")
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(payload, encoding="utf-8")
+    except OSError as exc:
+        print(f"error: could not write config file: {exc}", file=sys.stderr)
+        return 1
     print(f"Wrote {output}", file=sys.stderr)
     return 0
 

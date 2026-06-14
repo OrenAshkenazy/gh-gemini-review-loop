@@ -377,7 +377,7 @@ def render_markdown(readiness: dict[str, Any]) -> str:
 
 
 def _load_json(path: str, label: str) -> dict[str, Any]:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = json.loads(Path(path).read_text(encoding="utf-8", errors="replace"))
     if not isinstance(data, dict):
         raise ValueError(f"{label} must be a JSON object")
     return data
