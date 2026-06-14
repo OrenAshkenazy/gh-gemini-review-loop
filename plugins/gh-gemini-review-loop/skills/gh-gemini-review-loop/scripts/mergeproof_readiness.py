@@ -59,7 +59,10 @@ def load_latest_run_summary(runs_jsonl: str | Path, repo: str, pr_number: int) -
     for line in Path(runs_jsonl).read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.strip():
             continue
-        record = json.loads(line)
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue  # skip a malformed line in the append-only log
         if record.get("repo") == repo and int(record.get("pr") or 0) == pr_number:
             latest = record
     if latest is None:

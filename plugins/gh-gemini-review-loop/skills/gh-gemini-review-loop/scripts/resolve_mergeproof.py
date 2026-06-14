@@ -70,7 +70,7 @@ def resolve(
     for source in config["architecture_sources"]:
         try:
             commit = runner(["api", f"repos/{source['repo']}/commits/{source['ref']}"])
-            source["resolved_sha"] = (commit or {}).get("sha")
+            source["resolved_sha"] = commit.get("sha") if isinstance(commit, dict) else None
         except RuntimeError as exc:
             source["resolved_sha"] = None
             failed_sources.append({"repo": source["repo"], "error": str(exc)})

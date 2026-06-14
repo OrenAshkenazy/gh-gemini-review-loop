@@ -97,7 +97,8 @@ def fetch_infra_files(
 
     for entry in matched[:max_files]:
         path = entry["path"]
-        if entry.get("size", 0) and entry["size"] > max_file_bytes:
+        size = entry.get("size")
+        if isinstance(size, int) and size > max_file_bytes:
             skipped.append({"path": path, "reason": "too_large"})
             continue
         if path.lower().endswith(_BINARY_EXT):
