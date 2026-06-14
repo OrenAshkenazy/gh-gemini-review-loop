@@ -696,6 +696,39 @@ If the agent pushes new commits to a PR branch after the loop has already stoppe
 
 Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their own.
 
+## MergeProof Run
+
+When the user says `mergeproof init`, generate an initial `mergeproof.yaml` for
+the current repository. This is a one-time bootstrap step that should be reviewed
+and merged to the trusted base branch before normal readiness runs. Do not hide
+config creation inside `mergeproof run`; that would break the trusted-base model.
+
+When the user says `mergeproof run --pr <PR_URL>`, run the complete product flow:
+
+1. Run the Gemini CR loop to terminal state: fetch PR metadata, fetch Gemini
+   review threads, judge/classify findings when enabled, fix actionable
+   findings, verify, push if needed, request/wait for re-review, and record the
+   terminal summary exactly once.
+2. After the `[loop] Summary` is relayed, run the MergeProof readiness phase
+   through `mergeproof.py run`. This phase starts from existing terminal loop
+   output; it must not rerun the CR loop.
+3. If `mergeproof.yaml`/`.json` exists on the trusted base branch, resolve the
+   configured source refs to immutable SHAs, fetch only allowlisted infra files,
+   enforce safety limits, extract normalized architecture facts, build the
+   Production Context Pack, overlay PR changed-file risk, render the readiness
+   card, and publish/update the single PR comment when requested.
+4. If config is absent, relay the exact skip notice and stop normally:
+   `[mergeproof] readiness skipped`
+   `Reason: mergeproof.yaml not found`
+
+Trust model:
+
+```text
+PR changed files -> from PR head
+mergeproof.yaml  -> trusted base branch by default
+infra files      -> allowlisted paths from trusted config
+```
+
 ## Workflow
 
 1. Trigger the loop by default after PR creation.
@@ -800,6 +833,11 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
     - After the final wait has established confirmed/unconfirmed state, record the run exactly once:
       `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --record-run --fixed-count <n> --verification <passed|failed|skipped> [--outcome <state>] [--gemini-confirmed|--gemini-unconfirmed]`
       then relay the printed `[loop] Summary` block verbatim.
+    - After the terminal summary is relayed, the optional MergeProof readiness phase may run. It consumes the existing loop summary or recorded terminal run; it does **not** rerun the CR loop:
+      `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/mergeproof.py" run --pr https://github.com/OWNER/REPO/pull/123 --loop-summary /path/to/loop_summary.json --publish`
+      If `mergeproof.yaml` is absent on the trusted base ref, relay the skip notice and continue normally:
+      `[mergeproof] readiness skipped`
+      `Reason: mergeproof.yaml not found`
 
 ## Script Usage
 

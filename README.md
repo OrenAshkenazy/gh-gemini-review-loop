@@ -80,6 +80,19 @@ From a repo with an open GitHub PR, say this to Claude:
 
 > Run the Gemini loop
 
+For the production-aware end-to-end flow, say:
+
+> mergeproof run --pr https://github.com/OWNER/REPO/pull/123
+
+Before the first production-aware run in a repo, say:
+
+> mergeproof init
+
+Claude generates the repo's initial `mergeproof.yaml` so it can be reviewed and
+merged to the trusted base branch. Normal app PRs do not need to include infra
+changes; MergeProof reads the trusted config and reports production implications
+from the app diff.
+
 Claude will:
 
 1. Wait for Gemini Code Assist to finish reviewing.
@@ -90,6 +103,7 @@ Claude will:
 6. Commit and push to the PR branch.
 7. Ask Gemini to re-review.
 8. Stop once the PR is clean, a human decision is needed, or the configured re-review cap has been used.
+9. For `mergeproof run`, read trusted `mergeproof.yaml`, build the Production Context Pack, overlay PR production risks, and publish/update the PR Readiness Card.
 
 You can also use more specific prompts:
 
@@ -101,6 +115,8 @@ You can also use more specific prompts:
 | *"One cycle only"* | Fixes once, then stops |
 | *"Show a live status comment on the PR"* | Maintains one edited status comment on the PR |
 | *"Run the Gemini loop with judge eval at completion"* | After the loop stops, OpenAI classifies any remaining Gemini findings as fix / reply / ignore / escalate, so you know whether to keep working or stop |
+| *"mergeproof init"* | Generates the initial `mergeproof.yaml` bootstrap config for review and merge |
+| *"mergeproof run --pr https://github.com/OWNER/REPO/pull/123"* | Runs the CR loop to terminal summary, then runs the MergeProof readiness phase and publishes the PR Readiness Card when configured |
 
 The skill also triggers naturally when Claude opens a PR and you ask it to keep going, handle review feedback, fix Gemini comments, or request Gemini re-review.
 
