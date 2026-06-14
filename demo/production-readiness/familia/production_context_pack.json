@@ -1,0 +1,78 @@
+{
+  "facts": {
+    "architecture_files_found": [
+      "helm/familia-ai/templates/deployment.yaml",
+      "modules/ingress/ingress.yaml",
+      "modules/postgresql/main.tf",
+      "modules/redis/main.tf",
+      "modules/secrets/secrets.yaml"
+    ],
+    "confidence": "medium",
+    "datastores": [
+      "postgresql",
+      "redis"
+    ],
+    "deployment_type": "worker",
+    "exposure": "public",
+    "external_dependencies": [
+      "anthropic_api"
+    ],
+    "ingress": [
+      "ingress"
+    ],
+    "owners": [],
+    "queues": [
+      "redis:arq"
+    ],
+    "resource_limits": {},
+    "runtime": "kubernetes",
+    "secrets_or_env": [
+      "DATABASE_URL",
+      "REDIS_URL",
+      "SECRET_KEY",
+      "ANTHROPIC_API_KEY",
+      "MIZRAHI_CLIENT_ID",
+      "ISRACARD_CLIENT_ID",
+      "MIZRAHI_CLIENT_CERT_PATH",
+      "ISRACARD_CLIENT_CERT_PATH"
+    ],
+    "sensitive_surfaces": [
+      "public_api",
+      "auth",
+      "worker_retry",
+      "database_write"
+    ],
+    "service_name": "familia-ai",
+    "verification_commands": []
+  },
+  "provenance": {
+    "fetched_at": "2026-06-14T19:47:16Z",
+    "file_count": 5,
+    "sources": [
+      {
+        "files": [
+          "helm/familia-ai/templates/deployment.yaml",
+          "modules/ingress/ingress.yaml",
+          "modules/postgresql/main.tf",
+          "modules/redis/main.tf",
+          "modules/secrets/secrets.yaml"
+        ],
+        "ref": "main",
+        "repo": "OrenAshkenazy/familia-ai-infra",
+        "resolved_sha": "infrasha"
+      }
+    ]
+  },
+  "safety": {
+    "config_changed": false,
+    "failed_sources": [],
+    "limits": {
+      "max_file_bytes": 262144,
+      "max_files": 200
+    },
+    "secrets_redacted": true,
+    "skipped": [],
+    "tree_truncated": false
+  },
+  "service": "familia-ai"
+}

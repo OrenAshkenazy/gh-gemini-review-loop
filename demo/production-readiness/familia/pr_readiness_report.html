@@ -95,19 +95,19 @@ a { color: #7dd3fc; }
   <section class="banner">
     <div class="status">HUMAN DECISION REQUIRED</div>
     <div class="reason">AI review loop completed and tests passed, but this PR touches production-facing surfaces.</div>
-    <div class="strip-line">7 fixes · tests passed · production risk detected</div>
-    <div class="strip-line">PR: <a href="https://github.com/OrenAshkenazy/familia-ai/pull/128">https://github.com/OrenAshkenazy/familia-ai/pull/128</a></div>
+    <div class="strip-line">6 fixes · tests passed · production risk detected</div>
+    <div class="strip-line">PR: <a href="https://github.com/OrenAshkenazy/familia-ai/pull/106">https://github.com/OrenAshkenazy/familia-ai/pull/106</a></div>
   </section>
 
-  <div class="cards"><div class="card"><div class="label">Findings fixed</div><div class="value ">7</div></div><div class="card"><div class="label">False positives skipped</div><div class="value ">1</div></div><div class="card"><div class="label">Cycles used</div><div class="value ">2/3</div></div><div class="card"><div class="label">Verification</div><div class="value sm">passed<br><span style='font-size:12px;color:#94a3b8'>uv run pytest</span></div></div><div class="card"><div class="label">Re-review</div><div class="value sm">completed</div></div></div>
+  <div class="cards"><div class="card"><div class="label">Findings fixed</div><div class="value ">6</div></div><div class="card"><div class="label">False positives skipped</div><div class="value ">1</div></div><div class="card"><div class="label">Cycles used</div><div class="value ">2/3</div></div><div class="card"><div class="label">Verification</div><div class="value sm">passed<br><span style='font-size:12px;color:#94a3b8'>uv run pytest</span></div></div><div class="card"><div class="label">Re-review</div><div class="value sm">completed</div></div></div>
 
   <h2 class="section">Production architecture context</h2>
   <div class="arch">
-    <div class="flow"><span class="node exposure">Public</span><span class="arrow">→</span><span class="node">ALB</span><span class="arrow">→</span><span class="node">Ingress</span><span class="arrow">→</span><span class="node service">familia-ai</span><span class="arrow">→</span><span class="node">PostgreSQL / Redis</span></div>
+    <div class="flow"><span class="node exposure">Public</span><span class="arrow">→</span><span class="node">Ingress</span><span class="arrow">→</span><span class="node service">familia-ai</span><span class="arrow">→</span><span class="node">PostgreSQL / Redis</span></div>
     <div class="flow sub"><span class="arrow">↓</span>REDIS <code>arq</code></div>
     <div class="flow sub">Owner: unknown ·
       Runtime: Kubernetes</div>
-    <div class="context-grid"><div class="context-panel"><div class="label">Production context pack</div><div class="main">13 files from <code>OrenAshkenazy/familia-ai@069bce2</code></div><div class="meta">Fetched at 2026-06-14T00:00:00Z</div></div><div class="context-panel"><div class="label">Evidence paths</div><div class="main">helm/familia-ai/values.yaml, helm/familia-ai/templates/backend/deployment.yaml, helm/familia-ai/templates/backend/service.yaml, helm/fami...</div></div></div>
+    <div class="context-grid"><div class="context-panel"><div class="label">Production context pack</div><div class="main">5 files from <code>OrenAshkenazy/familia-ai-infra@infrash</code></div><div class="meta">Fetched at 2026-06-14T19:47:16Z</div></div><div class="context-panel"><div class="label">Evidence paths</div><div class="main">helm/familia-ai/templates/deployment.yaml, modules/ingress/ingress.yaml, modules/postgresql/main.tf, modules/redis/main.tf, modules/secre...</div></div></div>
   </div>
 
   <h2 class="section">Pack safety</h2><div class="safety"><div class="safety-row"><strong>Safety</strong><span>No config, fetch, or source warnings recorded.</span></div></div>
@@ -115,13 +115,13 @@ a { color: #7dd3fc; }
   <h2 class="section">Production risks</h2>
   <table>
     <thead><tr><th>Severity</th><th>Surface</th><th>Evidence</th></tr></thead>
-    <tbody><tr><td><span class="sev sev-high">HIGH</span></td><td>Public API</td><td><code>backend/app/routers/scraper_connectors.py</code> PR touches API route/handler code in a public-facing service</td></tr><tr><td><span class="sev sev-medium">MEDIUM</span></td><td>Async processing</td><td><code>backend/app/jobs/worker.py</code> PR changes worker/consumer code and the service uses queues</td></tr><tr><td><span class="sev sev-high">HIGH</span></td><td>Infrastructure</td><td><code>infra/terraform/modules/ecs/main.tf</code> PR changes infrastructure-as-code (Terraform / Kubernetes / Helm)</td></tr></tbody>
+    <tbody><tr><td><span class="sev sev-high">HIGH</span></td><td>Public API</td><td><code>backend/app/routers/scraper_connectors.py</code> PR touches API route/handler code in a public-facing service</td></tr><tr><td><span class="sev sev-medium">MEDIUM</span></td><td>Async processing</td><td><code>backend/app/jobs/worker.py</code> PR changes worker/consumer code and the service uses queues</td></tr></tbody>
   </table>
 
   <h2 class="section">Human decision required</h2>
   <div class="decision">
     <p>AI review loop completed and tests passed, but this PR touches production-facing surfaces.</p>
-    <div class="points">Review before merge:<ol><li>API behavior, contract, and error handling</li><li>worker retry and duplicate-processing behavior</li><li>infrastructure change blast radius</li></ol></div>
+    <div class="points">Review before merge:<ol><li>API behavior, contract, and error handling</li><li>worker retry and duplicate-processing behavior</li><li>whether sensitive credential/banking data could leak in connector or worker logs</li></ol></div>
     <ol><li>Approve the production risk and merge</li><li>Ask AI to adjust the implementation</li><li>Split risky behavior into a follow-up PR</li></ol>
   </div>
 

@@ -1,15 +1,16 @@
-## GGRL PR Readiness
+<!-- mergeproof-pr-readiness -->
+## MergeProof PR Readiness
 
 **Status:** HUMAN DECISION REQUIRED  
 **Reason:** AI review loop completed and tests passed, but this PR touches production-facing surfaces.
 
-PR: https://github.com/OrenAshkenazy/familia-ai/pull/128
+PR: https://github.com/OrenAshkenazy/familia-ai/pull/106
 
 ### Merge evidence
 
 | Signal | Result |
 |---|---|
-| AI findings fixed | 7 |
+| AI findings fixed | 6 |
 | False positives skipped | 1 |
 | Verification | `uv run pytest` passed |
 | Re-review | Gemini completed |
@@ -22,11 +23,11 @@ PR: https://github.com/OrenAshkenazy/familia-ai/pull/128
 | Service | `familia-ai` |
 | Runtime | Kubernetes |
 | Exposure | Public |
-| Ingress | ALB → Ingress → service |
+| Ingress | Ingress → service |
 | Data | PostgreSQL, Redis |
 | Async | REDIS `arq` |
 | Owner | unknown |
-| Production context | 13 files from `OrenAshkenazy/familia-ai@069bce2` |
+| Production context | 5 files from `OrenAshkenazy/familia-ai-infra@infrash` |
 
 ### Production risks
 
@@ -34,7 +35,6 @@ PR: https://github.com/OrenAshkenazy/familia-ai/pull/128
 |---|---|---|
 | High | Public API | `backend/app/routers/scraper_connectors.py` — PR touches API route/handler code in a public-facing service |
 | Medium | Async processing | `backend/app/jobs/worker.py` — PR changes worker/consumer code and the service uses queues |
-| High | Infrastructure | `infra/terraform/modules/ecs/main.tf` — PR changes infrastructure-as-code (Terraform / Kubernetes / Helm) |
 
 ### Human decision required
 
@@ -43,7 +43,7 @@ Tests passed and AI review findings were fixed, but this PR changes code mapped 
 Review before merge:
 1. API behavior, contract, and error handling
 2. worker retry and duplicate-processing behavior
-3. infrastructure change blast radius
+3. whether sensitive credential/banking data could leak in connector or worker logs
 
 ### Recommended next options
 

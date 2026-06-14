@@ -6,7 +6,6 @@
     ],
     "exposure": "public",
     "ingress": [
-      "alb",
       "ingress"
     ],
     "owners": [],
@@ -20,7 +19,7 @@
     "cycles_total": 3,
     "cycles_used": 2,
     "false_positives_skipped": 1,
-    "findings_fixed": 7,
+    "findings_fixed": 6,
     "rereview": "completed",
     "verification": "passed",
     "verification_command": "uv run pytest"
@@ -30,7 +29,7 @@
     "review_points": [
       "API behavior, contract, and error handling",
       "worker retry and duplicate-processing behavior",
-      "infrastructure change blast radius"
+      "whether sensitive credential/banking data could leak in connector or worker logs"
     ]
   },
   "next_options": [
@@ -38,7 +37,7 @@
     "Ask AI to adjust the implementation",
     "Split risky behavior into a follow-up PR"
   ],
-  "pr_url": "https://github.com/OrenAshkenazy/familia-ai/pull/128",
+  "pr_url": "https://github.com/OrenAshkenazy/familia-ai/pull/106",
   "production_risks": [
     {
       "files": [
@@ -53,44 +52,27 @@
       "files": [
         "backend/app/jobs/worker.py"
       ],
-      "human_decision_required": false,
+      "human_decision_required": true,
       "reason": "PR changes worker/consumer code and the service uses queues",
       "severity": "medium",
       "surface": "async_processing"
-    },
-    {
-      "files": [
-        "infra/terraform/modules/ecs/main.tf"
-      ],
-      "human_decision_required": true,
-      "reason": "PR changes infrastructure-as-code (Terraform / Kubernetes / Helm)",
-      "severity": "high",
-      "surface": "infrastructure"
     }
   ],
   "provenance": {
-    "fetched_at": "2026-06-14T00:00:00Z",
-    "file_count": 13,
+    "fetched_at": "2026-06-14T19:47:16Z",
+    "file_count": 5,
     "sources": [
       {
         "files": [
-          "helm/familia-ai/values.yaml",
-          "helm/familia-ai/templates/backend/deployment.yaml",
-          "helm/familia-ai/templates/backend/service.yaml",
-          "helm/familia-ai/templates/worker/deployment.yaml",
-          "helm/familia-ai/templates/redis/deployment.yaml",
-          "helm/familia-ai/templates/redis/service.yaml",
-          "helm/familia-ai/templates/ingress.yaml",
-          "infra/terraform/environments/beta/main.tf",
-          "infra/terraform/modules/alb/main.tf",
-          "infra/terraform/modules/ecs/main.tf",
-          "infra/terraform/modules/rds/main.tf",
-          "infra/terraform/modules/efs/main.tf",
-          "backend/app/jobs/worker.py"
+          "helm/familia-ai/templates/deployment.yaml",
+          "modules/ingress/ingress.yaml",
+          "modules/postgresql/main.tf",
+          "modules/redis/main.tf",
+          "modules/secrets/secrets.yaml"
         ],
         "ref": "main",
-        "repo": "OrenAshkenazy/familia-ai",
-        "resolved_sha": "069bce25a11fbd744b73655078d01d8887707cbe"
+        "repo": "OrenAshkenazy/familia-ai-infra",
+        "resolved_sha": "infrasha"
       }
     ]
   },
@@ -98,7 +80,7 @@
   "risk_summary": {
     "highest_severity": "high",
     "human_decision_required": true,
-    "risk_count": 3
+    "risk_count": 2
   },
   "safety": {
     "config_changed": false,

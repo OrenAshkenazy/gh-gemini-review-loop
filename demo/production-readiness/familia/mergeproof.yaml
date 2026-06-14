@@ -1,0 +1,14 @@
+version: 1
+service: familia-ai
+architecture_sources:
+  - repo: OrenAshkenazy/familia-ai-infra
+    ref: main
+    allow:
+      - helm/familia-ai/**
+      - modules/ingress/**
+      - modules/postgresql/**
+      - modules/redis/**
+      - modules/secrets/**
+limits:
+  max_files: 200
+  max_file_bytes: 262144
