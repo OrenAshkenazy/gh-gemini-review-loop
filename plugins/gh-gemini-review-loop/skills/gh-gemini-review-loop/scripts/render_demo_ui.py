@@ -25,6 +25,7 @@ from render_pr_readiness import (
 _STATUS_THEME = {
     "READY": ("#16a34a", "ready"),
     "HUMAN_DECISION_REQUIRED": ("#d97706", "decision"),
+    "CONFIG_CHANGED_REVIEW_REQUIRED": ("#ea580c", "config"),
     "PENDING_CONFIRMATION": ("#2563eb", "pending"),
     "VERIFICATION_FAILED": ("#dc2626", "failed"),
 }
@@ -88,9 +89,28 @@ td code, .arch code { background: #14233d; padding: 2px 6px; border-radius: 5px;
 .decision ol { margin: 0; padding-left: 20px; }
 .decision li { margin: 6px 0; }
 .points { color: #94a3b8; font-size: 14px; margin-top: 8px; }
+.context-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; margin-top: 12px; }
+.context-panel {
+  background: #101b2c; border: 1px solid #27364d; border-radius: 10px;
+  padding: 14px 16px; min-width: 0;
+}
+.context-panel .label { color: #94a3b8; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.context-panel .main { margin-top: 6px; font-size: 15px; font-weight: 650; color: #e6edf6; }
+.context-panel .meta { margin-top: 4px; color: #9fb0c7; font-size: 13px; overflow-wrap: anywhere; }
+.safety { background: #0f1a2e; border: 1px solid #27364d; border-radius: 12px; overflow: hidden; }
+.safety-row { display: grid; grid-template-columns: 180px 1fr; gap: 12px; padding: 12px 16px; border-bottom: 1px solid #1a2740; }
+.safety-row:last-child { border-bottom: none; }
+.safety-row strong { color: #cbd5e1; font-size: 13px; }
+.safety-row span { color: #9fb0c7; font-size: 13px; }
+.warn { color: #fbbf24; font-weight: 650; }
 footer { margin-top: 36px; padding-top: 18px; border-top: 1px solid #1e293b;
   color: #64748b; font-size: 13px; text-align: center; font-style: italic; }
 a { color: #7dd3fc; }
+@media (max-width: 760px) {
+  .cards { grid-template-columns: repeat(2, 1fr); }
+  .context-grid { grid-template-columns: 1fr; }
+  .safety-row { grid-template-columns: 1fr; gap: 4px; }
+}
 """
 
 
@@ -173,6 +193,60 @@ def _risk_rows(risks: list[dict[str, Any]]) -> str:
     return "".join(rows)
 
 
+def _context_panels(readiness: dict[str, Any]) -> str:
+    provenance = readiness.get("provenance") or {}
+    sources = provenance.get("sources") or []
+    if not sources:
+        return ""
+    source = sources[0]
+    sha = (source.get("resolved_sha") or "")[:7] or "unknown"
+    repo = source.get("repo") or "unknown"
+    count = provenance.get("file_count", 0)
+    fetched_at = provenance.get("fetched_at") or "unknown"
+    file_list = ", ".join(source.get("files") or [])
+    if len(file_list) > 140:
+        file_list = file_list[:137] + "..."
+    return (
+        '<div class="context-grid">'
+        '<div class="context-panel">'
+        '<div class="label">Production context pack</div>'
+        f'<div class="main">{_e(count)} files from <code>{_e(repo)}@{_e(sha)}</code></div>'
+        f'<div class="meta">Fetched at {_e(fetched_at)}</div>'
+        "</div>"
+        '<div class="context-panel">'
+        '<div class="label">Evidence paths</div>'
+        f'<div class="main">{_e(file_list or "none")}</div>'
+        "</div>"
+        "</div>"
+    )
+
+
+def _safety_panel(readiness: dict[str, Any]) -> str:
+    safety = readiness.get("safety") or {}
+    if not safety:
+        return ""
+    skipped = safety.get("skipped") or []
+    failed = safety.get("failed_sources") or []
+    warnings: list[tuple[str, str]] = []
+    if safety.get("config_changed"):
+        warnings.append(("Config changed", "Base-branch config was used; review the PR config change."))
+    if safety.get("tree_truncated"):
+        warnings.append(("Tree truncated", "GitHub returned a partial infra tree listing."))
+    if skipped:
+        reasons = ", ".join(sorted({str(item.get("reason", "unknown")) for item in skipped if isinstance(item, dict)}))
+        warnings.append(("Skipped files", f"{len(skipped)} skipped ({reasons or 'unknown reason'})."))
+    if failed:
+        repos = ", ".join(str(item.get("repo", "unknown")) for item in failed if isinstance(item, dict))
+        warnings.append(("Failed sources", repos or f"{len(failed)} source(s) failed."))
+    if not warnings:
+        warnings.append(("Safety", "No config, fetch, or source warnings recorded."))
+    rows = "".join(
+        f'<div class="safety-row"><strong>{_e(label)}</strong><span>{_e(value)}</span></div>'
+        for label, value in warnings
+    )
+    return f'<h2 class="section">Pack safety</h2><div class="safety">{rows}</div>'
+
+
 def render_html(readiness: dict[str, Any]) -> str:
     status = readiness.get("status", "READY")
     accent, _ = _STATUS_THEME.get(status, ("#64748b", "neutral"))
@@ -232,7 +306,10 @@ def render_html(readiness: dict[str, Any]) -> str:
     {_arch_async(arch)}
     <div class="flow sub">Owner: {_e(", ".join(arch.get("owners") or []) or "unknown")} ·
       Runtime: {_e((arch.get("runtime") or "unknown").title())}</div>
+    {_context_panels(readiness)}
   </div>
+
+  {_safety_panel(readiness)}
 
   <h2 class="section">Production risks</h2>
   <table>

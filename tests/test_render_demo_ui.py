@@ -40,6 +40,24 @@ READINESS = {
         }
     ],
     "risk_summary": {"highest_severity": "high", "human_decision_required": True, "risk_count": 1},
+    "provenance": {
+        "sources": [
+            {
+                "repo": "acme/infra",
+                "resolved_sha": "abc1234def",
+                "files": ["envs/prod/deploy.yaml", "modules/sqs/main.tf"],
+            }
+        ],
+        "fetched_at": "2026-06-14T00:00:00Z",
+        "file_count": 2,
+    },
+    "safety": {
+        "config_changed": False,
+        "tree_truncated": False,
+        "skipped": [],
+        "failed_sources": [],
+        "secrets_redacted": True,
+    },
     "human_decision": {
         "required": True,
         "review_points": ["API behavior, contract, and error handling"],
@@ -68,6 +86,41 @@ def test_includes_architecture_strip():
     assert "aegislocal-api" in html
     assert "scan-events" in html
     assert "→" in html  # architecture flow arrows
+
+
+def test_includes_production_context_provenance():
+    html = rdu.render_html(READINESS)
+    assert "Production context pack" in html
+    assert "acme/infra" in html
+    assert "abc1234" in html
+    assert "2 files" in html
+
+
+def test_includes_pack_safety_status():
+    html = rdu.render_html(READINESS)
+    assert "Pack safety" in html
+    assert "No config, fetch, or source warnings recorded." in html
+
+
+def test_config_changed_status_has_theme_and_warning():
+    data = json.loads(json.dumps(READINESS))
+    data["status"] = "CONFIG_CHANGED_REVIEW_REQUIRED"
+    data["status_label"] = "CONFIG CHANGED - REVIEW REQUIRED"
+    data["safety"]["config_changed"] = True
+    html = rdu.render_html(data)
+    assert "#ea580c" in html
+    assert "Base-branch config was used" in html
+
+
+def test_includes_fetch_warnings():
+    data = json.loads(json.dumps(READINESS))
+    data["safety"]["tree_truncated"] = True
+    data["safety"]["skipped"] = [{"path": "big.bin", "reason": "binary"}]
+    data["safety"]["failed_sources"] = [{"repo": "acme/infra"}]
+    html = rdu.render_html(data)
+    assert "Tree truncated" in html
+    assert "1 skipped (binary)" in html
+    assert "acme/infra" in html
 
 
 def test_includes_risk_table():

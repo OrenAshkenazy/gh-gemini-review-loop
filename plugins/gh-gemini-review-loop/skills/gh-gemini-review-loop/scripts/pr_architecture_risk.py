@@ -25,7 +25,7 @@ _SEVERITY_ORDER = {"none": 0, "low": 1, "medium": 2, "high": 3}
 
 # Each rule: (surface, label, regexes, severity_fn(context) -> str | None, reason_fn)
 _PUBLIC_API_RE = (
-    re.compile(r"(^|/)(api|routes|handlers|controllers)(/|\.)", re.IGNORECASE),
+    re.compile(r"(^|/)(api|routes|routers|handlers|controllers)(/|\.)", re.IGNORECASE),
 )
 _AUTH_RE = (
     re.compile(r"(auth|user|permission|token|password|security)", re.IGNORECASE),
@@ -96,7 +96,7 @@ def assess(context: dict[str, Any], changed_files: list[str]) -> dict[str, Any]:
                 "surface": "async_processing",
                 "reason": "PR changes worker/consumer code and the service uses queues",
                 "files": worker_files,
-                "human_decision_required": False,
+                "human_decision_required": True,
             }
         )
 

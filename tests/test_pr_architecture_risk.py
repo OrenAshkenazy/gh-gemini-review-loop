@@ -36,6 +36,7 @@ def test_worker_file_with_queue_maps_async_risk():
 
     risks = {r["surface"]: r for r in result["production_risks"]}
     assert risks["async_processing"]["severity"] == "medium"
+    assert risks["async_processing"]["human_decision_required"] is True
 
 
 def test_worker_file_without_queue_does_not_map_async_risk():

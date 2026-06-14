@@ -46,6 +46,23 @@ RISKS_NONE = {
     "summary": {"highest_severity": "none", "human_decision_required": False, "risk_count": 0},
 }
 
+PACK = {
+    "service": "aegislocal-api",
+    "facts": ARCH,
+    "provenance": {
+        "sources": [
+            {
+                "repo": "acme/infra",
+                "resolved_sha": "abc1234",
+                "files": ["envs/prod/deploy.yaml"],
+            }
+        ],
+        "fetched_at": "2026-06-14T00:00:00Z",
+        "file_count": 1,
+    },
+    "safety": {"config_changed": False, "secrets_redacted": True},
+}
+
 
 def test_status_human_decision_required_when_risks_exist():
     data = rpr.build_readiness(LOOP_SUMMARY, ARCH, RISKS_HIGH)
@@ -77,7 +94,7 @@ def test_status_pending_confirmation():
 
 def test_markdown_renders_human_decision_required():
     md = rpr.render_markdown(rpr.build_readiness(LOOP_SUMMARY, ARCH, RISKS_HIGH))
-    assert "## GGRL PR Readiness" in md
+    assert "## MergeProof PR Readiness" in md
     assert "HUMAN DECISION REQUIRED" in md
 
 
@@ -135,7 +152,7 @@ def test_main_markdown_stdout(tmp_path, capsys):
     )
     captured = capsys.readouterr()
     assert rc == 0
-    assert "## GGRL PR Readiness" in captured.out
+    assert "## MergeProof PR Readiness" in captured.out
     assert captured.err == ""
 
 
@@ -164,3 +181,34 @@ def test_main_json_stdout_has_no_ansi(tmp_path, capsys):
     payload = json.loads(captured.out)
     assert payload["status"] == "HUMAN_DECISION_REQUIRED"
     assert captured.err == ""
+
+
+def test_pack_input_is_unwrapped_for_architecture():
+    data = rpr.build_readiness(LOOP_SUMMARY, PACK, RISKS_HIGH)
+    assert data["architecture"]["service_name"] == "aegislocal-api"
+    assert data["status"] == "HUMAN_DECISION_REQUIRED"
+    assert data["safety"]["secrets_redacted"] is True
+
+
+def test_pack_service_fills_unknown_fact_service_name():
+    pack = {**PACK, "facts": {**ARCH, "service_name": "unknown"}, "service": "familia-ai"}
+    data = rpr.build_readiness(LOOP_SUMMARY, pack, RISKS_NONE)
+    assert data["architecture"]["service_name"] == "familia-ai"
+
+
+def test_config_changed_sets_review_required_status():
+    pack = {**PACK, "safety": {"config_changed": True}}
+    data = rpr.build_readiness(LOOP_SUMMARY, pack, RISKS_NONE)
+    assert data["status"] == "CONFIG_CHANGED_REVIEW_REQUIRED"
+
+
+def test_verification_failed_outranks_config_changed():
+    pack = {**PACK, "safety": {"config_changed": True}}
+    summary = {**LOOP_SUMMARY, "verification": "failed"}
+    data = rpr.build_readiness(summary, pack, RISKS_HIGH)
+    assert data["status"] == "VERIFICATION_FAILED"
+
+
+def test_markdown_shows_provenance_line():
+    md = rpr.render_markdown(rpr.build_readiness(LOOP_SUMMARY, PACK, RISKS_HIGH))
+    assert "acme/infra@abc1234" in md

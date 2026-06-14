@@ -22,8 +22,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Stable hidden marker so the published PR comment updates in place.
+READINESS_MARKER = "<!-- mergeproof-pr-readiness -->"
+
 STATUS_LABELS = {
     "VERIFICATION_FAILED": "VERIFICATION FAILED",
+    "CONFIG_CHANGED_REVIEW_REQUIRED": "CONFIG CHANGED - REVIEW REQUIRED",
     "HUMAN_DECISION_REQUIRED": "HUMAN DECISION REQUIRED",
     "PENDING_CONFIRMATION": "PENDING CONFIRMATION",
     "READY": "READY",
@@ -67,6 +71,11 @@ _NEXT_OPTIONS = {
         "Inspect the failing checks locally",
         "Hold the PR until verification passes",
     ],
+    "CONFIG_CHANGED_REVIEW_REQUIRED": [
+        "Review the MergeProof config change before merge",
+        "Confirm the new infra paths are intended",
+        "Merge only after the config change is approved",
+    ],
     "HUMAN_DECISION_REQUIRED": [
         "Approve the production risk and merge",
         "Ask AI to adjust the implementation",
@@ -87,6 +96,11 @@ _NEXT_OPTIONS = {
 _REASONS = {
     "VERIFICATION_FAILED": (
         "Verification failed during the AI review loop; this PR is not ready to merge."
+    ),
+    "CONFIG_CHANGED_REVIEW_REQUIRED": (
+        "This PR modifies the MergeProof config. The base-branch config was used "
+        "for this run; review the config change before it affects production "
+        "context resolution."
     ),
     "HUMAN_DECISION_REQUIRED_RISK": (
         "AI review loop completed and tests passed, but this PR touches "
@@ -111,6 +125,20 @@ def _as_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _unwrap_architecture(architecture: dict[str, Any]) -> tuple[dict, dict | None, dict]:
+    """Accept either a flat facts dict or a full Production Context Pack."""
+    if isinstance(architecture, dict) and "facts" in architecture and "provenance" in architecture:
+        facts = dict(architecture.get("facts") or {})
+        if facts.get("service_name") in (None, "", "unknown") and architecture.get("service"):
+            facts["service_name"] = architecture["service"]
+        return (
+            facts,
+            architecture.get("provenance"),
+            architecture.get("safety") or {},
+        )
+    return architecture or {}, None, {}
+
+
 def build_readiness(
     loop_summary: dict[str, Any],
     architecture: dict[str, Any],
@@ -120,6 +148,7 @@ def build_readiness(
     loop_summary = loop_summary or {}
     architecture = architecture or {}
     production_risks = production_risks or {}
+    architecture, provenance, safety = _unwrap_architecture(architecture)
 
     risks = list(production_risks.get("production_risks") or [])
     risk_summary = production_risks.get("summary") or {}
@@ -133,6 +162,9 @@ def build_readiness(
     if verification == "failed":
         status = "VERIFICATION_FAILED"
         reason = _REASONS["VERIFICATION_FAILED"]
+    elif safety.get("config_changed"):
+        status = "CONFIG_CHANGED_REVIEW_REQUIRED"
+        reason = _REASONS["CONFIG_CHANGED_REVIEW_REQUIRED"]
     elif human_required:
         status = "HUMAN_DECISION_REQUIRED"
         reason = _REASONS["HUMAN_DECISION_REQUIRED_RISK"]
@@ -154,6 +186,19 @@ def build_readiness(
             review_points.append(point)
     if semantic_risk and not review_points:
         review_points.append("semantic behavior change flagged during review")
+
+    # If the service handles credentials/certs/banking secrets and the PR touches
+    # connector or async surfaces, call out sensitive-data-in-logs explicitly.
+    secret_names = architecture.get("secrets_or_env") or []
+    sensitive = any(
+        any(tok in name.upper() for tok in ("CERT", "CLIENT_ID", "CLIENT_SECRET", "CREDENTIAL", "PRIVATE_KEY"))
+        for name in secret_names
+    )
+    risky_surfaces = {r.get("surface") for r in risks}
+    if review_points and sensitive and ({"public_api", "async_processing"} & risky_surfaces):
+        review_points.append(
+            "whether sensitive credential/banking data could leak in connector or worker logs"
+        )
 
     evidence = {
         "findings_fixed": int(loop_summary.get("fixed_count") or 0),
@@ -181,13 +226,15 @@ def build_readiness(
             "queues": list(architecture.get("queues") or []),
         },
         "production_risks": risks,
+        "provenance": provenance,
+        "safety": safety,
         "risk_summary": {
             "highest_severity": risk_summary.get("highest_severity", "none"),
             "human_decision_required": human_required,
             "risk_count": risk_summary.get("risk_count", len(risks)),
         },
         "human_decision": {
-            "required": status == "HUMAN_DECISION_REQUIRED",
+            "required": status in ("HUMAN_DECISION_REQUIRED", "CONFIG_CHANGED_REVIEW_REQUIRED"),
             "review_points": review_points,
         },
         "next_options": _NEXT_OPTIONS[status],
@@ -246,7 +293,8 @@ def render_markdown(readiness: dict[str, Any]) -> str:
     evidence = readiness["evidence"]
     lines: list[str] = []
 
-    lines.append("## GGRL PR Readiness")
+    lines.append(READINESS_MARKER)
+    lines.append("## MergeProof PR Readiness")
     lines.append("")
     lines.append(f"**Status:** {readiness['status_label']}  ")
     lines.append(f"**Reason:** {readiness['reason']}")
@@ -277,6 +325,14 @@ def render_markdown(readiness: dict[str, Any]) -> str:
     lines.append(f"| Data | {_pretty_datastores(arch['datastores'])} |")
     lines.append(f"| Async | {_pretty_queues(arch['queues'])} |")
     lines.append(f"| Owner | {', '.join(arch['owners']) or 'unknown'} |")
+    provenance = readiness.get("provenance")
+    if provenance and provenance.get("sources"):
+        source = provenance["sources"][0]
+        sha = (source.get("resolved_sha") or "")[:7]
+        lines.append(
+            f"| Production context | {provenance.get('file_count', 0)} files from "
+            f"`{source.get('repo', '')}@{sha}` |"
+        )
     lines.append("")
 
     lines.append("### Production risks")

@@ -18,13 +18,17 @@ from pathlib import Path
 from typing import Any
 
 from pr_architecture_risk import parse_pr
+from render_pr_readiness import READINESS_MARKER
 
-MARKER = "<!-- ggrl-pr-readiness -->"
+MARKER = READINESS_MARKER
 
 
 def build_comment_body(card_markdown: str) -> str:
-    """Prefix the readiness card with the stable hidden marker."""
-    return f"{MARKER}\n{card_markdown.rstrip()}\n"
+    """Ensure the readiness card carries exactly one stable hidden marker."""
+    card = card_markdown.rstrip()
+    if MARKER in card:
+        return card + "\n"
+    return f"{MARKER}\n{card}\n"
 
 
 class GitHubClient:
