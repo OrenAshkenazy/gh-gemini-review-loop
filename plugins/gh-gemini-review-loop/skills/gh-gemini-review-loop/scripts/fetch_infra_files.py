@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import base64
 import re
+from functools import lru_cache
 from typing import Any, Callable
+from urllib.parse import quote
 
 Runner = Callable[[list[str]], Any]
 
@@ -28,6 +30,7 @@ _BINARY_EXT = (
 )
 
 
+@lru_cache(maxsize=128)
 def _glob_to_regex(pattern: str) -> re.Pattern[str]:
     parts: list[str] = []
     idx = 0
@@ -98,7 +101,8 @@ def fetch_infra_files(
         if path.lower().endswith(_BINARY_EXT):
             skipped.append({"path": path, "reason": "binary"})
             continue
-        payload = runner(["api", f"repos/{repo}/contents/{path}?ref={sha}"])
+        safe_path = quote(path)
+        payload = runner(["api", f"repos/{repo}/contents/{safe_path}?ref={sha}"])
         text = _decode_content(payload)
         if text is None:
             skipped.append({"path": path, "reason": "binary"})

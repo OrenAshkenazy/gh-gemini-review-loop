@@ -138,7 +138,32 @@ def render_config(
 
 def repo_from_git(repo_root: str | Path) -> str | None:
     """Best-effort OWNER/REPO from a local checkout's git remote."""
-    config = Path(repo_root) / ".git" / "config"
+    git_dir = Path(repo_root) / ".git"
+    if git_dir.is_file():
+        # Submodules and worktrees use a `.git` file with a `gitdir:` pointer.
+        try:
+            pointer = git_dir.read_text(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            return None
+        target = next(
+            (
+                ln.split("gitdir:", 1)[1].strip()
+                for ln in pointer.splitlines()
+                if ln.strip().startswith("gitdir:")
+            ),
+            None,
+        )
+        if target is None:
+            return None
+        resolved = (git_dir.parent / target).resolve() if not Path(target).is_absolute() else Path(target)
+        # Worktrees keep config in the common dir, pointed to by `commondir`.
+        commondir = resolved / "commondir"
+        if commondir.is_file():
+            common = commondir.read_text(encoding="utf-8", errors="replace").strip()
+            resolved = (resolved / common).resolve() if not Path(common).is_absolute() else Path(common)
+        config = resolved / "config"
+    else:
+        config = git_dir / "config"
     if not config.is_file():
         return None
     for line in config.read_text(encoding="utf-8", errors="replace").splitlines():

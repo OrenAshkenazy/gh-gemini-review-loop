@@ -154,9 +154,12 @@ def read_changed_files(path: str | Path) -> list[str]:
 
 def _default_pr_runner(args: list[str]) -> Any:
     cmd = ["gh", *args]
-    proc = subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False
-    )
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False
+        )
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"gh api failed: {exc}") from exc
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         raise RuntimeError(f"gh api failed: {detail}" if detail else "gh api failed")
