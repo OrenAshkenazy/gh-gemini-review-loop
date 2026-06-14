@@ -91,6 +91,15 @@ def test_detects_sqs_queue_from_terraform(tmp_path):
     assert "terraform/sqs.tf" in result["architecture_files_found"]
 
 
+def test_detects_redis_arq_worker_queue_from_mapping():
+    files = {
+        "backend/app/jobs/worker.py": "from arq import create_pool\nawait redis.enqueue_job('sync')\nRedisSettings.from_dsn(url)\n",
+        "helm/familia-ai/templates/redis/deployment.yaml": "kind: Deployment\nmetadata:\n  name: redis\n",
+    }
+    result = ac.extract_facts(files)
+    assert "redis:arq" in result["queues"]
+
+
 def test_detects_datastore_and_env_hints(tmp_path):
     _write(
         tmp_path,
@@ -121,3 +130,28 @@ def test_json_stdout_is_parseable_and_has_no_ansi(tmp_path, capsys):
     payload = json.loads(captured.out)
     assert payload["runtime"] == "kubernetes"
     assert captured.err == ""
+
+
+def test_extract_facts_from_mapping():
+    files = {
+        "k8s/deployment.yaml": "kind: Deployment\n",
+        "k8s/ingress.yaml": "kind: Ingress\nmetadata:\n  annotations:\n    kubernetes.io/ingress.class: alb\n",
+        "terraform/sqs.tf": 'resource "aws_sqs_queue" "scan" {\n  name = "scan-events"\n}\n',
+    }
+
+    facts = ac.extract_facts(files, files_found=sorted(files))
+
+    assert facts["runtime"] == "kubernetes"
+    assert facts["exposure"] == "public"
+    assert "sqs:scan-events" in facts["queues"]
+    assert facts["architecture_files_found"] == sorted(files)
+
+
+def test_scan_still_matches_extract_facts(tmp_path):
+    _write(tmp_path, "k8s/deployment.yaml", "kind: Deployment\n")
+    from_scan = ac.scan(tmp_path)
+    from_extract = ac.extract_facts(
+        {"k8s/deployment.yaml": "kind: Deployment\n"},
+        files_found=["k8s/deployment.yaml"],
+    )
+    assert from_scan == from_extract

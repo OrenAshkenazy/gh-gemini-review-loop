@@ -142,9 +142,11 @@ def _detect_owners(files: dict[str, str]) -> list[str]:
     return owners
 
 
-def _detect_runtime(files: dict[str, str]) -> str:
+def _detect_runtime(files: dict[str, str], blob: str = "") -> str:
     rels = files.keys()
     if any(r.startswith("k8s/") or r.startswith("helm/") for r in rels):
+        return "kubernetes"
+    if re.search(r"(?m)^\s*kind:\s*(Deployment|Ingress|Service|CronJob|StatefulSet)\b", blob):
         return "kubernetes"
     if any(r.startswith("terraform/") for r in rels):
         return "terraform"
@@ -213,6 +215,12 @@ def _detect_queues(files: dict[str, str], blob: str) -> list[str]:
                 queues.append(entry)
     if not queues and re.search(r"\bsqs\b", blob, re.IGNORECASE):
         queues.append("sqs")
+    if re.search(r"\b(arq|enqueue_job|RedisSettings)\b", blob) and re.search(
+        r"\bredis\b", blob, re.IGNORECASE
+    ):
+        entry = "redis:arq"
+        if entry not in queues:
+            queues.append(entry)
     return queues
 
 
@@ -229,9 +237,15 @@ def _detect_secrets_or_env(blob: str) -> list[str]:
     found: list[str] = []
     for match in _ENV_RE.finditer(blob):
         name = match.group(1)
-        if name in _SECRET_EXACT or name.endswith(_SECRET_SUFFIXES):
-            if name not in found:
-                found.append(name)
+        is_secret = name in _SECRET_EXACT or name.endswith(_SECRET_SUFFIXES)
+        # Credential/cert env names (banking, open-banking, mTLS) often lack a
+        # standard secret suffix (e.g. *_CLIENT_ID, *_CERT_PATH) but are exactly
+        # the surfaces a human must review for data-leak risk.
+        is_credential = any(
+            tok in name for tok in ("CLIENT_ID", "CLIENT_SECRET", "CLIENT_CERT", "CERT_PATH")
+        )
+        if (is_secret or is_credential) and name not in found:
+            found.append(name)
     return found
 
 
@@ -299,16 +313,15 @@ def _derive_confidence(files_found: int, strong_fields: int) -> str:
     return "medium"
 
 
-def scan(repo_root: str | Path) -> dict[str, Any]:
-    """Scan *repo_root* and return a best-effort architecture context dict."""
-    root = Path(repo_root)
-    collected = _collect_files(root) if root.is_dir() else []
-    files = dict(collected)
+def extract_facts(
+    files: dict[str, str], *, files_found: list[str] | None = None
+) -> dict[str, Any]:
+    """Derive the architecture fact sheet from a ``{relpath: text}`` mapping."""
     blob = "\n".join(files.values())
 
     service_name = _detect_service_name(files)
     owners = _detect_owners(files)
-    runtime = _detect_runtime(files)
+    runtime = _detect_runtime(files, blob)
     deployment_type = _detect_deployment_type(files, blob)
     ingress = _detect_ingress(blob)
     exposure = _detect_exposure(blob, ingress)
@@ -331,7 +344,7 @@ def scan(repo_root: str | Path) -> dict[str, Any]:
             bool(datastores),
         ]
     )
-    files_found = [rel for rel, _ in collected]
+    found = list(files_found) if files_found is not None else sorted(files)
 
     return {
         "service_name": service_name,
@@ -347,9 +360,17 @@ def scan(repo_root: str | Path) -> dict[str, Any]:
         "resource_limits": resource_limits,
         "verification_commands": verification_commands,
         "sensitive_surfaces": sensitive_surfaces,
-        "architecture_files_found": files_found,
-        "confidence": _derive_confidence(len(files_found), strong_fields),
+        "architecture_files_found": found,
+        "confidence": _derive_confidence(len(found), strong_fields),
     }
+
+
+def scan(repo_root: str | Path) -> dict[str, Any]:
+    """Scan *repo_root* and return a best-effort architecture context dict."""
+    root = Path(repo_root)
+    collected = _collect_files(root) if root.is_dir() else []
+    files = dict(collected)
+    return extract_facts(files, files_found=[rel for rel, _ in collected])
 
 
 def build_parser() -> argparse.ArgumentParser:
