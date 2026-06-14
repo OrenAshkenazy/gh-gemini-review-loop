@@ -833,8 +833,8 @@ infra files      -> allowlisted paths from trusted config
     - After the final wait has established confirmed/unconfirmed state, record the run exactly once:
       `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --record-run --fixed-count <n> --verification <passed|failed|skipped> [--outcome <state>] [--gemini-confirmed|--gemini-unconfirmed]`
       then relay the printed `[loop] Summary` block verbatim.
-    - After the terminal summary is relayed, the optional MergeProof readiness phase may run. It consumes the existing loop summary or recorded terminal run; it does **not** rerun the CR loop:
-      `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/mergeproof.py" run --pr https://github.com/OWNER/REPO/pull/123 --loop-summary /path/to/loop_summary.json --publish`
+    - After the terminal summary is relayed, the optional MergeProof readiness phase may run. The preceding `--record-run` already wrote the terminal record to `runs.jsonl`, so readiness reads that by default; it does **not** rerun the CR loop and needs no hand-authored summary file:
+      `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/mergeproof.py" run --pr https://github.com/OWNER/REPO/pull/123 --publish`
       If `mergeproof.yaml` is absent on the trusted base ref, relay the skip notice and continue normally:
       `[mergeproof] readiness skipped`
       `Reason: mergeproof.yaml not found`

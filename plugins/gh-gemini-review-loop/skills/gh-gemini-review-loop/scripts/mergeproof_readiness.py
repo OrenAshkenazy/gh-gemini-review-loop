@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from build_context_pack import SKIP_MESSAGE, build_pack
+from metrics import runs_log_path
 from pr_architecture_risk import _default_pr_runner, assess, fetch_pr_changed_files, parse_pr
 from publish_pr_readiness import publish
 from render_pr_readiness import build_readiness, render_markdown
@@ -62,7 +63,11 @@ def load_latest_run_summary(runs_jsonl: str | Path, repo: str, pr_number: int) -
         if record.get("repo") == repo and int(record.get("pr") or 0) == pr_number:
             latest = record
     if latest is None:
-        raise ValueError(f"no terminal run found for {repo}#{pr_number}")
+        raise ValueError(
+            f"no terminal CR-loop run recorded for {repo}#{pr_number} in {runs_jsonl}. "
+            "Run the Gemini review loop on this PR first (it records terminal state to "
+            "runs.jsonl), or pass --loop-summary with an explicit summary JSON."
+        )
     return _summary_from_record(latest, f"https://github.com/{repo}/pull/{pr_number}")
 
 
@@ -125,9 +130,17 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the MergeProof readiness phase for a terminal CR loop result."
     )
     parser.add_argument("--pr", required=True, help="PR URL or OWNER/REPO#N.")
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--loop-summary", help="Path to terminal loop summary JSON.")
-    source.add_argument("--runs-jsonl", help="Path to runs.jsonl with a recorded terminal run.")
+    # The real input is runs.jsonl (auto-written by the CR loop). --loop-summary
+    # is an optional explicit override (fixtures / manual replay).
+    parser.add_argument(
+        "--runs-jsonl",
+        default=str(runs_log_path()),
+        help="Path to runs.jsonl (the CR loop's terminal record). Defaults to the GGRL state log.",
+    )
+    parser.add_argument(
+        "--loop-summary",
+        help="Optional explicit terminal-summary JSON; overrides --runs-jsonl.",
+    )
     parser.add_argument(
         "--mergeproof",
         help="Path to a local mergeproof.yaml/.json to use instead of the base-ref config.",

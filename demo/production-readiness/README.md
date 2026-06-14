@@ -72,13 +72,24 @@ uses it. `mergeproof.py init` is an equivalent wrapper around the same discovery
 
 ### 2. Run readiness against PR #106 (after the CR loop's terminal summary)
 
+The readiness phase consumes the CR loop's **terminal record**. The loop writes
+that record to `runs.jsonl` automatically (no hand-authored file). So the live
+command reads `runs.jsonl` by default — **run the Gemini review loop on the PR
+first**, then:
+
 ```bash
 python3 $SCRIPTS/mergeproof_readiness.py \
   --pr https://github.com/OrenAshkenazy/familia-ai/pull/106 \
-  --loop-summary /tmp/loop_summary.json \
   --mergeproof /tmp/mergeproof.yaml \
   --json > /tmp/mergeproof_readiness.json
+# reads ~/.config/gh-gemini-review-loop/runs.jsonl by default;
+# override the path with --runs-jsonl <path>.
 ```
+
+If no terminal run is recorded for the PR yet, you get a clear error telling you
+to run the loop first. `--loop-summary <file>` is an **optional explicit
+override** (used by the offline fixture render below and for manual replay) — it
+is **not** a file the loop generates.
 
 `--markdown` renders the GitHub-native card instead; `--publish` posts/updates a
 single PR comment keyed by the hidden marker `<!-- mergeproof-pr-readiness -->`
@@ -300,8 +311,10 @@ only for that explicit demo/review run; it is not the default trust model.
 
 ### The loop summary
 
-`render_pr_readiness.py` reads a small JSON describing the AI loop's terminal
-state. All fields are optional and degrade gracefully:
+Readiness needs the CR loop's terminal state. **You normally never write this by
+hand** — the loop's `--record-run` step appends a record to `runs.jsonl`, and
+`mergeproof_readiness.py` derives the summary from it (`--runs-jsonl`, the
+default). The derived shape (all fields optional, degrade gracefully) is:
 
 ```json
 {
@@ -317,6 +330,10 @@ state. All fields are optional and degrade gracefully:
   "pending_confirmation": false
 }
 ```
+
+`--loop-summary <file>` lets you pass this JSON explicitly instead — used by the
+offline fixture render and manual replay. No part of the system writes a file
+named `loop_summary.json`; it is only ever a path you choose to supply.
 
 ### Status logic
 
