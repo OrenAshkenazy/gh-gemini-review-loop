@@ -141,14 +141,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        card = Path(args.readiness).read_text(encoding="utf-8")
-    except OSError as exc:
+        card = Path(args.readiness).read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError) as exc:
         print(f"error: could not read readiness file: {exc}", file=sys.stderr)
         return 2
 
     try:
         result = publish(repo, number, card)
-    except RuntimeError as exc:
+    except (RuntimeError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

@@ -126,8 +126,8 @@ def _detect_owners(files: dict[str, str]) -> list[str]:
 
     codeowners = files.get("CODEOWNERS", "")
     for line in codeowners.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
+        line = line.split("#", 1)[0].strip()  # drop inline comments
+        if not line:
             continue
         for tok in line.split()[1:]:  # skip the path pattern
             _add(tok)
@@ -270,7 +270,7 @@ def _detect_resource_limits(files: dict[str, str]) -> dict[str, str]:
 def _detect_verification_commands(files: dict[str, str]) -> list[str]:
     commands: list[str] = []
     ggrl = files.get("ggrl.yaml", "")
-    for match in re.finditer(r"(?m)^\s*-?\s*(?:command|run):\s*(['\"]?)([^\n#]+?)\1\s*$", ggrl):
+    for match in re.finditer(r"(?m)^\s*-?\s*(?:command|run):\s*(['\"]?)([^\n#]+?)\1(?:\s*#.*)?$", ggrl):
         cmd = match.group(2).strip()
         if cmd and cmd not in commands:
             commands.append(cmd)
@@ -278,7 +278,7 @@ def _detect_verification_commands(files: dict[str, str]) -> list[str]:
     for rel, text in files.items():
         if not rel.startswith(".github/workflows/"):
             continue
-        for match in re.finditer(r"(?m)^\s*run:\s*(['\"]?)([^\n#]+?)\1\s*$", text):
+        for match in re.finditer(r"(?m)^\s*run:\s*(['\"]?)([^\n#]+?)\1(?:\s*#.*)?$", text):
             cmd = match.group(2).strip()
             if test_re.search(cmd) and cmd not in commands:
                 commands.append(cmd)

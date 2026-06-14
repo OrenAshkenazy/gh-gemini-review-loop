@@ -150,8 +150,10 @@ def build_readiness(
     production_risks = production_risks or {}
     architecture, provenance, safety = _unwrap_architecture(architecture)
 
-    risks = list(production_risks.get("production_risks") or [])
-    risk_summary = production_risks.get("summary") or {}
+    risks = production_risks.get("production_risks")
+    risks = risks if isinstance(risks, list) else []
+    risk_summary = production_risks.get("summary")
+    risk_summary = risk_summary if isinstance(risk_summary, dict) else {}
     verification = str(loop_summary.get("verification") or "unknown").lower()
     semantic_risk = _as_bool(loop_summary.get("semantic_risk"))
     pending = _as_bool(loop_summary.get("pending_confirmation"))
