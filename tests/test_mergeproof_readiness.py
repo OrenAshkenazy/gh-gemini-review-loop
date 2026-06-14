@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import json
 
+import pytest
+
 import mergeproof_readiness as mr
 
 
@@ -42,6 +44,7 @@ class FakeGH:
         self.changed = changed
         self.has_config = has_config
         self.infra = infra or INFRA
+        self.infra_unreachable = False
 
     def __call__(self, args):
         url = next((arg for arg in args if isinstance(arg, str) and arg.startswith("repos/")), args[-1])
@@ -56,6 +59,8 @@ class FakeGH:
         if "/contents/mergeproof" in url:
             raise RuntimeError("404")
         if "/commits/" in url:
+            if self.infra_unreachable:
+                raise RuntimeError("gh: Not Found (HTTP 404)")
             return {"sha": "isha"}
         if "/git/trees/" in url:
             return {
@@ -69,6 +74,17 @@ class FakeGH:
             path = url.split("/contents/")[1].split("?")[0]
             return {"encoding": "base64", "content": _b64(self.infra[path])}
         raise RuntimeError(f"unexpected {url}")
+
+
+def test_all_infra_sources_unreadable_fails_with_clear_error():
+    gh = FakeGH(changed=["core/api/routes.py"])
+    gh.infra_unreachable = True
+    with pytest.raises(RuntimeError) as exc:
+        mr.run_readiness("acme/app", 7, LOOP_SUMMARY, runner=gh)
+    message = str(exc.value)
+    assert "acme/infra" in message
+    assert "404" in message
+    assert "no" in message.lower() and "infra source" in message.lower()
 
 
 def test_terminal_phase_renders_when_config_exists():

@@ -69,11 +69,13 @@ def resolve(
         try:
             commit = runner(["api", f"repos/{source['repo']}/commits/{source['ref']}"])
             source["resolved_sha"] = (commit or {}).get("sha")
-        except RuntimeError:
+        except RuntimeError as exc:
             source["resolved_sha"] = None
+            failed_sources.append({"repo": source["repo"], "error": str(exc)})
+            continue
         if not source.get("resolved_sha"):
             failed_sources.append(
-                {"repo": source["repo"], "error": "infra source ref could not be resolved"}
+                {"repo": source["repo"], "error": f"ref '{source['ref']}' resolved to no commit SHA"}
             )
 
     status = "OK"

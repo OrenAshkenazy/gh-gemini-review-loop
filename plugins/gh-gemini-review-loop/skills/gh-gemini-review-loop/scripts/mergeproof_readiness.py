@@ -89,6 +89,22 @@ def run_readiness(
         print(SKIP_MESSAGE, file=sys.stderr)
         return {"status": "skipped", "reason": "mergeproof.yaml not found"}
 
+    # An empty pack with failed sources means every declared infra source was
+    # unreadable (e.g. 404/403). Fail loudly rather than emitting a hollow card.
+    failed = pack["safety"].get("failed_sources") or []
+    if failed and pack["provenance"].get("file_count", 0) == 0:
+        detail = "\n".join(f"  - {f['repo']}: {f.get('error', 'unreadable')}" for f in failed)
+        raise RuntimeError(
+            "could not read any declared infra source; production context is empty.\n"
+            + detail
+            + "\nCheck the infra repo exists and your GitHub token has read access, "
+            "or fix architecture_sources in mergeproof.yaml."
+        )
+    if failed:  # partial: some sources fetched, others failed — warn but proceed
+        names = ", ".join(f["repo"] for f in failed)
+        print(f"[mergeproof] warning: partial production context; unreadable sources: {names}",
+              file=sys.stderr)
+
     risks = assess(pack["facts"], changed_files)
     readiness = build_readiness(loop_summary, pack, risks)
     markdown = render_markdown(readiness)
