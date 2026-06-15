@@ -809,6 +809,7 @@ def build_record(
     judge: dict[str, Any] | None,
     cycles: list[dict[str, Any]] | None = None,
     terminal_breakdown: dict[str, Any] | None = None,
+    patterns: dict[str, Any] | None = None,
     ts: str | None = None,
 ) -> dict[str, Any]:
     ts = ts or now_iso()
@@ -848,4 +849,5 @@ def build_record(
         "finding_paths": paths,
         "judge": judge or {"enabled": False},
         "terminal_breakdown": dict(terminal_breakdown) if isinstance(terminal_breakdown, dict) else {},
+        "patterns": dict(patterns) if isinstance(patterns, dict) else {},
     }

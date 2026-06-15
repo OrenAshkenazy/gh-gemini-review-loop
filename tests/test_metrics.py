@@ -847,3 +847,31 @@ def test_format_convergence_line_recurred_after_sweep_warns():
     )
     assert "⚠" in line
     assert "RECURRED after sweep" in line
+
+
+from metrics import build_record
+
+
+def _min_record_kwargs():
+    return dict(
+        repo="o/r", pr=46, provider="gemini-code-assist",
+        findings_fetched=3, fixed_count=3, observed_fixed_count=3,
+        remaining_actionable=0, needs_human=0, addressed_by_reply=0,
+        cycles_used=2, cycle_cap=5, verification="passed",
+        verification_details=None, outcome="clean", outcome_reason="",
+        started_at=None, finding_paths=[], judge=None,
+    )
+
+
+def test_build_record_includes_patterns_block_when_passed():
+    rec = build_record(**_min_record_kwargs(), patterns={
+        "distinct_patterns": 4, "max_cluster_size": 14,
+        "pattern_recurrence_rate": 0.0, "swept_count": 1,
+    })
+    assert rec["patterns"]["max_cluster_size"] == 14
+    assert rec["patterns"]["swept_count"] == 1
+
+
+def test_build_record_patterns_defaults_to_empty_dict():
+    rec = build_record(**_min_record_kwargs())
+    assert rec["patterns"] == {}
