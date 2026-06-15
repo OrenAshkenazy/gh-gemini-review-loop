@@ -1306,6 +1306,66 @@ class TestCycleSummary:
         assert "[loop] Semantic risk note (manual / heuristic)" in out
         assert "- get_user() now returns one row instead of a list" in out
 
+    def test_cycle_summary_renders_patterns_and_convergence_blocks(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Wiring guard: two findings of the same KIND on different sites must
+        cluster (count>=2) and render the Patterns/Convergence blocks on stdout.
+        Unit tests cover the formatters; this proves the prints aren't gated out."""
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+
+        pr = PullRequest(owner="o", repo="r", number=7)
+        update_run_tracking(pr, [("t1", "a.py"), ("t2", "b.py")])
+
+        # Same KIND of finding (dict-before-.get guard) on two different paths,
+        # differing only by an inline-code identifier that cluster() strips —
+        # so both normalize to one signature and form a multi-site cluster.
+        threads = [
+            {
+                "id": "t1",
+                "path": "a.py",
+                "line": 10,
+                "comments": [{"body": "Validate that `source` is a dict before `.get`"}],
+            },
+            {
+                "id": "t2",
+                "path": "b.py",
+                "line": 20,
+                "comments": [{"body": "Validate that `provenance` is a dict before `.get`"}],
+            },
+            {
+                "id": "t3",
+                "path": "c.py",
+                "line": 30,
+                "comments": [{"body": "Add a docstring to this helper function"}],
+            },
+        ]
+        monkeypatch.setattr(fgt, "resolve_pr", lambda spec: pr)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda p: {"stub": True})
+        monkeypatch.setattr(fgt, "filter_threads", lambda *a, **k: threads)
+        monkeypatch.setattr(fgt, "sort_by_severity", lambda ts: ts)
+        monkeypatch.setattr(fgt, "rereview_requests", lambda *a, **k: ["c1"])
+        monkeypatch.setattr(fgt, "addressed_by_reply_threads", lambda *a, **k: [])
+        monkeypatch.setattr(fgt, "pagination_warnings", lambda pull_request: [])
+
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py", "--cycle-summary",
+            "--judge-mode", "off", "--no-agent-filter",
+            "--no-resolve-outdated", "--no-resolve-addressed-by-reply",
+            "--fixed-count", "1", "--verification", "passed",
+            "--no-color",
+        ])
+
+        rc = fgt.main()
+        assert rc == 0
+
+        out = capsys.readouterr().out
+        assert "Patterns (" in out
+        assert "Convergence:" in out
+        # The clustered dict-guard pattern appears as a multi-site cluster.
+        assert "2 sites" in out
+
 
 class TestDeriveRecordFields:
     def test_observed_fixed_and_findings_and_needs_human(self):
