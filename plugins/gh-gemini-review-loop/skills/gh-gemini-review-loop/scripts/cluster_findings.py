@@ -35,6 +35,85 @@ _NUM_RE = re.compile(r"\b\d+\b")
 _SINGLE_CHAR_VAR_RE = re.compile(r"\b[a-zA-Z]\b")  # bare single-letter identifiers
 _WS_RE = re.compile(r"\s+")
 
+# Gemini appends a <details>References</details> block of generic boilerplate
+# that mentions every error type; it must be stripped before concept extraction
+# or it poisons the classifier (merges unrelated findings).
+_DETAILS_RE = re.compile(r"<details>.*?</details>", re.DOTALL | re.IGNORECASE)
+
+# Intent-category classifier (pattern_signature v1).
+#
+# LANGUAGE CAVEAT: this vocabulary is Python-specific (OSError, ValueError, dict,
+# list, AttributeError, TypeError, lstrip, lru_cache, ...). On non-Python repos
+# Gemini uses different terms, no concept matches, and findings fall back to a
+# unique prose hash → no clustering (degrades to per-finding, never mis-clusters).
+# The planned language-agnostic prose-similarity replacement is tracked in #48.
+_CONCEPT_KEYWORDS: dict[str, list[str]] = {
+    "utf8":       ["errors='replace'", 'errors="replace"', "invalid utf-8", "utf-8 bytes", "unicodedecodeerror"],
+    "valueerror": ["valueerror", "json.jsondecodeerror"],
+    "oserror":    ["oserror", "filenotfounderror"],
+    "tryexcept":  ["try-except", "try...except", "try except", "wrap "],
+    "dict":       ["dictionary", "is not a dict", "not a dict"],
+    "list":       ["is not a list", "not a list", "not list"],
+    "attr":       ["attributeerror"],
+    "typeerr":    ["typeerror"],
+    "failfast":   ["fail fast", "cannot be resolved", "fails fast"],
+    "perf":       ["lru_cache", "inefficient"],
+    "tab":        ["lstrip", "leading tab", "tab character"],
+    "codeowners": ["codeowners", "inline comment"],
+    "yaml":       ["inline maps", "scalars", "quoted string"],
+}
+
+# The categories pattern_signature can assign. A cluster whose signature is one
+# of these uses the category name as its human label.
+KNOWN_CATEGORIES = {
+    "tab-detection",
+    "yaml-scalar-parse",
+    "codeowners-parse",
+    "perf-cache",
+    "fail-fast-validation",
+    "type-guard",
+    "io-decode-guard",
+    "exception-wrap",
+}
+
+
+def _clean_for_concepts(body: str) -> str:
+    """Lowercased body with code, References boilerplate, and images removed."""
+    body = _FENCED_RE.sub(" ", body)
+    body = _DETAILS_RE.sub(" ", body)
+    body = _IMG_RE.sub(" ", body)
+    return body.lower()
+
+
+def _concepts(cleaned: str) -> set[str]:
+    return {c for c, kws in _CONCEPT_KEYWORDS.items() if any(k in cleaned for k in kws)}
+
+
+def _categorize(cs: set[str]) -> str:
+    """Assign ONE primary category by priority (first match wins).
+
+    Single assignment (rather than overlap-graph membership) prevents a finding
+    that mentions several concepts from chaining two distinct families into one
+    cluster. Returns '' when no recognized concept is present.
+    """
+    if "tab" in cs:
+        return "tab-detection"
+    if "yaml" in cs:
+        return "yaml-scalar-parse"
+    if "codeowners" in cs:
+        return "codeowners-parse"
+    if "perf" in cs:
+        return "perf-cache"
+    if "failfast" in cs:
+        return "fail-fast-validation"
+    if ("dict" in cs or "list" in cs) and ("attr" in cs or "typeerr" in cs):
+        return "type-guard"
+    if "utf8" in cs or ("oserror" in cs and "valueerror" in cs):
+        return "io-decode-guard"
+    if "oserror" in cs or "tryexcept" in cs:
+        return "exception-wrap"
+    return ""
+
 
 def _first_body(thread: Any) -> str:
     if not isinstance(thread, dict):
@@ -63,8 +142,20 @@ def _normalize(body: str) -> str:
 
 
 def pattern_signature(thread: Any) -> str:
-    """Short, stable signature of a finding's KIND. '' for malformed input."""
-    normalized = _normalize(_first_body(thread))
+    """Stable signature of a finding's KIND. '' for malformed input.
+
+    Two-stage: classify into an intent category from the concept vocabulary
+    (the category name IS the signature — stable and human-readable); if no
+    concept is recognized, fall back to a unique prose hash so unrelated
+    findings each stay their own group (never merged).
+    """
+    body = _first_body(thread)
+    if not body:
+        return ""
+    category = _categorize(_concepts(_clean_for_concepts(body)))
+    if category:
+        return category
+    normalized = _normalize(body)
     if not normalized:
         return ""
     return hashlib.sha1(normalized[:1000].encode()).hexdigest()[:8]
@@ -75,7 +166,7 @@ class Cluster:
     signature: str
     label: str
     severity: str
-    sites: list[str]
+    sites: tuple[str, ...]  # immutable, to honor frozen=True
     count: int  # invariant: count == len(sites)
 
 
@@ -112,12 +203,15 @@ def cluster(threads: list[Any]) -> list[Cluster]:
     for sig, members in groups.items():
         best = min(members, key=lambda t: _SEVERITY_ORDER[_severity(t)])
         severity = _severity(best)
+        # A recognized category is its own clean label; otherwise fall back to a
+        # truncated prose fragment from the highest-severity member.
+        label = sig if sig in KNOWN_CATEGORIES else _label(_first_body(best))
         clusters.append(
             Cluster(
                 signature=sig,
-                label=_label(_first_body(best)),
+                label=label,
                 severity=severity,
-                sites=[_site(m) for m in members],
+                sites=tuple(_site(m) for m in members),
                 count=len(members),
             )
         )
@@ -136,12 +230,15 @@ def recurrence_stats(
     - distinct_patterns: number of unique signatures this cycle
     - recurrence_rate: fraction of this cycle's findings whose signature was
       seen in a prior cycle (0.0 when there are no findings)
-    - recurred_after_sweep: sorted signatures that were swept yet reappeared
+    - recurred_after_sweep: sorted signatures swept in a PRIOR cycle that show
+      up again now. Membership in prior_sigs is required, so a pattern marked
+      swept and still present in the SAME cycle (its fix not yet re-reviewed)
+      does not false-alarm — a sweep only "fails" once a later review re-flags it.
     """
     valid = [s for s in current_sigs if s]
     total = len(valid)
     recurred = sum(1 for s in valid if s in prior_sigs)
-    recurred_after_sweep = sorted({s for s in valid if s in swept_sigs})
+    recurred_after_sweep = sorted({s for s in valid if s in swept_sigs and s in prior_sigs})
     return {
         "distinct_patterns": len(set(valid)),
         "recurrence_rate": (recurred / total) if total else 0.0,

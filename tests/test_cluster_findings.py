@@ -70,7 +70,7 @@ def test_cluster_groups_and_picks_max_severity_and_sorts():
     assert len(clusters) == 2
     assert clusters[0].severity == "high"
     assert clusters[0].count == 1
-    assert clusters[0].sites == ["mergeproof_config.py:68"]
+    assert clusters[0].sites == ("mergeproof_config.py:68",)
     assert clusters[1].severity == "medium"
     assert clusters[1].count == 2
     assert "render_demo_ui.py:204" in clusters[1].sites
@@ -79,6 +79,33 @@ def test_cluster_groups_and_picks_max_severity_and_sorts():
 def test_cluster_ignores_non_dict_members():
     clusters = cluster([None, "nope", {}])
     assert clusters == []
+
+
+import json
+from pathlib import Path
+from cluster_findings import cluster
+
+_CORPUS = json.loads(
+    (Path(__file__).parent / "fixtures" / "cluster_corpus_pr46.json").read_text()
+)
+
+
+def _corpus_threads():
+    return [
+        {"path": f["path"], "line": f["line"], "comments": [{"body": f["body"]}]}
+        for f in _CORPUS
+    ]
+
+
+def test_real_corpus_clusters_into_intent_categories():
+    clusters = cluster(_corpus_threads())
+    by_label = {c.label: c for c in clusters if c.label in {
+        "io-decode-guard", "type-guard", "exception-wrap"}}
+    assert by_label["io-decode-guard"].count == 4
+    assert by_label["type-guard"].count == 4
+    assert by_label["exception-wrap"].count == 2
+    # 15 findings collapse to 8 groups (3 clusters + 5 singletons), not 15.
+    assert len(clusters) == 8
 
 
 from cluster_findings import recurrence_stats
@@ -99,3 +126,66 @@ def test_recurrence_stats_empty():
     assert stats["distinct_patterns"] == 0
     assert stats["recurrence_rate"] == 0.0
     assert stats["recurred_after_sweep"] == []
+
+
+import json
+from pathlib import Path
+from cluster_findings import cluster as cluster_fn
+
+
+_CORPUS = json.loads(
+    (Path(__file__).parent / "fixtures" / "cluster_corpus_pr46.json").read_text()
+)
+
+
+def _corpus_threads():
+    return [
+        {"path": f["path"], "line": f["line"], "comments": [{"body": f["body"]}]}
+        for f in _CORPUS
+    ]
+
+
+def test_real_corpus_clusters_into_intent_categories():
+    clusters = cluster_fn(_corpus_threads())
+    by_label = {c.label: c for c in clusters}
+    assert by_label["io-decode-guard"].count == 4
+    assert by_label["type-guard"].count == 4
+    assert by_label["exception-wrap"].count == 2
+    # 15 real findings collapse to 8 groups (3 clusters + 5 singletons), not 15.
+    assert len(clusters) == 8
+
+
+def test_recurrence_no_false_alarm_when_swept_same_cycle():
+    # Pattern swept this cycle and still present, but NOT seen in a prior cycle
+    # (its fix has not been re-reviewed yet) → must NOT flag recurred_after_sweep.
+    stats = recurrence_stats(
+        ["type-guard", "type-guard"],
+        prior_sigs=set(),            # first time seen this session
+        swept_sigs={"type-guard"},   # marked swept this cycle
+    )
+    assert stats["recurred_after_sweep"] == []
+
+
+def test_recurrence_flags_when_swept_prior_and_reappears():
+    # Swept in a prior cycle AND seen before AND present now → genuine recurrence.
+    stats = recurrence_stats(
+        ["type-guard"],
+        prior_sigs={"type-guard"},
+        swept_sigs={"type-guard"},
+    )
+    assert stats["recurred_after_sweep"] == ["type-guard"]
+
+
+def test_recurrence_uses_prior_from_history_union():
+    # Simulates a resumed run: live prior is empty, but history supplies the
+    # prior+swept sets. The pattern present now must be flagged as recurred.
+    live_prior = set()
+    live_swept = set()
+    history = {"seen": {"type-guard"}, "swept": {"type-guard"}}
+    stats = recurrence_stats(
+        ["type-guard", "type-guard", "io-decode-guard"],
+        prior_sigs=live_prior | history["seen"],
+        swept_sigs=live_swept | history["swept"],
+    )
+    assert stats["recurrence_rate"] == 2 / 3        # type-guard seen before
+    assert stats["recurred_after_sweep"] == ["type-guard"]

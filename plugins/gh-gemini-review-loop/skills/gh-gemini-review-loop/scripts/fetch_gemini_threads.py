@@ -2767,10 +2767,14 @@ def main() -> int:
             # One signature entry per finding (repeat per cluster member) so the
             # recurrence rate is over findings, not distinct patterns.
             current_sigs = [c.signature for c in clusters for _ in range(c.count)]
-            swept_sigs = read_swept_patterns(pr)
+            # Cross-run history: --record-run clears the live accumulator, so a
+            # resumed loop folds in pattern signatures recorded by prior runs of
+            # this PR (runs.jsonl) — otherwise recurrence resets to 0 on resume.
+            history = metrics.pattern_history_for_pr(f"{pr.owner}/{pr.repo}", pr.number)
+            swept_sigs = read_swept_patterns(pr) | history["swept"]
             conv_stats = cluster_findings.recurrence_stats(
                 current_sigs,
-                prior_sigs=prior_pattern_signatures(pr),
+                prior_sigs=prior_pattern_signatures(pr) | history["seen"],
                 swept_sigs=swept_sigs,
             )
             record = metrics.build_record(
@@ -2794,6 +2798,10 @@ def main() -> int:
                     "max_cluster_size": max((c.count for c in clusters), default=0),
                     "pattern_recurrence_rate": round(conv_stats["recurrence_rate"], 3),
                     "swept_count": len(swept_sigs),
+                    # Persisted so later runs of this PR can compute cross-run
+                    # recurrence after --record-run clears the live accumulator.
+                    "signatures": sorted({c.signature for c in clusters}),
+                    "swept": sorted(swept_sigs),
                 } if clusters else None,
                 **derived,
             )
@@ -2843,14 +2851,17 @@ def main() -> int:
                 suite_block = metrics.format_suite_block(verification_details)
                 if suite_block:
                     print(suite_block)
+                # Printed directly (like suite_block / findings_block): these
+                # start with "Patterns ("/"Convergence:", not "[loop]", so
+                # color_loop_block would be a no-op wrap.
                 patterns_block = metrics.format_patterns_block(clusters)
                 if patterns_block:
-                    print(color_loop_block(patterns_block, enabled=color_enabled))
+                    print(patterns_block)
                 convergence_line = metrics.format_convergence_line(
                     conv_stats, swept_count=len(swept_sigs)
                 )
                 if convergence_line:
-                    print(color_loop_block(convergence_line, enabled=color_enabled))
+                    print(convergence_line)
                 prior_fps = prior_finding_fingerprints(pr)
                 findings_view = []
                 for thread in threads:
