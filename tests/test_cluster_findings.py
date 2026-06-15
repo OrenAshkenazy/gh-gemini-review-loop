@@ -70,7 +70,7 @@ def test_cluster_groups_and_picks_max_severity_and_sorts():
     assert len(clusters) == 2
     assert clusters[0].severity == "high"
     assert clusters[0].count == 1
-    assert clusters[0].sites == ["mergeproof_config.py:68"]
+    assert clusters[0].sites == ("mergeproof_config.py:68",)
     assert clusters[1].severity == "medium"
     assert clusters[1].count == 2
     assert "render_demo_ui.py:204" in clusters[1].sites

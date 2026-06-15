@@ -166,7 +166,7 @@ class Cluster:
     signature: str
     label: str
     severity: str
-    sites: list[str]
+    sites: tuple[str, ...]  # immutable, to honor frozen=True
     count: int  # invariant: count == len(sites)
 
 
@@ -211,7 +211,7 @@ def cluster(threads: list[Any]) -> list[Cluster]:
                 signature=sig,
                 label=label,
                 severity=severity,
-                sites=[_site(m) for m in members],
+                sites=tuple(_site(m) for m in members),
                 count=len(members),
             )
         )
