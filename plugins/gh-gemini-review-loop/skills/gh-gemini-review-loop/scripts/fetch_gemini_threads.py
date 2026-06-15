@@ -24,6 +24,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import metrics  # noqa: E402 — sibling module, pure/stdlib-only
+import cluster_findings  # noqa: E402 — sibling module, pure/stdlib-only
 from loop_color import color_loop, colors_enabled  # noqa: E402 — sibling module
 
 
@@ -2578,6 +2579,11 @@ def main() -> int:
                 )
             except OSError as exc:
                 print(f"warning: could not track finding fingerprints: {exc}", file=sys.stderr)
+            track_pattern_signatures(
+                pr,
+                {cluster_findings.pattern_signature(t) for t in threads if isinstance(t, dict)}
+                - {""},
+            )
 
         # ---- Judge (optional, opt-in via prefs file or --judge-mode) -------
         # The script is the single source of truth for whether the judge
@@ -2752,6 +2758,18 @@ def main() -> int:
                         "warning: --verification-details is not valid JSON; storing {}.",
                         file=sys.stderr,
                     )
+            clusters = cluster_findings.cluster(
+                [t for t in threads if isinstance(t, dict)]
+            )
+            # One signature entry per finding (repeat per cluster member) so the
+            # recurrence rate is over findings, not distinct patterns.
+            current_sigs = [c.signature for c in clusters for _ in range(c.count)]
+            swept_sigs = read_swept_patterns(pr)
+            conv_stats = cluster_findings.recurrence_stats(
+                current_sigs,
+                prior_sigs=prior_pattern_signatures(pr),
+                swept_sigs=swept_sigs,
+            )
             record = metrics.build_record(
                 repo=f"{pr.owner}/{pr.repo}",
                 pr=pr.number,
@@ -2768,6 +2786,12 @@ def main() -> int:
                 judge=metrics.build_judge_block(judge_ran, merged_judge_results),
                 cycles=run.get("cycles", []),
                 terminal_breakdown=terminal_breakdown,
+                patterns={
+                    "distinct_patterns": conv_stats["distinct_patterns"],
+                    "max_cluster_size": max((c.count for c in clusters), default=0),
+                    "pattern_recurrence_rate": round(conv_stats["recurrence_rate"], 3),
+                    "swept_count": len(swept_sigs),
+                } if clusters else None,
                 **derived,
             )
             # --cycle-summary is read-only: print the block but never append a
@@ -2816,6 +2840,14 @@ def main() -> int:
                 suite_block = metrics.format_suite_block(verification_details)
                 if suite_block:
                     print(suite_block)
+                patterns_block = metrics.format_patterns_block(clusters)
+                if patterns_block:
+                    print(color_loop_block(patterns_block, enabled=color_enabled))
+                convergence_line = metrics.format_convergence_line(
+                    conv_stats, swept_count=len(swept_sigs)
+                )
+                if convergence_line:
+                    print(color_loop_block(convergence_line, enabled=color_enabled))
                 prior_fps = prior_finding_fingerprints(pr)
                 findings_view = []
                 for thread in threads:
