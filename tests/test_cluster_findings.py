@@ -64,3 +64,23 @@ def test_cluster_groups_and_picks_max_severity_and_sorts():
 def test_cluster_ignores_non_dict_members():
     clusters = cluster([None, "nope", {}])
     assert clusters == []
+
+
+from cluster_findings import recurrence_stats
+
+
+def test_recurrence_stats_basic():
+    current = ["sigA", "sigA", "sigB"]
+    prior = {"sigA"}
+    swept = {"sigA"}
+    stats = recurrence_stats(current, prior_sigs=prior, swept_sigs=swept)
+    assert stats["distinct_patterns"] == 2
+    assert stats["recurrence_rate"] == 2 / 3
+    assert stats["recurred_after_sweep"] == ["sigA"]
+
+
+def test_recurrence_stats_empty():
+    stats = recurrence_stats([], prior_sigs=set(), swept_sigs=set())
+    assert stats["distinct_patterns"] == 0
+    assert stats["recurrence_rate"] == 0.0
+    assert stats["recurred_after_sweep"] == []
