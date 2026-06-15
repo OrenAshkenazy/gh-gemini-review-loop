@@ -230,12 +230,15 @@ def recurrence_stats(
     - distinct_patterns: number of unique signatures this cycle
     - recurrence_rate: fraction of this cycle's findings whose signature was
       seen in a prior cycle (0.0 when there are no findings)
-    - recurred_after_sweep: sorted signatures that were swept yet reappeared
+    - recurred_after_sweep: sorted signatures swept in a PRIOR cycle that show
+      up again now. Membership in prior_sigs is required, so a pattern marked
+      swept and still present in the SAME cycle (its fix not yet re-reviewed)
+      does not false-alarm — a sweep only "fails" once a later review re-flags it.
     """
     valid = [s for s in current_sigs if s]
     total = len(valid)
     recurred = sum(1 for s in valid if s in prior_sigs)
-    recurred_after_sweep = sorted({s for s in valid if s in swept_sigs})
+    recurred_after_sweep = sorted({s for s in valid if s in swept_sigs and s in prior_sigs})
     return {
         "distinct_patterns": len(set(valid)),
         "recurrence_rate": (recurred / total) if total else 0.0,

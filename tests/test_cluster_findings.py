@@ -153,3 +153,24 @@ def test_real_corpus_clusters_into_intent_categories():
     assert by_label["exception-wrap"].count == 2
     # 15 real findings collapse to 8 groups (3 clusters + 5 singletons), not 15.
     assert len(clusters) == 8
+
+
+def test_recurrence_no_false_alarm_when_swept_same_cycle():
+    # Pattern swept this cycle and still present, but NOT seen in a prior cycle
+    # (its fix has not been re-reviewed yet) → must NOT flag recurred_after_sweep.
+    stats = recurrence_stats(
+        ["type-guard", "type-guard"],
+        prior_sigs=set(),            # first time seen this session
+        swept_sigs={"type-guard"},   # marked swept this cycle
+    )
+    assert stats["recurred_after_sweep"] == []
+
+
+def test_recurrence_flags_when_swept_prior_and_reappears():
+    # Swept in a prior cycle AND seen before AND present now → genuine recurrence.
+    stats = recurrence_stats(
+        ["type-guard"],
+        prior_sigs={"type-guard"},
+        swept_sigs={"type-guard"},
+    )
+    assert stats["recurred_after_sweep"] == ["type-guard"]
