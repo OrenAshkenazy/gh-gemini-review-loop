@@ -1042,6 +1042,36 @@ def read_fixed_markers(pr: PullRequest) -> dict[str, set[str]]:
     }
 
 
+def accumulate_swept_patterns(pr: PullRequest, signatures: list[str]) -> None:
+    """Union agent-supplied --swept-pattern signatures into run tracking.
+
+    Twin of accumulate_fixed_markers. A pattern the agent reports as swept this
+    cycle is matched against later cycles' findings to flag recurrence.
+    """
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key)
+    entry = dict(entry) if isinstance(entry, dict) else {}
+    run = entry.get("run")
+    run = dict(run) if isinstance(run, dict) else {}
+    val = run.get("swept_pattern_sigs")
+    sigs = {x for x in val if isinstance(x, str)} if isinstance(val, list) else set()
+    for s in signatures or []:
+        if s:
+            sigs.add(s)
+    run["swept_pattern_sigs"] = sorted(sigs)
+    entry["run"] = run
+    state[key] = entry
+    save_sticky_state(state)
+
+
+def read_swept_patterns(pr: PullRequest) -> set[str]:
+    """Return the accumulated swept pattern signatures, or empty set."""
+    run = read_run_tracking(pr)
+    val = run.get("swept_pattern_sigs", []) if isinstance(run, dict) else []
+    return {x for x in val if isinstance(x, str)} if isinstance(val, list) else set()
+
+
 def changed_files_in_range(
     base: str | None, head: str | None, *, cwd: str | None = None
 ) -> set[str]:
@@ -1163,6 +1193,41 @@ def prior_finding_fingerprints(pr: PullRequest) -> set[str]:
     entry = state.get(_state_key(pr), {})
     run = entry.get("run", {}) if isinstance(entry, dict) else {}
     value = run.get("prior_seen_finding_fps", []) if isinstance(run, dict) else []
+    return {x for x in value if isinstance(x, str)} if isinstance(value, list) else set()
+
+
+def track_pattern_signatures(pr: PullRequest, current_sigs: set[str]) -> dict[str, set[str]]:
+    """Pattern-granularity twin of track_finding_fingerprints.
+
+    Moves the running union into ``prior_seen_pattern_sigs`` BEFORE folding in
+    this cycle's signatures, so a later read can ask "was this pattern present
+    in a previous cycle?" without the current fetch poisoning the answer.
+    Returns ``{"prior": <prior union>, "new": <current − prior>}``. Fails open.
+    """
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key, {})
+    if not isinstance(entry, dict):
+        entry = {}
+    run = entry.get("run", {})
+    if not isinstance(run, dict):
+        run = {}
+    prior_val = run.get("seen_pattern_sigs", [])
+    prior = {x for x in prior_val if isinstance(x, str)} if isinstance(prior_val, list) else set()
+    run["prior_seen_pattern_sigs"] = sorted(prior)
+    run["seen_pattern_sigs"] = sorted(prior | current_sigs)
+    entry["run"] = run
+    state[key] = entry
+    save_sticky_state(state)
+    return {"prior": prior, "new": current_sigs - prior}
+
+
+def prior_pattern_signatures(pr: PullRequest) -> set[str]:
+    """Pattern signatures seen in cycles before the current one. Empty on cycle 1."""
+    state = load_sticky_state()
+    entry = state.get(_state_key(pr), {})
+    run = entry.get("run", {}) if isinstance(entry, dict) else {}
+    value = run.get("prior_seen_pattern_sigs", []) if isinstance(run, dict) else []
     return {x for x in value if isinstance(x, str)} if isinstance(value, list) else set()
 
 

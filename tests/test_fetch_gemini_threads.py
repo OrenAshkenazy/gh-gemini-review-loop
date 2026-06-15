@@ -2150,3 +2150,23 @@ class TestWaitHeartbeatCommand:
         )
         assert fgt.main() == 0
         assert "no Gemini wait in progress" in capsys.readouterr().out
+
+
+def test_track_pattern_signatures_snapshots_prior(tmp_path, monkeypatch):
+    monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+    pr = fgt.PullRequest(owner="o", repo="r", number=46)
+    out1 = fgt.track_pattern_signatures(pr, {"sigA"})
+    assert out1["prior"] == set()
+    assert out1["new"] == {"sigA"}
+    out2 = fgt.track_pattern_signatures(pr, {"sigA", "sigB"})
+    assert out2["prior"] == {"sigA"}
+    assert out2["new"] == {"sigB"}
+    assert fgt.prior_pattern_signatures(pr) == {"sigA"}
+
+
+def test_accumulate_and_read_swept_patterns(tmp_path, monkeypatch):
+    monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+    pr = fgt.PullRequest(owner="o", repo="r", number=46)
+    fgt.accumulate_swept_patterns(pr, ["sigA"])
+    fgt.accumulate_swept_patterns(pr, ["sigB", "sigA"])
+    assert fgt.read_swept_patterns(pr) == {"sigA", "sigB"}
