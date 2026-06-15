@@ -2221,6 +2221,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--swept-pattern",
+        action="append",
+        default=[],
+        metavar="SIG",
+        help="Pattern signature (from the Patterns receipt 'sig:' token) the agent "
+             "swept across changed files this cycle. Repeatable. Accumulates for "
+             "the convergence advisory.",
+    )
+    parser.add_argument(
         "--changed-base",
         default=None,
         help="Optional git base ref for changed-file evidence (`git diff --name-only base..head`).",
@@ -2427,6 +2436,11 @@ def main() -> int:
                 )
             except OSError as exc:
                 print(f"warning: could not persist fixed markers: {exc}", file=sys.stderr)
+        if args.swept_pattern:
+            try:
+                accumulate_swept_patterns(pr, args.swept_pattern)
+            except OSError as exc:
+                print(f"warning: could not persist swept patterns: {exc}", file=sys.stderr)
         if args.wait and args.wait_chunk_seconds is not None:
             if args.wait_chunk_seconds <= 0:
                 parser.error("--wait-chunk-seconds must be a positive integer.")
