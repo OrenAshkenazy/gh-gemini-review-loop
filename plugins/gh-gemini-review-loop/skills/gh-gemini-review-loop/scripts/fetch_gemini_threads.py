@@ -2579,11 +2579,14 @@ def main() -> int:
                 )
             except OSError as exc:
                 print(f"warning: could not track finding fingerprints: {exc}", file=sys.stderr)
-            track_pattern_signatures(
-                pr,
-                {cluster_findings.pattern_signature(t) for t in threads if isinstance(t, dict)}
-                - {""},
-            )
+            try:
+                track_pattern_signatures(
+                    pr,
+                    {cluster_findings.pattern_signature(t) for t in threads if isinstance(t, dict)}
+                    - {""},
+                )
+            except OSError as exc:
+                print(f"warning: could not track pattern signatures: {exc}", file=sys.stderr)
 
         # ---- Judge (optional, opt-in via prefs file or --judge-mode) -------
         # The script is the single source of truth for whether the judge
