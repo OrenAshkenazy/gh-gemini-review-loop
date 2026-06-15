@@ -2851,14 +2851,17 @@ def main() -> int:
                 suite_block = metrics.format_suite_block(verification_details)
                 if suite_block:
                     print(suite_block)
+                # Printed directly (like suite_block / findings_block): these
+                # start with "Patterns ("/"Convergence:", not "[loop]", so
+                # color_loop_block would be a no-op wrap.
                 patterns_block = metrics.format_patterns_block(clusters)
                 if patterns_block:
-                    print(color_loop_block(patterns_block, enabled=color_enabled))
+                    print(patterns_block)
                 convergence_line = metrics.format_convergence_line(
                     conv_stats, swept_count=len(swept_sigs)
                 )
                 if convergence_line:
-                    print(color_loop_block(convergence_line, enabled=color_enabled))
+                    print(convergence_line)
                 prior_fps = prior_finding_fingerprints(pr)
                 findings_view = []
                 for thread in threads:
