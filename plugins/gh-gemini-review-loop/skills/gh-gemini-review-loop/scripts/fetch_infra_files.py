@@ -87,7 +87,7 @@ def fetch_infra_files(
     entries = tree.get("tree") if isinstance(tree, dict) else []
     if not isinstance(entries, list):
         entries = []
-    blobs = [entry for entry in entries if entry.get("type") == "blob"]
+    blobs = [entry for entry in entries if isinstance(entry, dict) and entry.get("type") == "blob"]
     matched = [entry for entry in blobs if path_matches(entry.get("path", ""), allow)]
 
     files: dict[str, str] = {}

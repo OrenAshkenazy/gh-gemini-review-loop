@@ -227,7 +227,8 @@ def _context_panels(readiness: dict[str, Any]) -> str:
 
 
 def _safety_panel(readiness: dict[str, Any]) -> str:
-    safety = readiness.get("safety") or {}
+    safety = readiness.get("safety")
+    safety = safety if isinstance(safety, dict) else {}
     if not safety:
         return ""
     skipped = safety.get("skipped") or []

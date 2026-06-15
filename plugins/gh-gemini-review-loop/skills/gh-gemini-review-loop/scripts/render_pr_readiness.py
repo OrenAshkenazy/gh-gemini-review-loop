@@ -131,10 +131,11 @@ def _unwrap_architecture(architecture: dict[str, Any]) -> tuple[dict, dict | Non
         facts = dict(architecture.get("facts") or {})
         if facts.get("service_name") in (None, "", "unknown") and architecture.get("service"):
             facts["service_name"] = architecture["service"]
+        safety = architecture.get("safety")
         return (
             facts,
             architecture.get("provenance"),
-            architecture.get("safety") or {},
+            safety if isinstance(safety, dict) else {},
         )
     return architecture if isinstance(architecture, dict) else {}, None, {}
 

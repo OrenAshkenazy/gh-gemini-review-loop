@@ -43,8 +43,12 @@ def resolve(
     pr = runner(["api", f"repos/{app_repo}/pulls/{pr_number}"])
     if not isinstance(pr, dict):
         raise RuntimeError(f"Unexpected PR response format: {pr}")
-    base_sha = (pr.get("base") or {}).get("sha")
-    head_sha = pr_head_sha or (pr.get("head") or {}).get("sha")
+    base = pr.get("base")
+    base = base if isinstance(base, dict) else {}
+    head = pr.get("head")
+    head = head if isinstance(head, dict) else {}
+    base_sha = base.get("sha")
+    head_sha = pr_head_sha or head.get("sha")
     config_ref = head_sha if trust_pr_config and head_sha else base_sha
     # Fail fast: a missing ref would otherwise be passed downstream as the string
     # "None" in API calls, producing confusing 404s far from the real cause.
