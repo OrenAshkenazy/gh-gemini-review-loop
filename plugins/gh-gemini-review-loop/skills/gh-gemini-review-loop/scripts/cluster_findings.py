@@ -25,8 +25,13 @@ _FENCED_RE = re.compile(r"```.*?```", re.DOTALL)       # ```suggestion``` etc.
 _INLINE_CODE_RE = re.compile(r"`[^`]*`")               # `identifier`
 _LINE_ECHO_RE = re.compile(r"\b(?:lines?|cols?|columns?)\s*\d+", re.IGNORECASE)
 _COLON_NUM_RE = re.compile(r":\d+\b")                  # :204
-_QUOTED_RE = re.compile(r"(['\"]).*?\1")               # 'literal' / "literal"
+# Opening quote must NOT be mid-word (no preceding letter), so possessives and
+# contractions like source's / isn't are left intact while real string literals
+# such as 'envs/prod' are still stripped.
+_QUOTED_RE = re.compile(r"(?<![A-Za-z])(['\"]).*?\1")  # 'literal' / "literal"
 _NUM_RE = re.compile(r"\b\d+\b")
+# Also strips the English article "a"; an acceptable symmetric loss for v1 since
+# it lets single-letter variable names cluster regardless of context.
 _SINGLE_CHAR_VAR_RE = re.compile(r"\b[a-zA-Z]\b")  # bare single-letter identifiers
 _WS_RE = re.compile(r"\s+")
 
@@ -71,7 +76,7 @@ class Cluster:
     label: str
     severity: str
     sites: list[str]
-    count: int
+    count: int  # invariant: count == len(sites)
 
 
 def _severity(thread: Any) -> str:

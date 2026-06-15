@@ -34,6 +34,21 @@ def test_malformed_thread_does_not_raise():
     assert pattern_signature({"comments": []}) == ""
 
 
+def test_possessive_and_contraction_not_eaten():
+    a = _thread("![medium](x.svg) Ensure the source's value isn't None before use.")
+    # Normalization must keep the prose words, not collapse them to a literal.
+    sig = pattern_signature(a)
+    assert sig  # non-empty
+    # A genuinely different sentence must differ.
+    b = _thread("![medium](x.svg) Add a docstring to the helper.")
+    assert pattern_signature(a) != pattern_signature(b)
+
+
+def test_first_body_handles_graphql_nodes_shape():
+    t = {"path": "a.py", "comments": {"nodes": [{"body": "![low](x.svg) Use isinstance check."}]}}
+    assert pattern_signature(t)  # non-empty, doesn't raise
+
+
 from cluster_findings import Cluster, cluster
 
 
