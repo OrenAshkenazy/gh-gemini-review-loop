@@ -42,6 +42,35 @@ threads, classify fixed-pending findings, and print or record the final summary.
 
 Gemini prefixes inline review comments with a markdown image whose alt text is the severity (`critical` / `high` / `medium` / `low`). The script parses this and orders actionable threads `critical → high → medium → low → unknown`, so high-severity findings are reported and fixed first. The severity tag also appears in the per-thread markdown header, e.g. `## 1. src/auth.py:42 [high]`.
 
+## Pattern → Sweep → Converge
+
+Gemini is an LLM reviewer: when it flags a code pattern, fixing only the flagged
+sites teaches it to flag *more* instances of the same pattern in other changed
+files next cycle. To collapse that expansion into one cycle, each cycle runs:
+
+**Finding → Pattern → Sweep → Verify → Re-review**
+
+1. **Cluster.** The cycle receipt's `Patterns (N):` section groups findings by a
+   deterministic pattern signature. Reason about patterns, not a flat finding list.
+2. **Sweep (report-then-go).** For each multi-site pattern (`count >= 2`), grep the
+   PR's **changed files** for sibling instances of the same shape — including ones
+   Gemini has not flagged yet — using the cluster's example sites as the template.
+   Print a short sweep report (which extra sites, why), then fix the whole cluster
+   plus the swept siblings in this cycle. Do not block on approval, but never edit
+   unflagged code silently — the report must appear first.
+3. **Mark.** Pass `--swept-pattern <sig>` (the `sig:` token from the Patterns
+   receipt) for each pattern you swept, alongside the usual `--fixed-finding`
+   markers, so the convergence advisory can detect recurrence.
+4. **Verify** (the repo profile) and **re-review** as usual.
+
+The receipt's `Convergence:` line is advisory only. When a swept pattern reappears
+("⚠ … RECURRED after sweep"), the sweep missed a variant or Gemini keeps
+re-flagging — decide whether to refine the sweep, stop, or continue. It never
+changes control flow; the re-review cap remains the only hard stop.
+
+Sweep scope is **changed files only** — that is both safe (blast radius = the PR's
+own diff) and sufficient (Gemini only reviews changed files).
+
 ## Loop Receipt
 
 Pass `--post-receipt` to leave a one-comment audit trail on the PR after the loop runs: cycles used, threads resolved (outdated + addressed-by-reply), threads still pending, and severity breakdown of remaining actionable threads. Use `--dry-run --post-receipt` to preview the receipt without posting.
@@ -310,6 +339,8 @@ Optional additions:
 - `--outcome-reason '<text>'` — one-line explanation
 - `--gemini-confirmed` — final wait/re-review completed and confirmed the latest state
 - `--gemini-unconfirmed` — final wait timed out or otherwise did not confirm the latest fixes
+- `--fixed-finding <fp>` — finding fingerprint the agent fixed locally; repeatable; stored in run tracking and used for terminal classification
+- `--swept-pattern <sig>` — pattern-level swept marker; the `sig:` token from the `Patterns (N):` receipt; repeatable; feeds the convergence advisory to detect recurrence after a sweep (see [Pattern → Sweep → Converge](#pattern--sweep--converge))
 
 The script fetches the current thread state, derives counts, appends the record, and prints a `[loop] Summary` block to stdout.
 
