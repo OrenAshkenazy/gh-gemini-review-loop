@@ -568,6 +568,45 @@ def format_findings_block(findings: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def format_patterns_block(clusters: list[Any]) -> str:
+    """Clustered view of the current findings, or '' when none.
+
+    ``clusters`` is a list of cluster_findings.Cluster. Renders above the
+    per-finding Findings block: one stanza per pattern with severity, label,
+    site count, signature token (for --swept-pattern), and up to 4 sites.
+    """
+    valid = [c for c in clusters if c is not None]
+    if not valid:
+        return ""
+    lines = [f"Patterns ({len(valid)}):"]
+    for c in valid:
+        plural = "site" if c.count == 1 else "sites"
+        lines.append(f"  [{c.severity}] {c.label} — {c.count} {plural}   (sig: {c.signature})")
+        shown = c.sites[:4]
+        suffix = f", +{len(c.sites) - 4} more" if len(c.sites) > 4 else ""
+        lines.append(f"           {', '.join(shown)}{suffix}")
+    return "\n".join(lines)
+
+
+def format_convergence_line(stats: dict[str, Any], *, swept_count: int) -> str:
+    """One-line advisory convergence summary, or '' when no patterns this cycle."""
+    distinct = stats.get("distinct_patterns", 0)
+    if not distinct:
+        return ""
+    recurred = stats.get("recurred_after_sweep") or []
+    swept_plural = "pattern" if swept_count == 1 else "patterns"
+    if recurred:
+        names = ", ".join(recurred)
+        return (
+            f"Convergence: ⚠ pattern(s) {names} RECURRED after sweep. "
+            "Sweep missed a variant or Gemini keeps re-flagging."
+        )
+    return (
+        f"Convergence: {distinct} distinct patterns this cycle, "
+        f"0 recurred. Swept {swept_count} {swept_plural}."
+    )
+
+
 def _mode(items: list[Any]) -> Any | None:
     if not items:
         return None
