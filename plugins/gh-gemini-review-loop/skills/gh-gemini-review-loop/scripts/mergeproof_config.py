@@ -63,9 +63,13 @@ def _normalize_lines(text: str) -> list[tuple[int, str]]:
         stripped = _strip_comment(raw)
         if stripped.strip() == "":
             continue
-        indent = len(stripped) - len(stripped.lstrip(" "))
-        if "\t" in stripped[:indent]:
+        # Reject any tab in the leading whitespace. lstrip(" ") only strips
+        # spaces, so a line that *starts* with a tab would otherwise compute
+        # indent=0 and slip past stripped[:indent] entirely.
+        leading_ws = stripped[: len(stripped) - len(stripped.lstrip())]
+        if "\t" in leading_ws:
             raise MergeProofConfigError(_SYNTAX_ERR)
+        indent = len(stripped) - len(stripped.lstrip(" "))
         lines.append((indent, stripped.strip()))
     return lines
 
@@ -136,7 +140,9 @@ def _parse_list(lines: list[tuple[int, str]], idx: int, indent: int) -> tuple[li
             result.append(None)
             idx += 1
             continue
-        if re.match(r"[^:\s][^:]*:(\s|$)", item):
+        # A quoted scalar (e.g. "envs/prod: api/**") may contain ": " but is a
+        # string, not an inline map — route it to _scalar before the map check.
+        if item[:1] not in ("'", '"') and re.match(r"[^:\s][^:]*:(\s|$)", item):
             lines[idx] = (indent + 2, item)
             child, idx = _parse_map(lines, idx, indent + 2)
             result.append(child)

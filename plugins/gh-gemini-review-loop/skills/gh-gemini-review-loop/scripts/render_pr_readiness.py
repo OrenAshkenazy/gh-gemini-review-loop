@@ -328,13 +328,15 @@ def render_markdown(readiness: dict[str, Any]) -> str:
     lines.append(f"| Async | {_pretty_queues(arch['queues'])} |")
     lines.append(f"| Owner | {', '.join(arch['owners']) or 'unknown'} |")
     provenance = readiness.get("provenance")
-    if provenance and provenance.get("sources"):
-        source = provenance["sources"][0]
-        sha = (source.get("resolved_sha") or "")[:7]
-        lines.append(
-            f"| Production context | {provenance.get('file_count', 0)} files from "
-            f"`{source.get('repo', '')}@{sha}` |"
-        )
+    if isinstance(provenance, dict):
+        sources = provenance.get("sources")
+        if isinstance(sources, list) and sources and isinstance(sources[0], dict):
+            source = sources[0]
+            sha = (source.get("resolved_sha") or "")[:7]
+            lines.append(
+                f"| Production context | {provenance.get('file_count', 0)} files from "
+                f"`{source.get('repo', '')}@{sha}` |"
+            )
     lines.append("")
 
     lines.append("### Production risks")

@@ -46,6 +46,13 @@ def resolve(
     base_sha = (pr.get("base") or {}).get("sha")
     head_sha = pr_head_sha or (pr.get("head") or {}).get("sha")
     config_ref = head_sha if trust_pr_config and head_sha else base_sha
+    # Fail fast: a missing ref would otherwise be passed downstream as the string
+    # "None" in API calls, producing confusing 404s far from the real cause.
+    if not config_ref:
+        raise RuntimeError(
+            f"could not resolve a config ref for {app_repo}#{pr_number}: "
+            "PR metadata has no base/head commit SHA"
+        )
     config_changed = any(path in CONFIG_PATHS for path in changed_files)
 
     # An explicit operator-provided config (--mergeproof) is trusted as given and

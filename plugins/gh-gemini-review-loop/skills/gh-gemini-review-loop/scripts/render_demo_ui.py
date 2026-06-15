@@ -194,16 +194,21 @@ def _risk_rows(risks: list[dict[str, Any]]) -> str:
 
 
 def _context_panels(readiness: dict[str, Any]) -> str:
-    provenance = readiness.get("provenance") or {}
-    sources = provenance.get("sources") or []
+    provenance = readiness.get("provenance")
+    provenance = provenance if isinstance(provenance, dict) else {}
+    sources = provenance.get("sources")
+    sources = sources if isinstance(sources, list) else []
     if not sources:
         return ""
     source = sources[0]
+    if not isinstance(source, dict):
+        return ""
     sha = (source.get("resolved_sha") or "")[:7] or "unknown"
     repo = source.get("repo") or "unknown"
     count = provenance.get("file_count", 0)
     fetched_at = provenance.get("fetched_at") or "unknown"
-    file_list = ", ".join(source.get("files") or [])
+    files = source.get("files")
+    file_list = ", ".join(files if isinstance(files, list) else [])
     if len(file_list) > 140:
         file_list = file_list[:137] + "..."
     return (
