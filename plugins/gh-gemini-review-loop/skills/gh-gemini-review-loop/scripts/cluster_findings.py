@@ -27,6 +27,7 @@ _LINE_ECHO_RE = re.compile(r"\b(?:lines?|cols?|columns?)\s*\d+", re.IGNORECASE)
 _COLON_NUM_RE = re.compile(r":\d+\b")                  # :204
 _QUOTED_RE = re.compile(r"(['\"]).*?\1")               # 'literal' / "literal"
 _NUM_RE = re.compile(r"\b\d+\b")
+_SINGLE_CHAR_VAR_RE = re.compile(r"\b[a-zA-Z]\b")  # bare single-letter identifiers
 _WS_RE = re.compile(r"\s+")
 
 
@@ -51,6 +52,7 @@ def _normalize(body: str) -> str:
     body = _COLON_NUM_RE.sub(" ", body)
     body = _QUOTED_RE.sub(" ", body)
     body = _NUM_RE.sub(" ", body)
+    body = _SINGLE_CHAR_VAR_RE.sub(" ", body)
     body = _WS_RE.sub(" ", body).strip().lower()
     return body
 
