@@ -875,3 +875,32 @@ def test_build_record_includes_patterns_block_when_passed():
 def test_build_record_patterns_defaults_to_empty_dict():
     rec = build_record(**_min_record_kwargs())
     assert rec["patterns"] == {}
+
+
+from metrics import pattern_history_for_pr, RECORD_SCHEMA_VERSION
+
+
+def _write_run(path, repo, pr, signatures, swept):
+    import json
+    rec = {
+        "schema_version": RECORD_SCHEMA_VERSION, "repo": repo, "pr": pr,
+        "patterns": {"signatures": signatures, "swept": swept},
+    }
+    with path.open("a") as fh:
+        fh.write(json.dumps(rec) + "\n")
+
+
+def test_pattern_history_unions_signatures_and_swept_for_matching_pr(tmp_path):
+    log = tmp_path / "runs.jsonl"
+    _write_run(log, "o/r", 46, ["type-guard", "io-decode-guard"], ["type-guard"])
+    _write_run(log, "o/r", 46, ["io-decode-guard", "yaml-scalar-parse"], ["io-decode-guard"])
+    _write_run(log, "o/r", 99, ["other-pattern"], ["other-pattern"])  # different PR, ignored
+    hist = pattern_history_for_pr("o/r", 46, path=log)
+    assert hist["seen"] == {"type-guard", "io-decode-guard", "yaml-scalar-parse"}
+    assert hist["swept"] == {"type-guard", "io-decode-guard"}
+    assert "other-pattern" not in hist["seen"]
+
+
+def test_pattern_history_empty_when_no_log(tmp_path):
+    hist = pattern_history_for_pr("o/r", 46, path=tmp_path / "missing.jsonl")
+    assert hist == {"seen": set(), "swept": set()}

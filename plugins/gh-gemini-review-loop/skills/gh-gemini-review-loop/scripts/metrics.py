@@ -108,6 +108,41 @@ def load_records(path: Path | None = None) -> tuple[list[dict[str, Any]], int]:
     return records, skipped
 
 
+def pattern_history_for_pr(
+    repo: str, pr_number: int, path: Path | None = None
+) -> dict[str, set[str]]:
+    """Union of pattern signatures (seen + swept) from prior recorded runs of a PR.
+
+    The live per-run accumulator is cleared by --record-run, so a resumed loop
+    would otherwise see an empty prior set and report recurrence as 0. Reading
+    the append-only runs.jsonl lets convergence detection survive across resumes:
+    a pattern recorded in an earlier run of this same repo+PR still counts as
+    "seen before". Returns ``{"seen": set, "swept": set}``; empty on any error.
+    """
+    seen: set[str] = set()
+    swept: set[str] = set()
+    try:
+        records, _ = load_records(path)
+    except (OSError, ValueError):
+        return {"seen": seen, "swept": swept}
+    for rec in records:
+        if rec.get("repo") != repo:
+            continue
+        try:
+            if int(rec.get("pr") or 0) != pr_number:
+                continue
+        except (TypeError, ValueError):
+            continue
+        patterns = rec.get("patterns")
+        if not isinstance(patterns, dict):
+            continue
+        for key, bucket in (("signatures", seen), ("swept", swept)):
+            values = patterns.get(key)
+            if isinstance(values, list):
+                bucket.update(v for v in values if isinstance(v, str))
+    return {"seen": seen, "swept": swept}
+
+
 def build_judge_block(judge_ran: bool, judge_results: dict[str, Any]) -> dict[str, Any]:
     if not judge_ran:
         return {"enabled": False}

@@ -174,3 +174,18 @@ def test_recurrence_flags_when_swept_prior_and_reappears():
         swept_sigs={"type-guard"},
     )
     assert stats["recurred_after_sweep"] == ["type-guard"]
+
+
+def test_recurrence_uses_prior_from_history_union():
+    # Simulates a resumed run: live prior is empty, but history supplies the
+    # prior+swept sets. The pattern present now must be flagged as recurred.
+    live_prior = set()
+    live_swept = set()
+    history = {"seen": {"type-guard"}, "swept": {"type-guard"}}
+    stats = recurrence_stats(
+        ["type-guard", "type-guard", "io-decode-guard"],
+        prior_sigs=live_prior | history["seen"],
+        swept_sigs=live_swept | history["swept"],
+    )
+    assert stats["recurrence_rate"] == 2 / 3        # type-guard seen before
+    assert stats["recurred_after_sweep"] == ["type-guard"]

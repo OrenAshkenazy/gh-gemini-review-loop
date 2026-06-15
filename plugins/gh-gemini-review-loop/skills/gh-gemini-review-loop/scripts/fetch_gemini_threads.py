@@ -2767,10 +2767,14 @@ def main() -> int:
             # One signature entry per finding (repeat per cluster member) so the
             # recurrence rate is over findings, not distinct patterns.
             current_sigs = [c.signature for c in clusters for _ in range(c.count)]
-            swept_sigs = read_swept_patterns(pr)
+            # Cross-run history: --record-run clears the live accumulator, so a
+            # resumed loop folds in pattern signatures recorded by prior runs of
+            # this PR (runs.jsonl) — otherwise recurrence resets to 0 on resume.
+            history = metrics.pattern_history_for_pr(f"{pr.owner}/{pr.repo}", pr.number)
+            swept_sigs = read_swept_patterns(pr) | history["swept"]
             conv_stats = cluster_findings.recurrence_stats(
                 current_sigs,
-                prior_sigs=prior_pattern_signatures(pr),
+                prior_sigs=prior_pattern_signatures(pr) | history["seen"],
                 swept_sigs=swept_sigs,
             )
             record = metrics.build_record(
@@ -2794,6 +2798,10 @@ def main() -> int:
                     "max_cluster_size": max((c.count for c in clusters), default=0),
                     "pattern_recurrence_rate": round(conv_stats["recurrence_rate"], 3),
                     "swept_count": len(swept_sigs),
+                    # Persisted so later runs of this PR can compute cross-run
+                    # recurrence after --record-run clears the live accumulator.
+                    "signatures": sorted({c.signature for c in clusters}),
+                    "swept": sorted(swept_sigs),
                 } if clusters else None,
                 **derived,
             )
