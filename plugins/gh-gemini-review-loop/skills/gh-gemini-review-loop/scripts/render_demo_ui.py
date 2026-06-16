@@ -111,6 +111,20 @@ a { color: #7dd3fc; }
   .context-grid { grid-template-columns: 1fr; }
   .safety-row { grid-template-columns: 1fr; gap: 4px; }
 }
+.tabs { display: flex; gap: 6px; margin: 24px 0 0; border-bottom: 1px solid #1e293b; flex-wrap: wrap; }
+.tabs label { padding: 10px 16px; cursor: pointer; color: #94a3b8; font-weight: 600; font-size: 14px; border-bottom: 2px solid transparent; }
+.tabnav { display: none; }
+.tabpanel { display: none; padding-top: 8px; }
+#t-readiness:checked ~ .tabs label[for="t-readiness"],
+#t-flow:checked ~ .tabs label[for="t-flow"],
+#t-resolve:checked ~ .tabs label[for="t-resolve"],
+#t-audit:checked ~ .tabs label[for="t-audit"],
+#t-packs:checked ~ .tabs label[for="t-packs"] { color: #e6edf6; border-bottom-color: var(--accent); }
+#t-readiness:checked ~ #tab-readiness,
+#t-flow:checked ~ #tab-flow,
+#t-resolve:checked ~ #tab-resolve,
+#t-audit:checked ~ #tab-audit,
+#t-packs:checked ~ #tab-packs { display: block; }
 """
 
 
@@ -253,6 +267,22 @@ def _safety_panel(readiness: dict[str, Any]) -> str:
     return f'<h2 class="section">Pack safety</h2><div class="safety">{rows}</div>'
 
 
+def _flow_tab(readiness: dict[str, Any]) -> str:
+    return '<section class="tabpanel" id="tab-flow"><h2 class="section">Production flow</h2></section>'
+
+
+def _resolve_tab(readiness: dict[str, Any]) -> str:
+    return '<section class="tabpanel" id="tab-resolve"><h2 class="section">Resolve</h2></section>'
+
+
+def _audit_tab(readiness: dict[str, Any]) -> str:
+    return '<section class="tabpanel" id="tab-audit"><h2 class="section">Audit trail</h2></section>'
+
+
+def _packs_tab(readiness: dict[str, Any]) -> str:
+    return '<section class="tabpanel" id="tab-packs"><h2 class="section">Capability packs</h2></section>'
+
+
 def render_html(readiness: dict[str, Any]) -> str:
     status = readiness.get("status", "READY")
     accent, _ = _STATUS_THEME.get(status, ("#64748b", "neutral"))
@@ -282,6 +312,21 @@ def render_html(readiness: dict[str, Any]) -> str:
 
     options_html = "".join(f"<li>{_e(o)}</li>" for o in options)
 
+    tabs_nav = (
+        '<input class="tabnav" type="radio" name="tab" id="t-readiness" checked>'
+        '<input class="tabnav" type="radio" name="tab" id="t-flow">'
+        '<input class="tabnav" type="radio" name="tab" id="t-resolve">'
+        '<input class="tabnav" type="radio" name="tab" id="t-audit">'
+        '<input class="tabnav" type="radio" name="tab" id="t-packs">'
+        '<nav class="tabs">'
+        '<label for="t-readiness">Readiness</label>'
+        '<label for="t-flow">Production Flow</label>'
+        '<label for="t-resolve">Resolve</label>'
+        '<label for="t-audit">Audit</label>'
+        '<label for="t-packs">Capability Packs</label>'
+        '</nav>'
+    )
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -296,6 +341,8 @@ def render_html(readiness: dict[str, Any]) -> str:
     <h1>GGRL — Production-Aware PR Readiness</h1>
     <p class="sub">AI fixed the review loop. GGRL tells you if the PR is safe for production.</p>
   </header>
+  {tabs_nav}
+  <section class="tabpanel" id="tab-readiness">
 
   <section class="banner">
     <div class="status">{_e(readiness.get("status_label", status))}</div>
@@ -329,6 +376,12 @@ def render_html(readiness: dict[str, Any]) -> str:
     {points_html}
     <ol>{options_html}</ol>
   </div>
+
+  </section>
+  {_flow_tab(readiness)}
+  {_resolve_tab(readiness)}
+  {_audit_tab(readiness)}
+  {_packs_tab(readiness)}
 
   <footer>The AI runs the loop. The human owns production risk and merge judgment.</footer>
 </div>

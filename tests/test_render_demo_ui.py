@@ -167,3 +167,21 @@ def test_main_writes_file(tmp_path, capsys):
     assert "<!DOCTYPE html>" in content
     assert "HUMAN DECISION REQUIRED" in content
     assert captured.err == ""
+
+
+_READY = {
+    "status": "HUMAN_DECISION_REQUIRED", "status_label": "HUMAN DECISION REQUIRED",
+    "reason": "tests passed but production-facing", "pr_url": "https://github.com/o/r/pull/1",
+    "evidence": {"findings_fixed": 5, "verification": "passed", "verification_command": "pytest", "rereview": "completed", "cycles_used": 2, "cycles_total": 3, "false_positives_skipped": 1},
+    "architecture": {"service_name": "payments-api", "exposure": "public", "ingress": [], "datastores": [], "queues": ["redis:arq"], "owners": [], "runtime": "kubernetes"},
+    "production_risks": [], "obligations": [], "human_decision": {"required": True, "review_points": []}, "next_options": ["Approve"],
+}
+
+
+def test_html_has_five_tab_nav_and_readiness_panel():
+    html = rdu.render_html(_READY)
+    for label in ["Readiness", "Production Flow", "Resolve", "Audit", "Capability Packs"]:
+        assert label in html
+    assert 'id="tab-readiness"' in html
+    assert "HUMAN DECISION REQUIRED" in html
+    assert "<script" not in html
