@@ -1,0 +1,6 @@
+env:
+  ${secret_name}:
+    valueFrom:
+      secretKeyRef:
+        name: ${service}-${secret_name}
+        key: ${secret_name}

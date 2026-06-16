@@ -1,0 +1,37 @@
+resource "kubernetes_deployment" "${worker_name}" {
+  metadata {
+    name = "${service}-${worker_name}"
+    labels = {
+      app       = "${service}"
+      component = "${worker_name}"
+    }
+  }
+
+  spec {
+    replicas = 1
+
+    selector {
+      match_labels = {
+        app       = "${service}"
+        component = "${worker_name}"
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app       = "${service}"
+          component = "${worker_name}"
+        }
+      }
+
+      spec {
+        container {
+          name    = "${worker_name}"
+          image   = "${service}:latest"
+          command = ["python", "-m", "app.workers.${worker_name}"]
+        }
+      }
+    }
+  }
+}

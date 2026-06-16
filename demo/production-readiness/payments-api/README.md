@@ -1,6 +1,6 @@
-# payments-api — Capability-Pack demo (end-to-end)
+# payments-api — Offline deterministic replay
 
-A deterministic, offline demo of the full MergeProof loop: a green app PR that
+An offline replay of the MergeProof capability-pack flow: a green app PR that
 still introduces hidden **production obligations**, placed on a Production Flow,
 with generated infra changes, proof, and a one-click "Open infra PR" — while a
 human keeps the secret-value gate.
@@ -84,6 +84,6 @@ load_capabilities_and_packs + detect_obligations   (pr_obligations.py)
 | `fixtures/changed_files.json` | The seeded app PR's changed files |
 | `fixtures/loop_summary.json` | The CR loop's terminal record (green) |
 
-This is the offline demo path. The live product path (real GitHub PR, real infra
-repo, executed checks) is the **Real MVP v1** described in the design spec's
-"Path from Demo to Real MVP" section.
+This is the deterministic replay path. The live demo path uses two real GitHub
+repositories and `mergeproof run --pr <APP_PR> --publish --stage-infra
+--create-infra-pr`; see `../live-demo/`.

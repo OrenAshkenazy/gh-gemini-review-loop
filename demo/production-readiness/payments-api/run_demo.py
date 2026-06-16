@@ -62,7 +62,7 @@ def main() -> int:
         obligations,
         repo="acme/platform-infra",
         base="main",
-        allow=["envs/prod/payments-api/**", "helm/payments-api/**"],
+        allow=["envs/prod/payments-api/**", "helm/payments-api/**", "terraform/payments-api/**"],
         templates_root=FIXTURES / "capabilities",
         source_pr=loop_summary.get("pr_url", ""),
         dry_run=True,

@@ -153,7 +153,7 @@ pre.diff { background: #0a1322; border: 1px solid #1a2740; border-radius: 8px; p
 
   </section>
   <section class="tabpanel" id="tab-flow"><h2 class="section">Production flow</h2><div class="arch"><div class="flow"><span class="node exposure">Public</span><span class="arrow">→</span><span class="node service">payments-api</span></div><div class="flow sub"><span class="arrow">↓</span>REDIS <code>arq</code></div></div><h2 class="section">Obligations on this change</h2><div class="obl-grid"><div class="obl-node"><span class="node service">worker_deployment</span><div class="obl-meta">payments-api · matched · @platform-runtime</div></div><div class="obl-node"><span class="node exposure">secret_wiring</span><div class="obl-meta">payments-api · human_gated · @platform-secrets</div></div></div></section>
-  <section class="tabpanel" id="tab-resolve"><h2 class="section">Resolve</h2><div class="resolve-card"><div class="resolve-head">worker_deployment — matched · approver @platform-runtime</div><div class="points">Proof — checks: helm_template, policy, naming_convention</div><div class="diff-path">envs/prod/payments-api/workers/refund_worker-deployment.yaml</div><pre class="diff">apiVersion: apps/v1
+  <section class="tabpanel" id="tab-resolve"><h2 class="section">Resolve</h2><div class="resolve-card"><div class="resolve-head">worker_deployment — matched · approver @platform-runtime</div><div class="points">Proof — checks: helm_template, terraform_validate, policy, naming_convention</div><div class="diff-path">envs/prod/payments-api/workers/refund_worker-deployment.yaml</div><pre class="diff">apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: payments-api-refund_worker
@@ -172,9 +172,46 @@ spec:
   refund_worker:
     enabled: true
     service: payments-api
-</pre><a class="btn" href="https://github.com/acme/platform-infra/compare/main...mergeproof/worker_deployment-refund_worker?expand=1&amp;title=MergeProof%3A+worker_deployment+for+payments-api&amp;body=Generated+by+MergeProof+for+https%3A%2F%2Fgithub.com%2Facme%2Fpayments-api%2Fpull%2F428%0A%0AApprover%3A+%40platform-runtime%0AGenerated+files%3A%0A-+envs%2Fprod%2Fpayments-api%2Fworkers%2Frefund_worker-deployment.yaml%0A-+helm%2Fpayments-api%2Fworkers%2Frefund_worker.yaml">Open infra PR ▸</a><div class="points">Branch <code>mergeproof/worker_deployment-refund_worker</code> (staged, dry-run)</div></div><div class="resolve-card"><div class="resolve-head">secret_wiring — human_gated · approver @platform-secrets</div><div class="points">Proof — checks: helm_template, policy, naming_convention</div><div class="gate">Needs a human before merge: secret value provisioning, input: env_var</div></div></section>
+</pre><div class="diff-path">terraform/payments-api/workers/refund_worker.tf</div><pre class="diff">resource &quot;kubernetes_deployment&quot; &quot;refund_worker&quot; {
+  metadata {
+    name = &quot;payments-api-refund_worker&quot;
+    labels = {
+      app       = &quot;payments-api&quot;
+      component = &quot;refund_worker&quot;
+    }
+  }
+
+  spec {
+    replicas = 1
+
+    selector {
+      match_labels = {
+        app       = &quot;payments-api&quot;
+        component = &quot;refund_worker&quot;
+      }
+    }
+
+    template {
+      metadata {
+        labels = {
+          app       = &quot;payments-api&quot;
+          component = &quot;refund_worker&quot;
+        }
+      }
+
+      spec {
+        container {
+          name    = &quot;refund_worker&quot;
+          image   = &quot;payments-api:latest&quot;
+          command = [&quot;python&quot;, &quot;-m&quot;, &quot;app.workers.refund_worker&quot;]
+        }
+      }
+    }
+  }
+}
+</pre><a class="btn" href="https://github.com/acme/platform-infra/compare/main...mergeproof/worker_deployment-refund_worker?expand=1&amp;title=MergeProof%3A+worker_deployment+for+payments-api&amp;body=Generated+by+MergeProof+for+https%3A%2F%2Fgithub.com%2Facme%2Fpayments-api%2Fpull%2F428%0A%0AApprover%3A+%40platform-runtime%0AGenerated+files%3A%0A-+envs%2Fprod%2Fpayments-api%2Fworkers%2Frefund_worker-deployment.yaml%0A-+helm%2Fpayments-api%2Fworkers%2Frefund_worker.yaml%0A-+terraform%2Fpayments-api%2Fworkers%2Frefund_worker.tf">Create infra PR ▸</a><div class="points">Branch <code>mergeproof/worker_deployment-refund_worker</code> (staged, dry-run)</div></div><div class="resolve-card"><div class="resolve-head">secret_wiring — human_gated · approver @platform-secrets</div><div class="points">Proof — checks: helm_template, policy, naming_convention</div><div class="gate">Needs a human before merge: secret value provisioning, input: env_var</div></div></section>
   <section class="tabpanel" id="tab-audit"><h2 class="section">Audit trail</h2><ol class="audit"><li>AI loop: 5 fixed · verification passed</li><li>Obligation <code>worker_deployment</code> (matched) from app/workers/refund_worker.py</li><li>Obligation <code>secret_wiring</code> (human_gated) from app/secrets/stripe_webhook.py</li></ol></section>
-  <section class="tabpanel" id="tab-packs"><h2 class="section">Capability packs</h2><table><thead><tr><th>Type</th><th>Generates</th><th>Checks</th><th>Approver</th><th>Human gate</th></tr></thead><tbody><tr><td><code>worker_deployment</code></td><td>worker_deployment, helm_worker_values</td><td>helm_template, policy, naming_convention</td><td>@platform-runtime</td><td>—</td></tr><tr><td><code>secret_wiring</code></td><td>external_secret, helm_env_wiring</td><td>helm_template, policy, naming_convention</td><td>@platform-secrets</td><td>secret value provisioning</td></tr></tbody></table></section>
+  <section class="tabpanel" id="tab-packs"><h2 class="section">Capability packs</h2><table><thead><tr><th>Type</th><th>Generates</th><th>Checks</th><th>Approver</th><th>Human gate</th></tr></thead><tbody><tr><td><code>worker_deployment</code></td><td>worker_deployment, helm_worker_values, terraform_worker</td><td>helm_template, terraform_validate, policy, naming_convention</td><td>@platform-runtime</td><td>—</td></tr><tr><td><code>secret_wiring</code></td><td>external_secret, helm_env_wiring</td><td>helm_template, policy, naming_convention</td><td>@platform-secrets</td><td>secret value provisioning</td></tr></tbody></table></section>
 
   <footer>The AI runs the loop. The human owns production risk and merge judgment.</footer>
 </div>

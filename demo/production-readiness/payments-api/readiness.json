@@ -37,14 +37,16 @@
       "infra_pr": {
         "base": "main",
         "branch": "mergeproof/worker_deployment-refund_worker",
-        "create_url": "https://github.com/acme/platform-infra/compare/main...mergeproof/worker_deployment-refund_worker?expand=1&title=MergeProof%3A+worker_deployment+for+payments-api&body=Generated+by+MergeProof+for+https%3A%2F%2Fgithub.com%2Facme%2Fpayments-api%2Fpull%2F428%0A%0AApprover%3A+%40platform-runtime%0AGenerated+files%3A%0A-+envs%2Fprod%2Fpayments-api%2Fworkers%2Frefund_worker-deployment.yaml%0A-+helm%2Fpayments-api%2Fworkers%2Frefund_worker.yaml",
+        "create_url": "https://github.com/acme/platform-infra/compare/main...mergeproof/worker_deployment-refund_worker?expand=1&title=MergeProof%3A+worker_deployment+for+payments-api&body=Generated+by+MergeProof+for+https%3A%2F%2Fgithub.com%2Facme%2Fpayments-api%2Fpull%2F428%0A%0AApprover%3A+%40platform-runtime%0AGenerated+files%3A%0A-+envs%2Fprod%2Fpayments-api%2Fworkers%2Frefund_worker-deployment.yaml%0A-+helm%2Fpayments-api%2Fworkers%2Frefund_worker.yaml%0A-+terraform%2Fpayments-api%2Fworkers%2Frefund_worker.tf",
         "diff": {
           "envs/prod/payments-api/workers/refund_worker-deployment.yaml": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: payments-api-refund_worker\n  labels:\n    app: payments-api\n    component: refund_worker\nspec:\n  replicas: 1\n  template:\n    spec:\n      containers:\n        - name: refund_worker\n          image: payments-api:latest\n          command: [\"python\", \"-m\", \"app.workers.refund_worker\"]\n",
-          "helm/payments-api/workers/refund_worker.yaml": "workers:\n  refund_worker:\n    enabled: true\n    service: payments-api\n"
+          "helm/payments-api/workers/refund_worker.yaml": "workers:\n  refund_worker:\n    enabled: true\n    service: payments-api\n",
+          "terraform/payments-api/workers/refund_worker.tf": "resource \"kubernetes_deployment\" \"refund_worker\" {\n  metadata {\n    name = \"payments-api-refund_worker\"\n    labels = {\n      app       = \"payments-api\"\n      component = \"refund_worker\"\n    }\n  }\n\n  spec {\n    replicas = 1\n\n    selector {\n      match_labels = {\n        app       = \"payments-api\"\n        component = \"refund_worker\"\n      }\n    }\n\n    template {\n      metadata {\n        labels = {\n          app       = \"payments-api\"\n          component = \"refund_worker\"\n        }\n      }\n\n      spec {\n        container {\n          name    = \"refund_worker\"\n          image   = \"payments-api:latest\"\n          command = [\"python\", \"-m\", \"app.workers.refund_worker\"]\n        }\n      }\n    }\n  }\n}\n"
         },
         "generated_files": [
           "envs/prod/payments-api/workers/refund_worker-deployment.yaml",
-          "helm/payments-api/workers/refund_worker.yaml"
+          "helm/payments-api/workers/refund_worker.yaml",
+          "terraform/payments-api/workers/refund_worker.tf"
         ],
         "pushed": false,
         "repo": "acme/platform-infra"
@@ -58,18 +60,24 @@
         "approver": "@platform-runtime",
         "checks": [
           "helm_template",
+          "terraform_validate",
           "policy",
           "naming_convention"
         ],
         "generates": [
           "worker_deployment",
-          "helm_worker_values"
+          "helm_worker_values",
+          "terraform_worker"
         ],
         "human_gate": null,
         "template_map": {
           "helm_worker_values": {
             "output": "helm/payments-api/workers/${worker_name}.yaml",
             "template": "templates/helm_worker_values.tmpl"
+          },
+          "terraform_worker": {
+            "output": "terraform/payments-api/workers/${worker_name}.tf",
+            "template": "templates/terraform_worker.tmpl"
           },
           "worker_deployment": {
             "output": "envs/prod/payments-api/workers/${worker_name}-deployment.yaml",

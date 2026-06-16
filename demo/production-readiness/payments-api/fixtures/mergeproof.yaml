@@ -5,6 +5,8 @@ architecture_sources:
     ref: main
     allow:
       - envs/prod/payments-api/**
+      - helm/payments-api/**
+      - terraform/payments-api/**
       - modules/secrets/**
       - modules/kafka/**
       - modules/workers/**

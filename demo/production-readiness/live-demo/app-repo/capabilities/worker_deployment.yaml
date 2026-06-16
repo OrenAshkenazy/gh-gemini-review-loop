@@ -2,7 +2,6 @@ capability: worker_deployment
 inputs:
   worker_name: required
   service: required
-  topic: optional
 generates:
   - worker_deployment
   - helm_worker_values
@@ -14,7 +13,7 @@ checks:
   - naming_convention
 approval:
   required_from:
-    - platform-runtime
+    - platform-team
 template_map:
   worker_deployment:
     template: templates/worker_deployment.tmpl
