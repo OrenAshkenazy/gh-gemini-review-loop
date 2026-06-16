@@ -4,6 +4,22 @@
 **Status:** Approved for planning
 **Branch context:** builds on `feat/production-aware-pr-readiness` (PR #46, MergeProof readiness)
 
+## Framing (read first)
+
+**Why this is not a linter.** Detection alone is a linter. **Detection + flow
+placement + a generated infra change + proof** is the product. A linter tells you
+something is wrong; MergeProof shows the missing production obligation *on the
+production flow*, generates the change that satisfies it, and proves it — so the
+human approves risk, not glue work.
+
+**Demo vs Real Product Boundary.** This PRD optimizes for a **deterministic
+VC / design-partner demo**. It intentionally proves the product loop —
+obligation → flow placement → generated change → proof → human approval — *before*
+adding live GitHub/cloud integration. Everything here runs offline, reproducibly,
+with no backend. The path to the real product is defined in **Post-Demo Product
+Wedge** below: a GitHub App / check that comments on app PRs and opens linked
+infra PRs. The demo proves the loop; the wedge ships it.
+
 ## Problem
 
 The MergeProof PR Readiness Card correctly reaches `HUMAN_DECISION_REQUIRED`
@@ -177,6 +193,31 @@ infra PR is staged with no pending human gate.
 - **Idempotent.** Re-running updates the same branch; the PR comment and HTML
   always reflect the latest staged branch.
 
+## UI Scope & MVP Priority
+
+The demo UI is a **static, self-contained HTML report** organized as tabs
+(tabs = CSS / tiny-JS toggle; all content pre-rendered, no network, no backend).
+To match the deterministic-demo framing, **approve / waive actions and the
+readiness pill are deterministic deep-links and rendered state — not live
+mutations.** Live mutation is the GitHub-App wedge (Phase 3), not the MVP.
+
+The UI is ambitious (Production Flow, Resolve, diffs, proof, audit trail,
+approve/waive, live readiness pill, Capability Packs). To protect the build,
+ship in this **priority order** — earlier tabs must be excellent before later
+ones get polish:
+
+| Pri | Surface | MVP bar | Notes |
+|---|---|---|---|
+| 1 | **Readiness tab** | **Excellent** | The verdict + evidence + status pill. The thing a viewer reads first. |
+| 2 | **Production Flow** | **Excellent** | Obligations placed on the production flow. **This is half the "wow."** |
+| 3 | **Resolve tab** | Shows **generated diffs + proof** | The generated infra change and its proof (checks/render). The other half of the "wow." |
+| 4 | **Audit trail** | **Simple** | A plain chronological list. Do not over-build. |
+| 5 | **Capability Packs** | **Read-only, lightweight** | Render declared packs (`generates`, `checks`, approver, gates). No editing. |
+
+**Guardrail:** do not let Tab 5 (Capability Packs) or the Audit trail consume
+time. The "wow" is **Production Flow + generated proof**, not admin UX. If time is
+short, cut polish from 4 and 5 first.
+
 ## Phasing
 
 The spec documents the full pipeline; implementation lands in slices.
@@ -185,7 +226,7 @@ The spec documents the full pipeline; implementation lands in slices.
 |---|---|---|---|
 | **1 — Detect + advise** | `pr_obligations.py` + pack matching + `obligations` block + action panel (text only, no button) | No | Card names the specific infra change, repo, approver, human gates |
 | **2 — Generate + one-click** | `generate_infra_change.py` + `publish_infra_pr.py` + deep-link button in HTML | Yes (branch push via local `gh`) | Click button → prefilled GitHub PR-create page for generated infra branch |
-| **3 — North-star (spec'd, not built)** | local action-server one-click; later hosted app + GitHub App | — | future work only |
+| **3 — Wedge (spec'd, not built)** | **GitHub App / check** that comments on app PRs and opens linked infra PRs (live mutation); hosted view second. See Post-Demo Product Wedge. | Yes (live) | future work only |
 
 **First implementation plan = Phase 1 + Phase 2 together** (Phase 1 alone has no
 button to demo; the "now" experience needs both). Phase 3 is recorded here as
@@ -225,3 +266,33 @@ Uses the already-committed `demo/production-readiness/payments-api` fixtures.
 
 End state: an HTML report whose action panel turns "tests passed but
 production-facing" into specific, clickable next steps — closing both gaps.
+
+## Investor Demo Acceptance Criteria
+
+Separate from the engineering acceptance (the **Testing** section above). A
+VC / design partner should understand, in **90 seconds**, that:
+
+1. **Green PRs still break production.** Tests pass, review is clean — and it is
+   still unsafe to merge.
+2. **MergeProof sees the missing production obligations** the green checks do not.
+3. **MergeProof places them on the production flow** — not a list, a flow.
+4. **MergeProof generates the missing production changes** — real infra diffs,
+   with proof.
+5. **Humans approve risk, not glue work** — the gate is judgment, not authoring
+   YAML.
+
+If a viewer cannot narrate these five from the screen unaided, the demo UI has
+failed its job regardless of test coverage.
+
+## Post-Demo Product Wedge
+
+The demo proves the loop offline; the commercial path is **GitHub-native**, not a
+hosted dashboard:
+
+- The production version starts as a **GitHub App / check** that comments on app
+  PRs and **opens linked infra PRs** — the workflow developers already live in.
+- The UI in this spec can later become a **hosted view**, but the GitHub-native
+  workflow is the wedge; the dashboard is secondary.
+- This keeps the commercial path clear: land inside the PR review surface first,
+  expand to a hosted experience second. It also maps cleanly onto Phase 3
+  (live action-server → GitHub App), so nothing in the demo MVP is throwaway.
