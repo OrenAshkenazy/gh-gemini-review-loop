@@ -260,6 +260,33 @@ def build_readiness(
 
 # ---- presentation helpers -------------------------------------------------
 
+_OUTCOME_LABEL = {
+    "matched": "Ready to stage",
+    "human_gated": "Needs a human",
+    "blocked": "Blocked — no approved capability",
+}
+
+
+def _render_obligations(obligations: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = ["### Production obligations", ""]
+    lines.append("| Capability | Status | Approver | Action |")
+    lines.append("|---|---|---|---|")
+    for ob in obligations:
+        pack = ob.get("pack") or {}
+        label = _OUTCOME_LABEL.get(ob.get("outcome", ""), ob.get("outcome", ""))
+        approver = pack.get("approver") or "—"
+        files = ", ".join(f"`{f}`" for f in ob.get("evidence_files", []))
+        if ob.get("outcome") == "blocked":
+            action = f"{files} implies infra change but no approved capability — escalate to platform."
+        elif ob.get("human_gate_pending"):
+            action = f"{files} — provide before merge: {', '.join(ob['human_gate_pending'])}."
+        else:
+            generates = ", ".join(pack.get("generates") or [])
+            action = f"{files} — generates {generates}. (Phase 2 stages the infra PR.)"
+        lines.append(f"| `{ob.get('type', '')}` | {label} | {approver} | {action} |")
+    lines.append("")
+    return lines
+
 
 def _pretty_datastores(datastores: list[str]) -> str:
     return ", ".join(_DATASTORE_LABELS.get(d, d.title()) for d in datastores) or "none"
@@ -367,6 +394,9 @@ def render_markdown(readiness: dict[str, Any]) -> str:
     else:
         lines.append("No production-facing surfaces were changed by this PR.")
     lines.append("")
+
+    if readiness.get("obligations"):
+        lines.extend(_render_obligations(readiness["obligations"]))
 
     lines.append("### Human decision required")
     lines.append("")

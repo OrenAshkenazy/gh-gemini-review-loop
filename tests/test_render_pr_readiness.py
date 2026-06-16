@@ -244,3 +244,32 @@ def test_all_matched_obligations_do_not_block_ready():
 def test_obligations_default_empty_when_omitted():
     r = build_readiness(_PASS_LOOP, _ARCH, _NO_RISK)
     assert r["obligations"] == []
+
+
+from render_pr_readiness import render_markdown
+
+
+def test_markdown_renders_obligation_action_panel():
+    obligations = [
+        {"type": "worker_deployment", "outcome": "matched", "evidence_files": ["app/workers/refund_worker.py"],
+         "inputs": {"worker_name": "refund_worker", "service": "payments-api"},
+         "pack": {"generates": ["worker_deployment", "helm_worker_values"], "checks": ["policy"], "approver": "@platform-runtime", "human_gate": None},
+         "human_gate_pending": []},
+        {"type": "secret_wiring", "outcome": "human_gated", "evidence_files": ["app/secrets/stripe_webhook.py"],
+         "inputs": {"secret_name": "stripe_webhook", "service": "payments-api"},
+         "pack": {"generates": ["external_secret"], "checks": ["policy"], "approver": "@platform-secrets", "human_gate": "secret value provisioning"},
+         "human_gate_pending": ["secret value provisioning", "input: env_var"]},
+    ]
+    r = build_readiness(_PASS_LOOP, _ARCH, _NO_RISK, obligations=obligations)
+    md = render_markdown(r)
+
+    assert "### Production obligations" in md
+    assert "worker_deployment" in md
+    assert "@platform-runtime" in md
+    assert "Needs a human" in md
+    assert "secret value provisioning" in md
+
+
+def test_markdown_omits_obligation_panel_when_none():
+    r = build_readiness(_PASS_LOOP, _ARCH, _NO_RISK)
+    assert "### Production obligations" not in render_markdown(r)
