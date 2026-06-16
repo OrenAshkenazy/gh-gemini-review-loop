@@ -18,8 +18,10 @@ from fetch_infra_files import _decode_content
 from metrics import runs_log_path
 from pr_obligations import detect_obligations
 from pr_architecture_risk import _default_pr_runner, assess, fetch_pr_changed_file_entries, parse_pr
+from publish_html_report import publish_report, with_report_link
 from publish_infra_pr import default_gh_runner, default_runner
 from publish_pr_readiness import publish
+from render_demo_ui import render_html
 from render_pr_readiness import build_readiness, render_markdown
 from stage_obligations import stage_obligations
 
@@ -210,11 +212,13 @@ def run_readiness(
     runner: Runner = _default_pr_runner,
     trust_pr_config: bool = False,
     do_publish: bool = False,
+    publish_html: bool = False,
     config_override: dict[str, Any] | None = None,
     stage_infra: bool = False,
     create_infra_pr: bool = False,
     infra_git_runner: Any = None,
     infra_github_runner: Any = None,
+    report_runner: Any = None,
 ) -> dict[str, Any]:
     changed_entries = fetch_pr_changed_file_entries(app_repo, pr_number, runner=runner)
     changed_files = [entry["path"] for entry in changed_entries]
@@ -282,6 +286,15 @@ def run_readiness(
                 )
     readiness = build_readiness(loop_summary, pack, risks, obligations=obligations)
     markdown = render_markdown(readiness)
+    report_url = None
+    if do_publish and publish_html:
+        report_url = publish_report(
+            app_repo,
+            pr_number,
+            render_html(readiness),
+            runner=report_runner or default_gh_runner,
+        )
+        markdown = with_report_link(markdown, report_url)
     result = {
         "status": "rendered",
         "readiness": readiness,
@@ -289,6 +302,8 @@ def run_readiness(
         "pack": pack,
         "risks": risks,
     }
+    if report_url:
+        result["report_url"] = report_url
     if do_publish:
         result["publish"] = publish(app_repo, pr_number, markdown)
     return result
@@ -325,6 +340,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--create-infra-pr",
         action="store_true",
         help="Create or reuse an infra PR after staging generated infra changes.",
+    )
+    parser.add_argument(
+        "--publish-html",
+        action="store_true",
+        help="Publish the HTML report to GitHub Pages and link it in the PR comment (requires --publish).",
     )
     parser.add_argument("--markdown", action="store_true")
     parser.add_argument("--json", action="store_true", dest="json_output")
@@ -367,6 +387,7 @@ def main(argv: list[str] | None = None) -> int:
             loop_summary,
             trust_pr_config=args.trust_pr_config,
             do_publish=args.publish,
+            publish_html=args.publish_html,
             config_override=config_override,
             stage_infra=args.stage_infra or args.create_infra_pr,
             create_infra_pr=args.create_infra_pr,

@@ -66,6 +66,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Create or reuse an infra PR after staging generated infra changes.",
     )
+    run.add_argument(
+        "--publish-html",
+        action="store_true",
+        help="Publish the HTML report to GitHub Pages and link it in the PR comment (requires --publish).",
+    )
     run.add_argument("--json", action="store_true", dest="json_stdout")
     run.add_argument("--markdown", action="store_true", dest="markdown_stdout")
     run.add_argument("--json-output", help="Write readiness JSON to this path.")
@@ -122,6 +127,7 @@ def _run(args: argparse.Namespace) -> int:
         loop_summary,
         trust_pr_config=args.trust_pr_config,
         do_publish=args.publish,
+        publish_html=args.publish_html,
         config_override=config_override,
         stage_infra=args.stage_infra or args.create_infra_pr,
         create_infra_pr=args.create_infra_pr,
