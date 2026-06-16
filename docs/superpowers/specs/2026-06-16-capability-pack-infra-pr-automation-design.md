@@ -251,9 +251,31 @@ GitHub calls stay behind an injectable client, matching the existing pattern.
 - Status-logic tests — `blocked` and `human_gate_pending` each force
   `HUMAN_DECISION_REQUIRED`.
 
+## Definition of Done
+
+Engineering acceptance (the **Testing** section) plus:
+
+- **Foundation committed.** The currently-untracked seed is brought under version
+  control as the first step, since the new modules build on it:
+  - `plugins/.../scripts/capability_pack.py` + `tests/test_capability_pack.py`
+    (8 tests, already green) committed.
+  - `demo/production-readiness/payments-api/` fixtures (`mergeproof.yaml`, the
+    three `capabilities/*.yaml` packs, `changed_files.json`, `loop_summary.json`)
+    committed.
+  - Loose working-tree noise (`err.log`, `prof_out.json`, `wait_err.log`,
+    `wait_out.json`, `skills-lock.json`) gitignored or removed — not committed.
+- **Phase 1 + Phase 2 shipped** (detect + advise, then generate + one-click), per
+  the Phasing table.
+- **Full suite green**, including the new `test_pr_obligations.py`,
+  `test_generate_infra_change.py`, `test_publish_infra_pr.py`, and the extended
+  render tests.
+- **Investor acceptance met.** The static tabbed HTML report lets a viewer
+  narrate the five-point story unaided (see Investor Demo Acceptance Criteria).
+- **Demo reproducible offline** from the `payments-api` fixtures with no network.
+
 ## Demo
 
-Uses the already-committed `demo/production-readiness/payments-api` fixtures.
+Uses the now-committed `demo/production-readiness/payments-api` fixtures.
 `changed_files.json` adds `app/workers/refund_worker.py` (+ test) and modifies
 `app/providers/acme.py`. Against the declared capabilities:
 
