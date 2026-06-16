@@ -71,3 +71,42 @@ def test_modified_worker_does_not_trigger_added_only_rule():
     capabilities = {"worker_deployment": {"type": "worker_deployment", "template": "x", "approver": "@x"}}
     packs = {"worker_deployment": _worker_pack()}
     assert detect_obligations(changed, capabilities, packs, service="payments-api") == []
+
+
+import json
+from pathlib import Path
+
+from pr_obligations import load_capabilities_and_packs
+
+
+def test_load_capabilities_and_packs_reads_templates(tmp_path: Path):
+    (tmp_path / "capabilities").mkdir()
+    (tmp_path / "mergeproof.yaml").write_text(
+        "version: 1\n"
+        "service: payments-api\n"
+        "capabilities:\n"
+        "  - type: worker_deployment\n"
+        "    template: capabilities/worker_deployment.yaml\n"
+        "    approver: \"@platform-runtime\"\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "capabilities" / "worker_deployment.yaml").write_text(
+        "capability: worker_deployment\n"
+        "inputs:\n"
+        "  worker_name: required\n"
+        "  service: required\n"
+        "generates:\n"
+        "  - worker_deployment\n"
+        "checks:\n"
+        "  - helm_template\n"
+        "approval:\n"
+        "  required_from:\n"
+        "    - platform-runtime\n",
+        encoding="utf-8",
+    )
+
+    capabilities, packs, service = load_capabilities_and_packs(tmp_path / "mergeproof.yaml")
+
+    assert service == "payments-api"
+    assert "worker_deployment" in capabilities
+    assert packs["worker_deployment"]["generates"] == ["worker_deployment"]
