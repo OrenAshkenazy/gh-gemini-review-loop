@@ -5,3 +5,10 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 .DS_Store
+
+# transient local run artifacts (never committed)
+err.log
+wait_err.log
+wait_out.json
+prof_out.json
+skills-lock.json

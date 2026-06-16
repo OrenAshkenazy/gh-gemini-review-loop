@@ -1,0 +1,15 @@
+capability: worker_deployment
+inputs:
+  worker_name: required
+  service: required
+  topic: optional
+generates:
+  - worker_deployment
+  - helm_worker_values
+checks:
+  - helm_template
+  - policy
+  - naming_convention
+approval:
+  required_from:
+    - platform-runtime

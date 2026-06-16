@@ -1,0 +1,13 @@
+capability: topic_queue
+inputs:
+  topic: required
+  service: required
+generates:
+  - kafka_topic
+checks:
+  - helm_template
+  - policy
+  - naming_convention
+approval:
+  required_from:
+    - data-platform
