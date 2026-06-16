@@ -318,14 +318,21 @@ def _resolve_tab(readiness: dict[str, Any]) -> str:
         if ob.get("human_gate_pending"):
             pending = ", ".join(ob["human_gate_pending"])
             action_html = f'<div class="gate">Needs a human before merge: {_e(pending)}</div>'
-        elif infra_pr.get("create_url"):
-            action_html = (
-                f'<a class="btn" href="{_e(infra_pr["create_url"])}">Open infra PR ▸</a>'
-                f'<div class="points">Branch <code>{_e(infra_pr.get("branch",""))}</code>'
-                f'{" (pushed)" if infra_pr.get("pushed") else " (staged, dry-run)"}</div>'
-            )
         else:
-            action_html = '<div class="points">No approved capability — escalate to platform.</div>'
+            pull_request = infra_pr.get("pull_request")
+            pull_request = pull_request if isinstance(pull_request, dict) else {}
+            url = pull_request.get("html_url") or infra_pr.get("create_url")
+            if not url:
+                action_html = '<div class="points">No approved capability — escalate to platform.</div>'
+            else:
+                state = "created" if pull_request.get("html_url") else "pushed"
+                state = state if infra_pr.get("pushed") else "staged, dry-run"
+                label = "Review infra PR ▸" if pull_request.get("html_url") else "Create infra PR ▸"
+                action_html = (
+                    f'<a class="btn" href="{_e(url)}">{_e(label)}</a>'
+                    f'<div class="points">Branch <code>{_e(infra_pr.get("branch",""))}</code>'
+                    f' ({_e(state)})</div>'
+                )
         cards.append(
             f'<div class="resolve-card"><div class="resolve-head">{header}</div>'
             f'<div class="points">Proof — checks: {_e(checks)}</div>'

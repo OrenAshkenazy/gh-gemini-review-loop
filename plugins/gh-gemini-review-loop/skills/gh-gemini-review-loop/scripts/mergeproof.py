@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 import init_mergeproof
-from mergeproof_readiness import _load_loop_summary, load_latest_run_summary, run_readiness
+from mergeproof_readiness import _load_loop_summary, load_loop_summary_for_pr, run_readiness
 from metrics import runs_log_path
 from pr_architecture_risk import parse_pr
 from render_demo_ui import render_html
@@ -33,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     init.add_argument("--service", help="Service name. Defaults to repository name.")
     init.add_argument("--ref", default="main", help="Infra source ref. Default: main.")
+    init.add_argument("--approver", default="@platform-team", help="Default approver for discovered capabilities.")
+    init.add_argument("--no-capabilities", action="store_true", help="Skip capability discovery/scaffolding.")
     init.add_argument("--output", default="mergeproof.yaml", help="Config output path.")
     init.add_argument("--force", action="store_true", help="Overwrite an existing output file.")
     init.add_argument("--print", action="store_true", dest="print_config", help="Print config to stdout instead of writing.")
@@ -54,6 +56,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--trust-pr-config", action="store_true")
     run.add_argument("--publish", action="store_true")
+    run.add_argument(
+        "--stage-infra",
+        action="store_true",
+        help="Stage and push generated infra changes for matched obligations.",
+    )
+    run.add_argument(
+        "--create-infra-pr",
+        action="store_true",
+        help="Create or reuse an infra PR after staging generated infra changes.",
+    )
     run.add_argument("--json", action="store_true", dest="json_stdout")
     run.add_argument("--markdown", action="store_true", dest="markdown_stdout")
     run.add_argument("--json-output", help="Write readiness JSON to this path.")
@@ -77,6 +89,10 @@ def _init(args: argparse.Namespace) -> int:
         argv += ["--infra-repo", args.infra_repo]
     if args.service:
         argv += ["--service", args.service]
+    if args.approver:
+        argv += ["--approver", args.approver]
+    if args.no_capabilities:
+        argv += ["--no-capabilities"]
     if not args.print_config:
         argv += ["--output", str(Path(args.repo_root) / args.output)]
         if args.force:
@@ -89,7 +105,7 @@ def _run(args: argparse.Namespace) -> int:
     if args.loop_summary:
         loop_summary = _load_loop_summary(args.loop_summary)
     else:
-        loop_summary = load_latest_run_summary(args.runs_jsonl, repo, number)
+        loop_summary = load_loop_summary_for_pr(args.runs_jsonl, repo, number)
 
     config_override = None
     if args.mergeproof:
@@ -98,6 +114,7 @@ def _run(args: argparse.Namespace) -> int:
         text = Path(args.mergeproof).read_text(encoding="utf-8", errors="replace")
         fmt = "json" if args.mergeproof.endswith(".json") else "yaml"
         config_override = load_config(text, fmt=fmt)
+        config_override["_raw_text"] = text
 
     result = run_readiness(
         repo,
@@ -106,6 +123,8 @@ def _run(args: argparse.Namespace) -> int:
         trust_pr_config=args.trust_pr_config,
         do_publish=args.publish,
         config_override=config_override,
+        stage_infra=args.stage_infra or args.create_infra_pr,
+        create_infra_pr=args.create_infra_pr,
     )
     if result["status"] == "skipped":
         return 0

@@ -305,5 +305,24 @@ def test_markdown_action_shows_infra_pr_link_when_staged():
     }]
     r = build_readiness(_PASS_LOOP, _ARCH, _NO_RISK, obligations=obligations)
     md = render_markdown(r)
-    assert "Open infra PR" in md
+    assert "**Action:** [Create infra PR]" in md
+    assert "**Branch:** `mergeproof/worker_deployment-refund_worker`" in md
+    assert "**Generated files:** `envs/prod/payments-api/workers/refund_worker.yaml`" in md
     assert "compare/main...mergeproof/worker_deployment-refund_worker" in md
+
+
+def test_markdown_action_distinguishes_created_infra_pr():
+    obligations = [{
+        "type": "worker_deployment", "outcome": "matched", "evidence_files": ["app/workers/refund_worker.py"],
+        "inputs": {"worker_name": "refund_worker", "service": "payments-api"},
+        "pack": {"generates": ["worker_deployment"], "checks": ["policy"], "approver": "@platform-runtime", "human_gate": None},
+        "human_gate_pending": [],
+        "infra_pr": {"repo": "acme/platform-infra", "branch": "mergeproof/worker_deployment-refund_worker",
+                      "create_url": "https://github.com/acme/platform-infra/compare/main...mergeproof/worker_deployment-refund_worker?expand=1",
+                      "pushed": True, "generated_files": ["envs/prod/payments-api/workers/refund_worker.yaml"],
+                      "pull_request": {"number": 12, "html_url": "https://github.com/acme/platform-infra/pull/12"}},
+    }]
+    r = build_readiness(_PASS_LOOP, _ARCH, _NO_RISK, obligations=obligations)
+    md = render_markdown(r)
+    assert "**Action:** [Review infra PR #12](https://github.com/acme/platform-infra/pull/12)" in md
+    assert "Create infra PR" not in md

@@ -218,7 +218,7 @@ def test_resolve_tab_shows_diff_proof_and_button():
     assert "kind: Deployment" in html
     assert "helm_template" in html and "policy" in html
     assert 'href="https://github.com/acme/platform-infra/compare/main...mergeproof/worker_deployment-refund_worker?expand=1"' in html
-    assert "Open infra PR" in html
+    assert "Create infra PR" in html
 
 
 def test_resolve_tab_human_gated_shows_pending_not_button():
@@ -270,7 +270,7 @@ def test_payments_api_demo_html_tells_the_five_point_story():
     obligations = detect_obligations(changed, caps, packs, service=service)
     obligations = stage_obligations(
         obligations, repo="acme/platform-infra", base="main",
-        allow=["envs/prod/payments-api/**", "helm/payments-api/**"],
+        allow=["envs/prod/payments-api/**", "helm/payments-api/**", "terraform/payments-api/**"],
         templates_root=F / "capabilities", source_pr="https://github.com/acme/payments-api/pull/428", dry_run=True,
     )
     arch = {"service_name": service, "exposure": "public", "queues": ["redis:arq"], "ingress": [], "datastores": [], "owners": [], "runtime": "kubernetes"}
@@ -281,5 +281,5 @@ def test_payments_api_demo_html_tells_the_five_point_story():
     assert readiness["status"] == "HUMAN_DECISION_REQUIRED"   # 1: green PR still unsafe
     assert "worker_deployment" in html                         # 2 & 3: obligation seen + on flow
     assert "kind: Deployment" in html                          # 4: generated change
-    assert "Open infra PR" in html                             # 4: one-click
+    assert "Create infra PR" in html                           # 4: one-click
     assert "secret value provisioning" in html                 # 5: human owns risk

@@ -169,12 +169,12 @@ def _default_pr_runner(args: list[str]) -> Any:
         raise RuntimeError("gh api returned invalid JSON") from exc
 
 
-def fetch_pr_changed_files(
+def fetch_pr_changed_file_entries(
     repo: str,
     pr: int,
     runner: Callable[[list[str]], Any] = _default_pr_runner,
-) -> list[str]:
-    """Return the list of filenames changed by a PR via the GitHub API.
+) -> list[dict[str, str]]:
+    """Return changed-file entries from a PR via the GitHub API.
 
     GitHub calls are isolated behind *runner* so this stays unit-testable.
     """
@@ -182,11 +182,25 @@ def fetch_pr_changed_files(
     payload = runner(args)
     if not isinstance(payload, list):
         raise RuntimeError("unexpected gh api response (expected a list of files)")
-    files: list[str] = []
+    files: list[dict[str, str]] = []
     for entry in payload:
         if isinstance(entry, dict) and isinstance(entry.get("filename"), str):
-            files.append(entry["filename"])
+            files.append(
+                {
+                    "path": entry["filename"],
+                    "status": str(entry.get("status") or "modified"),
+                }
+            )
     return files
+
+
+def fetch_pr_changed_files(
+    repo: str,
+    pr: int,
+    runner: Callable[[list[str]], Any] = _default_pr_runner,
+) -> list[str]:
+    """Return the list of filenames changed by a PR via the GitHub API."""
+    return [entry["path"] for entry in fetch_pr_changed_file_entries(repo, pr, runner=runner)]
 
 
 _PR_URL_RE = re.compile(r"https://github\.com/([^/]+)/([^/]+)/pull/(\d+)(?:[/?#].*)?$")

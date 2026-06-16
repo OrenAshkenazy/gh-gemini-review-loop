@@ -13,7 +13,16 @@ from pathlib import Path
 from typing import Any
 
 from generate_infra_change import generate_files
-from publish_infra_pr import Runner, branch_name, compare_url, default_runner, stage_branch
+from publish_infra_pr import (
+    GitHubRunner,
+    Runner,
+    branch_name,
+    compare_url,
+    default_gh_runner,
+    default_runner,
+    open_or_create_pr,
+    stage_branch,
+)
 
 
 def stage_obligations(
@@ -24,7 +33,9 @@ def stage_obligations(
     templates_root: str | Path,
     source_pr: str,
     dry_run: bool = True,
+    create_pr: bool = False,
     runner: Runner = default_runner,
+    github_runner: GitHubRunner = default_gh_runner,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for ob in obligations:
@@ -43,6 +54,10 @@ def stage_obligations(
             staged = stage_branch(repo, base, branch, files, title, dry_run=dry_run, runner=runner)
             staged["create_url"] = compare_url(repo, base, branch, title, body)
             staged["diff"] = files
+            if create_pr and not dry_run:
+                staged["pull_request"] = open_or_create_pr(
+                    repo, base, branch, title, body, runner=github_runner
+                )
             ob["infra_pr"] = staged
         out.append(ob)
     return out

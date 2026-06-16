@@ -267,6 +267,39 @@ _OUTCOME_LABEL = {
 }
 
 
+def _code_list(values: list[str]) -> str:
+    return ", ".join(f"`{value}`" for value in values) or "—"
+
+
+def _infra_pr_action(infra_pr: dict[str, Any], pack: dict[str, Any], evidence_files: list[str]) -> str:
+    generated_files = list(infra_pr.get("generated_files") or [])
+    generates = list(pack.get("generates") or [])
+    pull_request = infra_pr.get("pull_request")
+    pull_request = pull_request if isinstance(pull_request, dict) else {}
+    url = pull_request.get("html_url") or infra_pr.get("create_url")
+
+    lines: list[str] = []
+    if generated_files:
+        lines.append(f"**Generated files:** {_code_list(generated_files)}")
+    elif generates:
+        lines.append(f"**Capability outputs:** {_code_list(generates)}")
+    if evidence_files:
+        lines.append(f"**Evidence:** {_code_list(evidence_files)}")
+    branch = infra_pr.get("branch")
+    if branch:
+        lines.append(f"**Branch:** `{branch}`")
+
+    if pull_request.get("html_url"):
+        pr_number = pull_request.get("number")
+        label = f"Review infra PR #{pr_number}" if pr_number else "Review infra PR"
+        lines.append(f"**Action:** [{label}]({url})")
+    elif url:
+        lines.append(f"**Action:** [Create infra PR]({url})")
+    else:
+        lines.append("**Action:** infra PR not staged")
+    return "<br>".join(lines)
+
+
 def _render_obligations(obligations: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = ["### Production obligations", ""]
     lines.append("| Capability | Status | Approver | Action |")
@@ -277,17 +310,24 @@ def _render_obligations(obligations: list[dict[str, Any]]) -> list[str]:
         approver = pack.get("approver") or "—"
         files = ", ".join(f"`{f}`" for f in ob.get("evidence_files", []))
         if ob.get("outcome") == "blocked":
-            action = f"{files} implies infra change but no approved capability — escalate to platform."
+            action = f"**Evidence:** {files or '—'}<br>**Action:** escalate to platform; no approved capability matched."
         elif ob.get("human_gate_pending"):
-            action = f"{files} — provide before merge: {', '.join(ob['human_gate_pending'])}."
+            action = (
+                f"**Evidence:** {files or '—'}<br>"
+                f"**Human input required:** {', '.join(ob['human_gate_pending'])}<br>"
+                "**Action:** complete the human gate before merge."
+            )
         else:
-            generates = ", ".join(pack.get("generates") or [])
             infra_pr = ob.get("infra_pr") or {}
-            url = infra_pr.get("create_url")
-            if url:
-                action = f"generates {generates} — [Open infra PR ▸]({url}) (branch `{infra_pr.get('branch', '')}`)."
+            if infra_pr:
+                action = _infra_pr_action(infra_pr, pack, list(ob.get("evidence_files") or []))
             else:
-                action = f"{files} — generates {generates}. (infra PR not staged)."
+                generates = list(pack.get("generates") or [])
+                action = (
+                    f"**Evidence:** {files or '—'}<br>"
+                    f"**Capability outputs:** {_code_list(generates)}<br>"
+                    "**Action:** infra PR not staged."
+                )
         lines.append(f"| `{ob.get('type', '')}` | {label} | {approver} | {action} |")
     lines.append("")
     return lines

@@ -711,12 +711,21 @@ When the user says `mergeproof run --pr <PR_URL>`, run the complete product flow
    terminal summary exactly once.
 2. After the `[loop] Summary` is relayed, run the MergeProof readiness phase
    through `mergeproof.py run`. This phase starts from existing terminal loop
-   output; it must not rerun the CR loop.
+   output; it must not rerun the CR loop. For demo repos, if no local
+   `runs.jsonl` terminal record exists, `mergeproof.py run` may use the
+   CR-loop metrics table already present in the PR body.
 3. If `mergeproof.yaml`/`.json` exists on the trusted base branch, resolve the
    configured source refs to immutable SHAs, fetch only allowlisted infra files,
    enforce safety limits, extract normalized architecture facts, build the
-   Production Context Pack, overlay PR changed-file risk, render the readiness
-   card, and publish/update the single PR comment when requested.
+   Production Context Pack, overlay PR changed-file risk, detect capability
+   obligations, render the readiness card, and publish/update the single PR
+   comment when requested.
+   - If the user includes `--stage-infra`, pass it through to `mergeproof.py run`
+     so matched obligations generate and push an infra branch in the configured
+     infra repo.
+   - If the user includes `--create-infra-pr`, pass it through as well; it
+     implies infra staging and creates or reuses the linked infra PR before the
+     app PR readiness comment is published.
 4. If config is absent, relay the exact skip notice and stop normally:
    `[mergeproof] readiness skipped`
    `Reason: mergeproof.yaml not found`

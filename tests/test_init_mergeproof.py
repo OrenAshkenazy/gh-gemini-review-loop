@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import mergeproof_config as mc
+from capability_pack import capabilities_from_config, load_pack
 import init_mergeproof as im
 
 
@@ -117,3 +118,89 @@ def test_explicit_allow_overrides_discovery(tmp_path):
     assert rc == 0
     cfg = mc.load_config(out.read_text(encoding="utf-8"), fmt="yaml")
     assert cfg["architecture_sources"][0]["allow"] == ["only/this/**"]
+
+
+def test_discover_capabilities_from_payments_infra_layout(tmp_path):
+    _write(tmp_path, "envs/prod/payments-api/service.yaml", "kind: Service\n")
+    _write(tmp_path, "helm/payments-api/values.yaml", "workers:\n  refund_worker:\n")
+    _write(tmp_path, "terraform/payments-api/workers/README.md", "# workers\n")
+    _write(tmp_path, "modules/secrets/main.tf", 'resource "x" "y" {}\n')
+    _write(tmp_path, "envs/prod/payments-api/topics/README.md", "# topics\n")
+
+    capabilities = im.discover_capabilities(tmp_path, service="payments-api", env="prod")
+
+    by_type = {cap.type: cap for cap in capabilities}
+    assert list(by_type) == ["worker_deployment", "secret_wiring", "topic_queue"]
+    assert by_type["worker_deployment"].generates == [
+        "worker_deployment",
+        "helm_worker_values",
+        "terraform_worker",
+    ]
+    assert by_type["secret_wiring"].generates == ["external_secret", "helm_env_wiring"]
+    assert by_type["topic_queue"].generates == ["kafka_topic"]
+
+
+def test_render_config_includes_discovered_capability_entries(tmp_path):
+    capabilities = [
+        im.CapabilityProposal(
+            type="worker_deployment",
+            approver="@platform-team",
+            generates=["worker_deployment"],
+            checks=["policy"],
+            inputs={"worker_name": "required", "service": "required"},
+            template_map={
+                "worker_deployment": {
+                    "template": "templates/worker_deployment.tmpl",
+                    "output": "envs/prod/payments-api/workers/${worker_name}-deployment.yaml",
+                }
+            },
+        )
+    ]
+
+    text = im.render_config(
+        service="payments-api",
+        infra_repo="acme/platform-infra",
+        ref="main",
+        env="prod",
+        allow=["envs/prod/payments-api/**"],
+        capabilities=capabilities,
+    )
+
+    assert capabilities_from_config(text) == {
+        "worker_deployment": {
+            "type": "worker_deployment",
+            "template": "capabilities/worker_deployment.yaml",
+            "approver": "@platform-team",
+        }
+    }
+
+
+def test_main_writes_discovered_capability_packs_and_templates(tmp_path):
+    _write(tmp_path, "envs/prod/payments-api/service.yaml", "kind: Service\n")
+    _write(tmp_path, "helm/payments-api/values.yaml", "workers: {}\n")
+    _write(tmp_path, "terraform/payments-api/workers/README.md", "# workers\n")
+    out = tmp_path / "mergeproof.yaml"
+
+    rc = im.main([
+        "--repo", "acme/payments-api",
+        "--infra-repo", "acme/platform-infra",
+        "--service", "payments-api",
+        "--repo-root", str(tmp_path),
+        "--output", str(out),
+    ])
+
+    assert rc == 0
+    config_text = out.read_text(encoding="utf-8")
+    assert "capabilities:" in config_text
+    cfg = mc.load_config(config_text, fmt="yaml")
+    assert "envs/prod/payments-api/**" in cfg["architecture_sources"][0]["allow"]
+    caps = capabilities_from_config(config_text)
+    assert set(caps) == {"worker_deployment"}
+
+    pack_path = tmp_path / "capabilities" / "worker_deployment.yaml"
+    pack = load_pack(pack_path.read_text(encoding="utf-8"))
+    assert pack["generates"] == ["worker_deployment", "helm_worker_values", "terraform_worker"]
+    assert pack["approval"]["required_from"] == ["platform-team"]
+    assert (tmp_path / "capabilities" / "templates" / "worker_deployment.tmpl").is_file()
+    assert (tmp_path / "capabilities" / "templates" / "helm_worker_values.tmpl").is_file()
+    assert (tmp_path / "capabilities" / "templates" / "terraform_worker.tmpl").is_file()

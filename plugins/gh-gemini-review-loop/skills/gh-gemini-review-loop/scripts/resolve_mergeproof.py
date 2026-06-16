@@ -17,7 +17,7 @@ def _fmt_for(path: str) -> str:
     return "json" if path.endswith(".json") else "yaml"
 
 
-def fetch_config(repo: str, ref: str, runner: Runner) -> tuple[dict[str, Any], str] | None:
+def fetch_config(repo: str, ref: str, runner: Runner) -> tuple[dict[str, Any], str, str] | None:
     for path in CONFIG_PATHS:
         try:
             payload = runner(["api", f"repos/{repo}/contents/{path}?ref={ref}"])
@@ -26,7 +26,7 @@ def fetch_config(repo: str, ref: str, runner: Runner) -> tuple[dict[str, Any], s
         text = _decode_content(payload)
         if text is None:
             continue
-        return load_config(text, fmt=_fmt_for(path)), path
+        return load_config(text, fmt=_fmt_for(path)), path, text
     return None
 
 
@@ -62,19 +62,24 @@ def resolve(
     # An explicit operator-provided config (--mergeproof) is trusted as given and
     # bypasses the base-ref fetch; config-change detection is still reported.
     if config_override is not None:
-        found: tuple[dict[str, Any], str] | None = (config_override, "(provided)")
+        found: tuple[dict[str, Any], str, str] | None = (
+            config_override,
+            "(provided)",
+            str(config_override.get("_raw_text") or ""),
+        )
     else:
         found = fetch_config(app_repo, config_ref, runner)
     if found is None:
         return {
             "status": "MISSING",
             "config": None,
+            "config_text": None,
             "config_changed": config_changed,
             "config_path": None,
             "config_ref": config_ref,
         }
 
-    config, path = found
+    config, path, text = found
     # Resolve each source ref to an immutable SHA. An inaccessible infra repo
     # (404/403) must degrade to partial context, not crash the readiness phase.
     failed_sources: list[dict[str, str]] = []
@@ -97,6 +102,7 @@ def resolve(
     return {
         "status": status,
         "config": config,
+        "config_text": text,
         "config_changed": config_changed,
         "config_path": path,
         "config_ref": config_ref,

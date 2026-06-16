@@ -10,6 +10,7 @@ fictional). Returns the ``infra_pr`` block attached to a matched obligation.
 from __future__ import annotations
 
 import re
+import json
 import subprocess
 import tempfile
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import Any, Callable
 from urllib.parse import quote_plus, urlencode
 
 Runner = Callable[[list[str]], str]
+GitHubRunner = Callable[[list[str]], Any]
 
 
 def _slug(value: str) -> str:
@@ -45,6 +47,68 @@ def default_runner(args: list[str]) -> str:
     return proc.stdout
 
 
+def default_gh_runner(args: list[str]) -> Any:
+    proc = subprocess.run(
+        ["gh", "api", *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or "gh api failed").strip())
+    try:
+        return json.loads(proc.stdout or "null")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("gh api returned invalid JSON") from exc
+
+
+def open_or_create_pr(
+    repo: str,
+    base: str,
+    branch: str,
+    title: str,
+    body: str,
+    runner: GitHubRunner = default_gh_runner,
+) -> dict[str, Any]:
+    owner = repo.split("/", 1)[0]
+    query = urlencode(
+        {"head": f"{owner}:{branch}", "base": base, "state": "open"},
+        quote_via=quote_plus,
+    )
+    existing = runner([f"repos/{repo}/pulls?{query}"])
+    if isinstance(existing, list) and existing:
+        pr = existing[0]
+        return {
+            "action": "existing",
+            "number": pr.get("number"),
+            "html_url": pr.get("html_url"),
+        }
+
+    created = runner(
+        [
+            f"repos/{repo}/pulls",
+            "--method",
+            "POST",
+            "--raw-field",
+            f"title={title}",
+            "--raw-field",
+            f"body={body}",
+            "--raw-field",
+            f"head={branch}",
+            "--raw-field",
+            f"base={base}",
+        ]
+    )
+    created = created if isinstance(created, dict) else {}
+    return {
+        "action": "created",
+        "number": created.get("number"),
+        "html_url": created.get("html_url"),
+    }
+
+
 def stage_branch(
     repo: str,
     base: str,
@@ -61,11 +125,19 @@ def stage_branch(
     with tempfile.TemporaryDirectory() as tmp:
         runner(["clone", "--depth", "1", "--branch", base, f"https://github.com/{repo}.git", tmp])
         runner(["-C", tmp, "checkout", "-B", branch])
+        lease = "--force-with-lease"
+        try:
+            runner(["-C", tmp, "fetch", "origin", f"{branch}:refs/remotes/origin/{branch}"])
+            expected = runner(["-C", tmp, "rev-parse", f"refs/remotes/origin/{branch}"]).strip()
+            if expected:
+                lease = f"--force-with-lease=refs/heads/{branch}:{expected}"
+        except RuntimeError:
+            pass  # First run: the generated branch does not exist yet.
         for rel, content in files.items():
             dest = Path(tmp) / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(content, encoding="utf-8")
             runner(["-C", tmp, "add", rel])
         runner(["-C", tmp, "commit", "-m", commit_message])
-        runner(["-C", tmp, "push", "--force-with-lease", "origin", branch])
+        runner(["-C", tmp, "push", lease, "origin", branch])
     return {"repo": repo, "base": base, "branch": branch, "pushed": True, "generated_files": generated}

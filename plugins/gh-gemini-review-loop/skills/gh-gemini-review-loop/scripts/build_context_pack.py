@@ -89,6 +89,12 @@ def build_pack(
             "fetched_at": now_iso or _now_iso(),
             "file_count": len(all_files),
         },
+        "config": {
+            "path": resolution["config_path"],
+            "ref": resolution["config_ref"],
+            "text": resolution.get("config_text") or "",
+            "architecture_sources": config["architecture_sources"],
+        },
         "safety": {
             "limits": limits,
             "skipped": skipped,

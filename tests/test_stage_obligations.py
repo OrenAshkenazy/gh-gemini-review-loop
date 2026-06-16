@@ -50,10 +50,14 @@ def test_detect_then_stage_end_to_end_with_demo_fixtures():
     obligations = detect_obligations(changed, caps, packs, service=service)
     staged = stage_obligations(
         obligations, repo="acme/platform-infra", base="main",
-        allow=["envs/prod/payments-api/**", "helm/payments-api/**"],
+        allow=["envs/prod/payments-api/**", "helm/payments-api/**", "terraform/payments-api/**"],
         templates_root=F / "capabilities", source_pr="https://github.com/o/r/pull/1", dry_run=True,
     )
     worker = next(o for o in staged if o["type"] == "worker_deployment")
     assert worker["outcome"] == "matched"
     assert "infra_pr" in worker
-    assert worker["infra_pr"]["generated_files"]   # non-empty: template_map resolved
+    assert worker["infra_pr"]["generated_files"] == [
+        "envs/prod/payments-api/workers/refund_worker-deployment.yaml",
+        "helm/payments-api/workers/refund_worker.yaml",
+        "terraform/payments-api/workers/refund_worker.tf",
+    ]

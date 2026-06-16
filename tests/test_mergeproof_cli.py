@@ -18,6 +18,8 @@ def test_run_writes_json_markdown_and_html_outputs(tmp_path, monkeypatch):
         assert repo == "O/R"
         assert number == 1
         assert loop_summary["verification"] == "passed"
+        assert kwargs["stage_infra"] is True
+        assert kwargs["create_infra_pr"] is True
         return {
             "status": "rendered",
             "readiness": {
@@ -42,6 +44,8 @@ def test_run_writes_json_markdown_and_html_outputs(tmp_path, monkeypatch):
             "O/R#1",
             "--loop-summary",
             str(loop),
+            "--stage-infra",
+            "--create-infra-pr",
             "--json-output",
             str(json_out),
             "--markdown-output",
