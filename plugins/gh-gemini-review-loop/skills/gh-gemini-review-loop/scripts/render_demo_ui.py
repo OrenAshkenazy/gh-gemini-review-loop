@@ -136,6 +136,7 @@ a { color: #7dd3fc; }
 pre.diff { background: #0a1322; border: 1px solid #1a2740; border-radius: 8px; padding: 12px 14px; overflow-x: auto; font-size: 12.5px; color: #cbd5e1; }
 .btn { display: inline-block; margin-top: 12px; padding: 9px 16px; background: var(--accent); color: #0b1220; font-weight: 700; border-radius: 8px; text-decoration: none; }
 .gate { margin-top: 12px; color: #fbbf24; font-weight: 650; }
+.audit { color: #cbd5e1; font-size: 14px; line-height: 1.9; }
 """
 
 
@@ -335,11 +336,39 @@ def _resolve_tab(readiness: dict[str, Any]) -> str:
 
 
 def _audit_tab(readiness: dict[str, Any]) -> str:
-    return '<section class="tabpanel" id="tab-audit"><h2 class="section">Audit trail</h2></section>'
+    ev = readiness.get("evidence") or {}
+    rows = [f'<li>AI loop: {_e(ev.get("findings_fixed", 0))} fixed · verification {_e(ev.get("verification","unknown"))}</li>']
+    for ob in readiness.get("obligations") or []:
+        files = ", ".join(ob.get("evidence_files") or [])
+        rows.append(f'<li>Obligation <code>{_e(ob.get("type",""))}</code> ({_e(ob.get("outcome",""))}) from {_e(files or "—")}</li>')
+    return (
+        '<section class="tabpanel" id="tab-audit"><h2 class="section">Audit trail</h2>'
+        f'<ol class="audit">{"".join(rows)}</ol></section>'
+    )
 
 
 def _packs_tab(readiness: dict[str, Any]) -> str:
-    return '<section class="tabpanel" id="tab-packs"><h2 class="section">Capability packs</h2></section>'
+    seen: dict[str, dict[str, Any]] = {}
+    for ob in readiness.get("obligations") or []:
+        pack = ob.get("pack")
+        if pack and ob.get("type") not in seen:
+            seen[ob["type"]] = pack
+    if not seen:
+        return '<section class="tabpanel" id="tab-packs"><h2 class="section">Capability packs</h2><p class="points">No capability packs referenced.</p></section>'
+    rows = ""
+    for cap_type, pack in seen.items():
+        rows += (
+            f'<tr><td><code>{_e(cap_type)}</code></td>'
+            f'<td>{_e(", ".join(pack.get("generates") or []))}</td>'
+            f'<td>{_e(", ".join(pack.get("checks") or []))}</td>'
+            f'<td>{_e(pack.get("approver") or "—")}</td>'
+            f'<td>{_e(pack.get("human_gate") or "—")}</td></tr>'
+        )
+    return (
+        '<section class="tabpanel" id="tab-packs"><h2 class="section">Capability packs</h2>'
+        '<table><thead><tr><th>Type</th><th>Generates</th><th>Checks</th><th>Approver</th><th>Human gate</th></tr></thead>'
+        f'<tbody>{rows}</tbody></table></section>'
+    )
 
 
 def render_html(readiness: dict[str, Any]) -> str:

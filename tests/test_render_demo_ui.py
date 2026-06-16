@@ -231,3 +231,27 @@ def test_resolve_tab_human_gated_shows_pending_not_button():
     html = render_html(readiness)
     assert "secret value provisioning" in html
     assert "input: env_var" in html
+
+
+def test_audit_tab_lists_evidence_and_obligations_simply():
+    readiness = dict(_READY)
+    readiness["obligations"] = [
+        {"type": "worker_deployment", "outcome": "matched", "evidence_files": ["app/workers/refund_worker.py"], "inputs": {}, "pack": {"approver": "@platform-runtime"}, "human_gate_pending": []},
+    ]
+    html = render_html(readiness)
+    assert 'id="tab-audit"' in html
+    assert "app/workers/refund_worker.py" in html
+    assert "worker_deployment" in html
+
+
+def test_packs_tab_lists_declared_capabilities_readonly():
+    readiness = dict(_READY)
+    readiness["obligations"] = [
+        {"type": "worker_deployment", "outcome": "matched", "evidence_files": [], "inputs": {},
+         "pack": {"approver": "@platform-runtime", "generates": ["worker_deployment", "helm_worker_values"], "checks": ["policy"], "human_gate": None}, "human_gate_pending": []},
+    ]
+    html = render_html(readiness)
+    assert 'id="tab-packs"' in html
+    assert "helm_worker_values" in html
+    assert "@platform-runtime" in html
+    assert "<form" not in html and "<button" not in html
