@@ -1,0 +1,40 @@
+from stage_obligations import stage_obligations
+
+
+def _matched_ob():
+    return {
+        "type": "worker_deployment", "outcome": "matched",
+        "evidence_files": ["app/workers/refund_worker.py"],
+        "inputs": {"worker_name": "refund_worker", "service": "payments-api"},
+        "pack": {"generates": ["worker_deployment"], "checks": ["policy"], "approver": "@platform-runtime", "human_gate": None,
+                 "template_map": {"worker_deployment": {"template": "templates/w.tmpl", "output": "envs/prod/payments-api/workers/${worker_name}.yaml"}}},
+        "human_gate_pending": [],
+    }
+
+
+def test_matched_obligation_gets_infra_pr_block(tmp_path):
+    (tmp_path / "templates").mkdir()
+    (tmp_path / "templates" / "w.tmpl").write_text("name: ${service}-${worker_name}\n", encoding="utf-8")
+    obligations = [_matched_ob()]
+    out = stage_obligations(
+        obligations, repo="acme/platform-infra", base="main",
+        allow=["envs/prod/payments-api/**"], templates_root=tmp_path,
+        source_pr="https://github.com/o/r/pull/1", dry_run=True,
+    )
+    infra = out[0]["infra_pr"]
+    assert infra["pushed"] is False
+    assert infra["generated_files"] == ["envs/prod/payments-api/workers/refund_worker.yaml"]
+    assert infra["branch"] == "mergeproof/worker_deployment-refund_worker"
+    assert "compare/main...mergeproof/worker_deployment-refund_worker" in infra["create_url"]
+    assert infra["diff"]["envs/prod/payments-api/workers/refund_worker.yaml"].startswith("name: payments-api-refund_worker")
+
+
+def test_human_gated_and_blocked_are_left_unstaged(tmp_path):
+    obligations = [
+        {"type": "secret_wiring", "outcome": "human_gated", "evidence_files": [], "inputs": {}, "pack": {}, "human_gate_pending": ["x"]},
+        {"type": "worker_deployment", "outcome": "blocked", "evidence_files": [], "inputs": {}, "pack": None, "human_gate_pending": []},
+    ]
+    out = stage_obligations(obligations, repo="r", base="main", allow=["**"], templates_root=tmp_path,
+                            source_pr="u", dry_run=True)
+    assert "infra_pr" not in out[0]
+    assert "infra_pr" not in out[1]
