@@ -1,4 +1,6 @@
-from pr_obligations import detect_obligations
+from pathlib import Path
+
+from pr_obligations import detect_obligations, load_capabilities_and_packs
 
 
 def _worker_pack():
@@ -71,12 +73,6 @@ def test_modified_worker_does_not_trigger_added_only_rule():
     capabilities = {"worker_deployment": {"type": "worker_deployment", "template": "x", "approver": "@x"}}
     packs = {"worker_deployment": _worker_pack()}
     assert detect_obligations(changed, capabilities, packs, service="payments-api") == []
-
-
-import json
-from pathlib import Path
-
-from pr_obligations import load_capabilities_and_packs
 
 
 def test_load_capabilities_and_packs_reads_templates(tmp_path: Path):

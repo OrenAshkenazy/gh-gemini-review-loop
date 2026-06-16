@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import render_pr_readiness as rpr
+from render_pr_readiness import build_readiness, main as render_main, render_markdown
 
 
 LOOP_SUMMARY = {
@@ -214,8 +215,6 @@ def test_markdown_shows_provenance_line():
     assert "acme/infra@abc1234" in md
 
 
-from render_pr_readiness import build_readiness
-
 _PASS_LOOP = {"pr_url": "https://github.com/o/r/pull/1", "verification": "passed", "fixed_count": 3}
 _ARCH = {"service_name": "payments-api", "exposure": "public", "queues": ["redis:arq"]}
 _NO_RISK = {"production_risks": [], "summary": {"highest_severity": "none", "human_decision_required": False, "risk_count": 0}}
@@ -246,9 +245,6 @@ def test_obligations_default_empty_when_omitted():
     assert r["obligations"] == []
 
 
-from render_pr_readiness import render_markdown
-
-
 def test_markdown_renders_obligation_action_panel():
     obligations = [
         {"type": "worker_deployment", "outcome": "matched", "evidence_files": ["app/workers/refund_worker.py"],
@@ -275,13 +271,8 @@ def test_markdown_omits_obligation_panel_when_none():
     assert "### Production obligations" not in render_markdown(r)
 
 
-import json as _json
-from pathlib import Path as _Path
-from render_pr_readiness import main as render_main
-
-
 def _write_json(p, obj):
-    p.write_text(_json.dumps(obj), encoding="utf-8")
+    p.write_text(json.dumps(obj), encoding="utf-8")
     return str(p)
 
 
@@ -295,7 +286,7 @@ def test_cli_accepts_obligations_file(tmp_path, capsys):
 
     rc = render_main(["--loop-summary", loop, "--architecture-context", arch,
                       "--production-risks", risks, "--obligations", obs, "--json"])
-    out = _json.loads(capsys.readouterr().out)
+    out = json.loads(capsys.readouterr().out)
 
     assert rc == 0
     assert out["status"] == "HUMAN_DECISION_REQUIRED"
