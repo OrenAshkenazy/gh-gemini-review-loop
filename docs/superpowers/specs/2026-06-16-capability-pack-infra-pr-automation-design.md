@@ -1,0 +1,227 @@
+# Capability-Pack Infra-PR Automation — Design
+
+**Date:** 2026-06-16
+**Status:** Approved for planning
+**Branch context:** builds on `feat/production-aware-pr-readiness` (PR #46, MergeProof readiness)
+
+## Problem
+
+The MergeProof PR Readiness Card correctly reaches `HUMAN_DECISION_REQUIRED`
+when a PR touches production-facing surfaces, but it stops there with two gaps:
+
+1. **No concrete action item for the developer.** The card's "next options"
+   are generic ("approve / ask AI to adjust / split"). It does not tell the dev
+   *what specific infra change this PR implies, in which repo, who approves it,
+   and what they must still provide by hand.*
+2. **No path to the infra-repo change.** When an app PR implies a production
+   change (a new worker needs a Deployment, a new secret needs wiring), nothing
+   generates that change or opens the corresponding PR in the infra repo. The
+   pipeline dead-ends.
+
+The `capability_pack.py` module and the `demo/production-readiness/payments-api`
+fixtures already seed the intended model: a **Capability Pack** is the approved,
+reusable template for one class of infra change. This design completes the
+pipeline from "app PR" → "matched obligation" → "concrete action item" →
+"staged, one-click infra PR."
+
+## Goals
+
+- Turn each production-facing change into a **specific, actionable** statement
+  (what infra change, which repo, which approver, which human gates remain).
+- Generate the infra artifacts from approved capability packs and stage a branch
+  so the developer can open the infra PR in **one click** from the HTML report.
+- Stay **deterministic, zero-dependency, advisory-by-default**, and bound by the
+  trusted `mergeproof.yaml` allowlist and the packs' own approval/human gates.
+
+## Non-Goals (this iteration)
+
+- No local action-server / hosted web app (north-star, see Phasing → Phase 3).
+- No auto-merge and no auto-approval. Human approval via the pack's
+  `approval.required_from` is always required.
+- No LLM-based obligation detection. Detection is deterministic rules only.
+- No new GitHub identity. Infra writes use the developer's local `gh`.
+
+## Decisions (locked during brainstorming)
+
+| Decision | Choice |
+|---|---|
+| Ambition | Full automation is the **north-star architecture**; built in phases. |
+| Infra-write identity (now) | Developer's local `gh` pushes the branch; GitHub's own create-PR page is the auth surface for opening the PR. |
+| HTML button action (now) | Branch is pushed during the run; the button **deep-links to a prefilled GitHub PR-create page**. |
+| Obligation detection | **Deterministic rules** keyed to capability types declared in `mergeproof.yaml`. |
+
+## Architecture
+
+### Pipeline placement
+
+A new stage in `mergeproof run`, between the existing risk overlay and the card
+render:
+
+```
+... → 19  map changed files → production risks
+     → 19b OBLIGATION RESOLUTION            ← new
+     → 20  combine evidence + risks + obligations
+     → 22  render card (+ action panel)
+     → 23  publish PR comment
+     → 24  render HTML (+ one-click button)
+```
+
+### Components (all stdlib, zero-dependency)
+
+| Unit | Responsibility | Depends on |
+|---|---|---|
+| `pr_obligations.py` | **Detect.** Deterministic rules map changed files → obligations `{type, inputs, evidence_files}`. Rules are keyed to capability `type`s **declared in `mergeproof.yaml`** — only obligations with an approved path are raised. | changed files, capabilities map |
+| `capability_pack.py` *(reuse)* | **Match.** `capabilities_from_config` + `load_pack` resolve each obligation `type` → pack (`generates`, `checks`, `approval`, `human_gate`). Already built and tested. | `mergeproof.yaml`, pack files |
+| `generate_infra_change.py` | **Generate.** Render each pack `generates:` entry into infra files via safe `${input}` substitution. Refuse on missing required input; never fill a `human_gate` value. | matched pack, inputs, template files |
+| `publish_infra_pr.py` | **Stage.** Create branch in the infra repo, write generated files, commit, push via local `gh`. Return branch ref + prefilled PR-create deep-link. | generated files, `gh` |
+| `render_pr_readiness.py` *(extend)* | Render the per-obligation **action panel** in the Markdown card. | `obligations` block |
+| `render_demo_ui.py` *(extend)* | Render the action panel in HTML; button = the deep-link (present only when `infra_pr.pushed`). | `obligations` block |
+
+### The three obligation outcomes
+
+1. **`matched`** — pack found, all inputs available, no human gate. Generate
+   files, push branch, emit deep-link. Action item: *"Adds a worker → needs
+   `worker_deployment` in `acme/platform-infra`, approver `@platform-runtime`.
+   [Open infra PR ▸]"*
+2. **`human_gated`** — pack found but a required value is human-only (e.g.
+   `secret_wiring` needs a secret *value*). Generate the wiring, leave the gated
+   value as an explicit unfilled placeholder, record it in `human_gate_pending`.
+   Action item names exactly what the human must provide before merge.
+3. **`blocked`** — no matching pack. Per the capability-pack contract, an
+   obligation with no matching pack is blocked: **no generation, no push.**
+   Action item: *"Implies infra X but no approved capability exists — escalate
+   to platform."*
+
+## Data shapes
+
+Additive new top-level key in `readiness.json` (nothing existing changes shape):
+
+```json
+"obligations": [
+  {
+    "type": "worker_deployment",
+    "outcome": "matched",
+    "evidence_files": ["app/workers/refund_worker.py"],
+    "inputs": {"worker_name": "refund_worker", "service": "payments-api", "topic": "refunds"},
+    "pack": {
+      "generates": ["worker_deployment", "helm_worker_values"],
+      "checks": ["helm_template", "policy", "naming_convention"],
+      "approver": "@platform-runtime",
+      "human_gate": null
+    },
+    "infra_pr": {
+      "repo": "acme/platform-infra",
+      "branch": "mergeproof/worker_deployment-refund_worker",
+      "create_url": "https://github.com/acme/platform-infra/compare/main...mergeproof/worker_deployment-refund_worker?expand=1&title=...&body=...",
+      "pushed": true,
+      "generated_files": ["envs/prod/payments-api/workers/refund_worker.yaml"]
+    },
+    "human_gate_pending": []
+  }
+]
+```
+
+`blocked` and `human_gated` outcomes omit `infra_pr.pushed: true` and carry the
+reason in the action item; `human_gated` populates `human_gate_pending`.
+
+## Status logic
+
+Two new rules, inserted before the generic human-decision rule:
+
+```
+verification failed                          -> VERIFICATION_FAILED
+MergeProof config changed in PR              -> CONFIG_CHANGED_REVIEW_REQUIRED
+any obligation outcome == blocked            -> HUMAN_DECISION_REQUIRED  (no approved path)   [new]
+any obligation human_gate_pending nonempty   -> HUMAN_DECISION_REQUIRED  (value needed)       [new]
+any production risk needs a human            -> HUMAN_DECISION_REQUIRED
+semantic_risk flagged                        -> HUMAN_DECISION_REQUIRED
+fixes applied, not yet re-confirmed          -> PENDING_CONFIRMATION
+otherwise                                    -> READY
+```
+
+`READY` is reachable only when every obligation is `matched`, generated, and its
+infra PR is staged with no pending human gate.
+
+## Generation mechanics
+
+- Each `generates:` entry resolves to a **template file** shipped alongside the
+  capability pack within the infra-repo allowlist, e.g.
+  `capabilities/templates/worker_deployment.yaml.tmpl`.
+- Rendering is **safe `${input}` substitution** via `string.Template.substitute`,
+  which *raises* on a missing key (no silent blanks). Inputs come only from the
+  deterministic detector. No code execution, no Jinja, no third-party engine.
+- **`human_gate` values are never substituted.** The template marks them
+  `${HUMAN_GATE:secret value}`; the generator leaves a literal, greppable
+  placeholder and records the gate in `human_gate_pending`.
+
+## Branch + deep-link mechanics
+
+- Branch name: `mergeproof/<type>-<primary_input>` (collision-safe; force-updated
+  on re-run).
+- `publish_infra_pr.py` writes the generated files, commits with a templated
+  message, and pushes via local `gh`/git.
+- `create_url` is a GitHub **compare URL** with `expand=1` plus URL-encoded
+  `title` and `body`. The body embeds the approver `@mention`, a link back to the
+  source app PR, the generated-file list, and any pending human gate. Clicking it
+  opens GitHub's own create-PR page, prefilled, where the developer is already
+  authenticated.
+
+## Safety invariants
+
+- **No pack ⇒ no generation, no push.** Blocked obligations never touch the infra
+  repo.
+- **`--dry-run` honored.** Stages files to a temp dir, prints the would-be push +
+  URL, writes nothing remote.
+- **Allowlist-bound.** Every generated path must fall under the trusted
+  `mergeproof.yaml` allowlist; a path outside it is a hard error.
+- **Idempotent.** Re-running updates the same branch; the PR comment and HTML
+  always reflect the latest staged branch.
+
+## Phasing
+
+The spec documents the full pipeline; implementation lands in slices.
+
+| Phase | Deliverable | Writes infra repo? | Demo shows |
+|---|---|---|---|
+| **1 — Detect + advise** | `pr_obligations.py` + pack matching + `obligations` block + action panel (text only, no button) | No | Card names the specific infra change, repo, approver, human gates |
+| **2 — Generate + one-click** | `generate_infra_change.py` + `publish_infra_pr.py` + deep-link button in HTML | Yes (branch push via local `gh`) | Click button → prefilled GitHub PR-create page for generated infra branch |
+| **3 — North-star (spec'd, not built)** | local action-server one-click; later hosted app + GitHub App | — | future work only |
+
+**First implementation plan = Phase 1 + Phase 2 together** (Phase 1 alone has no
+button to demo; the "now" experience needs both). Phase 3 is recorded here as
+future work only.
+
+## Testing
+
+GitHub calls stay behind an injectable client, matching the existing pattern.
+
+- `test_pr_obligations.py` — new worker file → `worker_deployment`; new
+  `os.environ[...]` → `secret_wiring`; topic usage → `topic_queue`; change with
+  no declared capability → `blocked`; infra-irrelevant change → no obligation.
+- `test_generate_infra_change.py` — `${input}` substitution; missing required
+  input raises; `human_gate` placeholder left unfilled and recorded; generated
+  path outside allowlist is a hard error.
+- `test_publish_infra_pr.py` — branch name, commit, compare-URL construction
+  (title/body/approver encoding); `--dry-run` writes nothing remote; idempotent
+  re-run.
+- `test_render_pr_readiness.py` / `test_render_demo_ui.py` — action panel for
+  each of `matched` / `human_gated` / `blocked`; button present only when
+  `infra_pr.pushed`.
+- Status-logic tests — `blocked` and `human_gate_pending` each force
+  `HUMAN_DECISION_REQUIRED`.
+
+## Demo
+
+Uses the already-committed `demo/production-readiness/payments-api` fixtures.
+`changed_files.json` adds `app/workers/refund_worker.py` (+ test) and modifies
+`app/providers/acme.py`. Against the declared capabilities:
+
+- new worker → **`worker_deployment`** matched → generates worker Deployment +
+  Helm values → branch pushed → button **Open infra PR** (approver
+  `@platform-runtime`).
+- a provider change that reads a new secret → **`secret_wiring`** →
+  **`human_gated`**: wiring generated, secret *value* left blank, action item
+  names the gate (approver `@platform-secrets`).
+
+End state: an HTML report whose action panel turns "tests passed but
+production-facing" into specific, clickable next steps — closing both gaps.
