@@ -212,3 +212,35 @@ def test_verification_failed_outranks_config_changed():
 def test_markdown_shows_provenance_line():
     md = rpr.render_markdown(rpr.build_readiness(LOOP_SUMMARY, PACK, RISKS_HIGH))
     assert "acme/infra@abc1234" in md
+
+
+from render_pr_readiness import build_readiness
+
+_PASS_LOOP = {"pr_url": "https://github.com/o/r/pull/1", "verification": "passed", "fixed_count": 3}
+_ARCH = {"service_name": "payments-api", "exposure": "public", "queues": ["redis:arq"]}
+_NO_RISK = {"production_risks": [], "summary": {"highest_severity": "none", "human_decision_required": False, "risk_count": 0}}
+
+
+def test_blocked_obligation_forces_human_decision():
+    obligations = [{"type": "worker_deployment", "outcome": "blocked", "evidence_files": ["a"], "inputs": {}, "pack": None, "human_gate_pending": []}]
+    r = build_readiness(_PASS_LOOP, _ARCH, _NO_RISK, obligations=obligations)
+    assert r["status"] == "HUMAN_DECISION_REQUIRED"
+    assert r["obligations"] == obligations
+
+
+def test_human_gated_obligation_forces_human_decision():
+    obligations = [{"type": "secret_wiring", "outcome": "human_gated", "evidence_files": ["a"], "inputs": {}, "pack": {"approver": "@x"}, "human_gate_pending": ["secret value provisioning"]}]
+    r = build_readiness(_PASS_LOOP, _ARCH, _NO_RISK, obligations=obligations)
+    assert r["status"] == "HUMAN_DECISION_REQUIRED"
+
+
+def test_all_matched_obligations_do_not_block_ready():
+    obligations = [{"type": "worker_deployment", "outcome": "matched", "evidence_files": ["a"], "inputs": {}, "pack": {"approver": "@x"}, "human_gate_pending": []}]
+    r = build_readiness(_PASS_LOOP, _ARCH, _NO_RISK, obligations=obligations)
+    assert r["status"] == "READY"
+    assert r["obligations"] == obligations
+
+
+def test_obligations_default_empty_when_omitted():
+    r = build_readiness(_PASS_LOOP, _ARCH, _NO_RISK)
+    assert r["obligations"] == []

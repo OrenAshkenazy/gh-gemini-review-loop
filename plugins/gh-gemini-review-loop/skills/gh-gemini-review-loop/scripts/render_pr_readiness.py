@@ -106,6 +106,11 @@ _REASONS = {
         "AI review loop completed and tests passed, but this PR touches "
         "production-facing surfaces."
     ),
+    "HUMAN_DECISION_REQUIRED_OBLIGATION": (
+        "AI review loop completed and tests passed, but this PR implies a "
+        "production infra change that needs a human (no approved path, or a "
+        "value only a human can provide)."
+    ),
     "HUMAN_DECISION_REQUIRED_SEMANTIC": (
         "AI review loop completed and tests passed, but a semantic risk was "
         "flagged for human review."
@@ -144,12 +149,17 @@ def build_readiness(
     loop_summary: dict[str, Any],
     architecture: dict[str, Any],
     production_risks: dict[str, Any],
+    obligations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Assemble the canonical, deterministic readiness data structure."""
     loop_summary = loop_summary or {}
     architecture = architecture or {}
     production_risks = production_risks or {}
     architecture, provenance, safety = _unwrap_architecture(architecture)
+
+    obligations = obligations if isinstance(obligations, list) else []
+    blocked = any(o.get("outcome") == "blocked" for o in obligations)
+    gated = any(o.get("human_gate_pending") for o in obligations)
 
     risks = production_risks.get("production_risks")
     risks = risks if isinstance(risks, list) else []
@@ -168,6 +178,9 @@ def build_readiness(
     elif safety.get("config_changed"):
         status = "CONFIG_CHANGED_REVIEW_REQUIRED"
         reason = _REASONS["CONFIG_CHANGED_REVIEW_REQUIRED"]
+    elif blocked or gated:
+        status = "HUMAN_DECISION_REQUIRED"
+        reason = _REASONS["HUMAN_DECISION_REQUIRED_OBLIGATION"]
     elif human_required:
         status = "HUMAN_DECISION_REQUIRED"
         reason = _REASONS["HUMAN_DECISION_REQUIRED_RISK"]
@@ -229,6 +242,7 @@ def build_readiness(
             "queues": list(architecture.get("queues") or []),
         },
         "production_risks": risks,
+        "obligations": obligations,
         "provenance": provenance,
         "safety": safety,
         "risk_summary": {
