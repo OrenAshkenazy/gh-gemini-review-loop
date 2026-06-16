@@ -38,3 +38,22 @@ def test_human_gated_and_blocked_are_left_unstaged(tmp_path):
                             source_pr="u", dry_run=True)
     assert "infra_pr" not in out[0]
     assert "infra_pr" not in out[1]
+
+
+def test_detect_then_stage_end_to_end_with_demo_fixtures():
+    from pathlib import Path
+    from pr_obligations import load_capabilities_and_packs, _read_changed, detect_obligations
+    root = Path(__file__).resolve().parent.parent
+    F = root / "demo" / "production-readiness" / "payments-api" / "fixtures"
+    caps, packs, service = load_capabilities_and_packs(F / "mergeproof.yaml")
+    changed = _read_changed(str(F / "changed_files.json"))
+    obligations = detect_obligations(changed, caps, packs, service=service)
+    staged = stage_obligations(
+        obligations, repo="acme/platform-infra", base="main",
+        allow=["envs/prod/payments-api/**", "helm/payments-api/**"],
+        templates_root=F / "capabilities", source_pr="https://github.com/o/r/pull/1", dry_run=True,
+    )
+    worker = next(o for o in staged if o["type"] == "worker_deployment")
+    assert worker["outcome"] == "matched"
+    assert "infra_pr" in worker
+    assert worker["infra_pr"]["generated_files"]   # non-empty: template_map resolved

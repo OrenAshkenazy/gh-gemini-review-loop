@@ -10,10 +10,10 @@ left untouched — there is nothing safe to stage.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from generate_infra_change import generate_files
-from publish_infra_pr import branch_name, compare_url, stage_branch, _default_runner
+from publish_infra_pr import Runner, branch_name, compare_url, default_runner, stage_branch
 
 
 def stage_obligations(
@@ -24,7 +24,7 @@ def stage_obligations(
     templates_root: str | Path,
     source_pr: str,
     dry_run: bool = True,
-    runner: Callable[[list[str]], str] = _default_runner,
+    runner: Runner = default_runner,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for ob in obligations:

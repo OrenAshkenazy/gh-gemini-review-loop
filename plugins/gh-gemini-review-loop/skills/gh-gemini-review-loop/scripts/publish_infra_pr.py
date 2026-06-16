@@ -29,7 +29,8 @@ def branch_name(obligation_type: str, inputs: dict[str, str]) -> str:
         if inputs.get(key):
             primary = inputs[key]
             break
-    return f"mergeproof/{obligation_type}-{_slug(primary)}" if primary else f"mergeproof/{obligation_type}"
+    slug = _slug(primary)
+    return f"mergeproof/{obligation_type}-{slug}" if slug else f"mergeproof/{obligation_type}"
 
 
 def compare_url(repo: str, base: str, branch: str, title: str, body: str) -> str:
@@ -37,7 +38,7 @@ def compare_url(repo: str, base: str, branch: str, title: str, body: str) -> str
     return f"https://github.com/{repo}/compare/{base}...{branch}?{query}"
 
 
-def _default_runner(args: list[str]) -> str:
+def default_runner(args: list[str]) -> str:
     proc = subprocess.run(["git", *args], capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or proc.stdout or "git failed").strip())
@@ -51,7 +52,7 @@ def stage_branch(
     files: dict[str, str],
     commit_message: str,
     dry_run: bool = True,
-    runner: Runner = _default_runner,
+    runner: Runner = default_runner,
 ) -> dict[str, Any]:
     """Stage *files* on *branch*. In dry_run, perform no git calls."""
     generated = sorted(files)
@@ -66,5 +67,5 @@ def stage_branch(
             dest.write_text(content, encoding="utf-8")
             runner(["-C", tmp, "add", rel])
         runner(["-C", tmp, "commit", "-m", commit_message])
-        runner(["-C", tmp, "push", "--force", "origin", branch])
+        runner(["-C", tmp, "push", "--force-with-lease", "origin", branch])
     return {"repo": repo, "base": base, "branch": branch, "pushed": True, "generated_files": generated}

@@ -45,3 +45,7 @@ def test_stage_branch_live_push_invokes_runner():
     )
     assert result["pushed"] is True
     assert any("push" in " ".join(c) for c in calls)
+
+
+def test_branch_name_no_trailing_dash_for_blank_primary():
+    assert branch_name("worker_deployment", {"worker_name": "   "}) == "mergeproof/worker_deployment"

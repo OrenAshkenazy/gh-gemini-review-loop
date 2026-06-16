@@ -56,3 +56,25 @@ def test_output_path_outside_allowlist_is_error(tmp_path):
     with pytest.raises(GenerateError):
         generate_files(_worker_pack(), inputs={"service": "x", "worker_name": "w"},
                        templates_root=tmp_path, allow=["helm/**"])
+
+
+def test_generates_key_without_template_map_entry_raises(tmp_path):
+    pack = {"generates": ["worker_deployment"], "template_map": {}, "human_gate": None}
+    with pytest.raises(GenerateError):
+        generate_files(pack, inputs={"service": "x", "worker_name": "w"}, templates_root=tmp_path, allow=["**"])
+
+
+def test_multiple_generated_files(tmp_path):
+    (tmp_path / "templates").mkdir()
+    (tmp_path / "templates" / "a.tmpl").write_text("a: ${worker_name}\n", encoding="utf-8")
+    (tmp_path / "templates" / "b.tmpl").write_text("b: ${worker_name}\n", encoding="utf-8")
+    pack = {
+        "generates": ["worker_deployment", "helm_worker_values"],
+        "template_map": {
+            "worker_deployment": {"template": "templates/a.tmpl", "output": "envs/${worker_name}-a.yaml"},
+            "helm_worker_values": {"template": "templates/b.tmpl", "output": "helm/${worker_name}-b.yaml"},
+        },
+        "human_gate": None,
+    }
+    files = generate_files(pack, inputs={"worker_name": "w"}, templates_root=tmp_path, allow=["envs/**", "helm/**"])
+    assert files == {"envs/w-a.yaml": "a: w\n", "helm/w-b.yaml": "b: w\n"}

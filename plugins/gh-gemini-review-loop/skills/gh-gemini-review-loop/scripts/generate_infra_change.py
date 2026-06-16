@@ -7,6 +7,11 @@ Deterministic, zero-dependency. Each ``generates:`` key maps (via the pack's
 is never filled with a real value — it is replaced with a greppable
 ``TODO-HUMAN: reason`` placeholder so a human must complete it before merge.
 
+Note: templates use ``string.Template``, so any literal ``$`` in a template that
+is not a ``${input}`` placeholder must be written as ``$$`` (e.g. shell/k8s
+``$(VAR)`` env refs need the ``$`` doubled). ``substitute`` (not ``safe_substitute``)
+is used deliberately so unresolved placeholders fail loud.
+
 Never writes to disk or any repo; returns ``{output_path: content}``. Writing /
 pushing is the publisher's job.
 """

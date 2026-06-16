@@ -116,6 +116,7 @@ def detect_obligations(
                     "checks": list(pack.get("checks") or []),
                     "approver": approver,
                     "human_gate": gate,
+                    "template_map": pack.get("template_map") or {},
                 },
                 "human_gate_pending": human_gate_pending,
             }
