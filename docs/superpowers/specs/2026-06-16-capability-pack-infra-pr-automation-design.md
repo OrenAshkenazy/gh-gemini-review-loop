@@ -318,3 +318,61 @@ hosted dashboard:
 - This keeps the commercial path clear: land inside the PR review surface first,
   expand to a hosted experience second. It also maps cleanly onto Phase 3
   (live action-server → GitHub App), so nothing in the demo MVP is throwaway.
+
+## Path from Demo to Real MVP
+
+This spec is the **Demo MVP PRD** — a deterministic, offline proof of the product
+loop. To pre-empt the "nice demo, but does it work outside your seeded world?"
+objection, the path to a real product is explicit. The Production Obligation and
+Capability Pack model is **identical** across both; only the I/O boundary changes.
+
+```text
+Demo MVP (this spec):           Real MVP v1 (separate PRD):
+- seeded app PR                 - real GitHub app PR as input
+- seeded infra repo             - real app repo + real infra repo
+- deterministic detectors       - same deterministic detectors
+- mock (dry-run) infra PRs      - generated branch/PR pushed to the infra repo
+- generated JSON + diffs        - same generation, on real files
+- local static UI               - GitHub PR readiness comment (UI optional)
+- declared checks as "proof"    - actual validation command execution
+```
+
+The same detector, pack model, generator, and `infra_pr` data structure carry
+over unchanged — the real MVP swaps fixtures for `gh` reads, dry-run for a live
+push, and declared checks for executed ones. Nothing in the demo is throwaway.
+
+### Readiness states: demo vs real product
+
+The **demo keeps the shipped Phase-1 enum** (`VERIFICATION_FAILED`,
+`CONFIG_CHANGED_REVIEW_REQUIRED`, `HUMAN_DECISION_REQUIRED`,
+`PENDING_CONFIRMATION`, `READY`). The blocked-vs-human-gate distinction a reviewer
+might want at the status level is **already surfaced per-obligation** in the action
+panel ("Blocked — no approved capability" vs "Needs a human"), so the demo does
+not need a wider enum. Because the demo is static, there is **no live
+Approve→READY transition** — the card renders a *computed* state; the deep-link
+button does not mutate it.
+
+The **Real MVP v1** introduces a richer, deploy-aware state model (to be
+formalized in the Product MVP PRD), because an app PR can be mergeable before the
+infra change is actually applied:
+
+```text
+VERIFICATION_FAILED          # CR loop verification failed
+BLOCKED_MISSING_CAPABILITY   # obligation with no approved Capability Pack
+HUMAN_GATE_REQUIRED          # a human-only value (e.g. secret value) is unmet
+WAITING_FOR_APPROVAL         # infra PR open, awaiting its declared approver
+READY_FOR_MERGE              # app PR safe to merge (infra PR exists + approved)
+READY_FOR_DEPLOY             # infra actually applied; safe to deploy
+```
+
+`READY_FOR_MERGE` vs `READY_FOR_DEPLOY` captures that merge-readiness and
+deploy-readiness are different gates. The demo collapses these into `READY` by
+design; the distinction is a Real-MVP concern, not a demo one.
+
+### Second artifact
+
+A separate **MergeProof Product MVP PRD** will cover the real-GitHub version (live
+PR input, real cross-repo PR creation, executed validation, the deploy-aware state
+model, and the GitHub-App wedge). It is intentionally **not** written yet — this
+Demo MVP PRD is the current build spec; the Product MVP PRD follows once the demo
+has served its VC/design-partner purpose.
