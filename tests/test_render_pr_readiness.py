@@ -291,3 +291,19 @@ def test_cli_accepts_obligations_file(tmp_path, capsys):
     assert rc == 0
     assert out["status"] == "HUMAN_DECISION_REQUIRED"
     assert out["obligations"][0]["outcome"] == "blocked"
+
+
+def test_markdown_action_shows_infra_pr_link_when_staged():
+    obligations = [{
+        "type": "worker_deployment", "outcome": "matched", "evidence_files": ["app/workers/refund_worker.py"],
+        "inputs": {"worker_name": "refund_worker", "service": "payments-api"},
+        "pack": {"generates": ["worker_deployment"], "checks": ["policy"], "approver": "@platform-runtime", "human_gate": None},
+        "human_gate_pending": [],
+        "infra_pr": {"repo": "acme/platform-infra", "branch": "mergeproof/worker_deployment-refund_worker",
+                      "create_url": "https://github.com/acme/platform-infra/compare/main...mergeproof/worker_deployment-refund_worker?expand=1",
+                      "pushed": False, "generated_files": ["envs/prod/payments-api/workers/refund_worker.yaml"]},
+    }]
+    r = build_readiness(_PASS_LOOP, _ARCH, _NO_RISK, obligations=obligations)
+    md = render_markdown(r)
+    assert "Open infra PR" in md
+    assert "compare/main...mergeproof/worker_deployment-refund_worker" in md

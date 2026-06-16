@@ -282,7 +282,12 @@ def _render_obligations(obligations: list[dict[str, Any]]) -> list[str]:
             action = f"{files} — provide before merge: {', '.join(ob['human_gate_pending'])}."
         else:
             generates = ", ".join(pack.get("generates") or [])
-            action = f"{files} — generates {generates}. (Phase 2 stages the infra PR.)"
+            infra_pr = ob.get("infra_pr") or {}
+            url = infra_pr.get("create_url")
+            if url:
+                action = f"generates {generates} — [Open infra PR ▸]({url}) (branch `{infra_pr.get('branch', '')}`)."
+            else:
+                action = f"{files} — generates {generates}. (infra PR not staged)."
         lines.append(f"| `{ob.get('type', '')}` | {label} | {approver} | {action} |")
     lines.append("")
     return lines
