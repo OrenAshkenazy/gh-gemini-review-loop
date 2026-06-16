@@ -32,6 +32,8 @@ _STATUS_THEME = {
 
 _SEVERITY_CLASS = {"high": "sev-high", "medium": "sev-medium", "low": "sev-low"}
 
+_FLOW_OUTCOME_CLASS = {"matched": "node service", "human_gated": "node exposure", "blocked": "node"}
+
 _CSS = """
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
@@ -125,6 +127,9 @@ a { color: #7dd3fc; }
 #t-resolve:checked ~ #tab-resolve,
 #t-audit:checked ~ #tab-audit,
 #t-packs:checked ~ #tab-packs { display: block; }
+.obl-grid { display: grid; gap: 10px; }
+.obl-node { background: #0f1a2e; border: 1px solid #1e293b; border-radius: 10px; padding: 12px 14px; }
+.obl-meta { color: #94a3b8; font-size: 13px; margin-top: 6px; }
 """
 
 
@@ -268,7 +273,27 @@ def _safety_panel(readiness: dict[str, Any]) -> str:
 
 
 def _flow_tab(readiness: dict[str, Any]) -> str:
-    return '<section class="tabpanel" id="tab-flow"><h2 class="section">Production flow</h2></section>'
+    arch = readiness.get("architecture") or {}
+    obligations = readiness.get("obligations") or []
+    nodes = []
+    for ob in obligations:
+        pack = ob.get("pack") or {}
+        primary = next((v for v in (ob.get("inputs") or {}).values() if v), ob.get("type", ""))
+        cls = _FLOW_OUTCOME_CLASS.get(ob.get("outcome", ""), "node")
+        approver = pack.get("approver") or "—"
+        nodes.append(
+            f'<div class="obl-node"><span class="{cls}">{_e(ob.get("type",""))}</span>'
+            f'<div class="obl-meta">{_e(primary)} · {_e(ob.get("outcome",""))} · {_e(approver)}</div></div>'
+        )
+    obl_html = "".join(nodes) or '<p class="points">No production obligations detected.</p>'
+    return (
+        '<section class="tabpanel" id="tab-flow">'
+        '<h2 class="section">Production flow</h2>'
+        f'<div class="arch">{_arch_flow(arch)}{_arch_async(arch)}</div>'
+        '<h2 class="section">Obligations on this change</h2>'
+        f'<div class="obl-grid">{obl_html}</div>'
+        '</section>'
+    )
 
 
 def _resolve_tab(readiness: dict[str, Any]) -> str:

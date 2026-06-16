@@ -185,3 +185,17 @@ def test_html_has_five_tab_nav_and_readiness_panel():
     assert 'id="tab-readiness"' in html
     assert "HUMAN DECISION REQUIRED" in html
     assert "<script" not in html
+
+
+def test_flow_tab_places_obligations_on_flow():
+    readiness = dict(_READY)
+    readiness["obligations"] = [
+        {"type": "worker_deployment", "outcome": "matched", "evidence_files": ["app/workers/refund_worker.py"],
+         "inputs": {"worker_name": "refund_worker"}, "pack": {"approver": "@platform-runtime", "generates": ["worker_deployment"]},
+         "human_gate_pending": [], "infra_pr": {"branch": "mergeproof/worker_deployment-refund_worker", "create_url": "https://x", "pushed": False, "generated_files": ["a.yaml"]}},
+    ]
+    html = rdu.render_html(readiness)
+    assert 'id="tab-flow"' in html
+    assert "refund_worker" in html
+    assert "@platform-runtime" in html
+    assert "worker_deployment" in html
