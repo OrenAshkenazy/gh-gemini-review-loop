@@ -255,3 +255,31 @@ def test_packs_tab_lists_declared_capabilities_readonly():
     assert "helm_worker_values" in html
     assert "@platform-runtime" in html
     assert "<form" not in html and "<button" not in html
+
+
+def test_payments_api_demo_html_tells_the_five_point_story():
+    import json
+    from pathlib import Path
+    from pr_obligations import load_capabilities_and_packs, _read_changed, detect_obligations
+    from stage_obligations import stage_obligations
+    from render_pr_readiness import build_readiness
+    root = Path(__file__).resolve().parent.parent
+    F = root / "demo" / "production-readiness" / "payments-api" / "fixtures"
+    caps, packs, service = load_capabilities_and_packs(F / "mergeproof.yaml")
+    changed = _read_changed(str(F / "changed_files.json"))
+    obligations = detect_obligations(changed, caps, packs, service=service)
+    obligations = stage_obligations(
+        obligations, repo="acme/platform-infra", base="main",
+        allow=["envs/prod/payments-api/**", "helm/payments-api/**"],
+        templates_root=F / "capabilities", source_pr="https://github.com/acme/payments-api/pull/428", dry_run=True,
+    )
+    arch = {"service_name": service, "exposure": "public", "queues": ["redis:arq"], "ingress": [], "datastores": [], "owners": [], "runtime": "kubernetes"}
+    risks = {"production_risks": [], "summary": {"highest_severity": "none", "human_decision_required": False, "risk_count": 0}}
+    loop = json.loads((F / "loop_summary.json").read_text())
+    readiness = build_readiness(loop, arch, risks, obligations=obligations)
+    html = render_html(readiness)
+    assert readiness["status"] == "HUMAN_DECISION_REQUIRED"   # 1: green PR still unsafe
+    assert "worker_deployment" in html                         # 2 & 3: obligation seen + on flow
+    assert "kind: Deployment" in html                          # 4: generated change
+    assert "Open infra PR" in html                             # 4: one-click
+    assert "secret value provisioning" in html                 # 5: human owns risk
