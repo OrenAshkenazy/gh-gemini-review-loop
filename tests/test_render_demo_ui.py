@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import render_demo_ui as rdu
+from render_demo_ui import render_html
 
 
 READINESS = {
@@ -199,3 +200,34 @@ def test_flow_tab_places_obligations_on_flow():
     assert "refund_worker" in html
     assert "@platform-runtime" in html
     assert "worker_deployment" in html
+
+
+def test_resolve_tab_shows_diff_proof_and_button():
+    readiness = dict(_READY)
+    readiness["obligations"] = [
+        {"type": "worker_deployment", "outcome": "matched", "evidence_files": ["app/workers/refund_worker.py"],
+         "inputs": {"worker_name": "refund_worker"}, "pack": {"approver": "@platform-runtime", "generates": ["worker_deployment"], "checks": ["helm_template", "policy"], "human_gate": None},
+         "human_gate_pending": [],
+         "infra_pr": {"branch": "mergeproof/worker_deployment-refund_worker",
+                       "create_url": "https://github.com/acme/platform-infra/compare/main...mergeproof/worker_deployment-refund_worker?expand=1",
+                       "pushed": False, "generated_files": ["envs/prod/payments-api/workers/refund_worker.yaml"],
+                       "diff": {"envs/prod/payments-api/workers/refund_worker.yaml": "kind: Deployment\nname: payments-api-refund_worker\n"}}},
+    ]
+    html = render_html(readiness)
+    assert 'id="tab-resolve"' in html
+    assert "kind: Deployment" in html
+    assert "helm_template" in html and "policy" in html
+    assert 'href="https://github.com/acme/platform-infra/compare/main...mergeproof/worker_deployment-refund_worker?expand=1"' in html
+    assert "Open infra PR" in html
+
+
+def test_resolve_tab_human_gated_shows_pending_not_button():
+    readiness = dict(_READY)
+    readiness["obligations"] = [
+        {"type": "secret_wiring", "outcome": "human_gated", "evidence_files": ["app/secrets/stripe_webhook.py"],
+         "inputs": {"secret_name": "stripe_webhook"}, "pack": {"approver": "@platform-secrets", "generates": ["external_secret"], "checks": ["policy"], "human_gate": "secret value provisioning"},
+         "human_gate_pending": ["secret value provisioning", "input: env_var"]},
+    ]
+    html = render_html(readiness)
+    assert "secret value provisioning" in html
+    assert "input: env_var" in html

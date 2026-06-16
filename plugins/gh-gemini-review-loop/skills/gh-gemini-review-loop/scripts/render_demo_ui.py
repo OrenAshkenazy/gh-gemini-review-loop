@@ -130,6 +130,12 @@ a { color: #7dd3fc; }
 .obl-grid { display: grid; gap: 10px; }
 .obl-node { background: #0f1a2e; border: 1px solid #1e293b; border-radius: 10px; padding: 12px 14px; }
 .obl-meta { color: #94a3b8; font-size: 13px; margin-top: 6px; }
+.resolve-card { background: #0f1a2e; border: 1px solid #1e293b; border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; }
+.resolve-head { font-weight: 700; font-size: 15px; }
+.diff-path { color: #7dd3fc; font-size: 13px; margin-top: 10px; font-family: ui-monospace, Menlo, monospace; }
+pre.diff { background: #0a1322; border: 1px solid #1a2740; border-radius: 8px; padding: 12px 14px; overflow-x: auto; font-size: 12.5px; color: #cbd5e1; }
+.btn { display: inline-block; margin-top: 12px; padding: 9px 16px; background: var(--accent); color: #0b1220; font-weight: 700; border-radius: 8px; text-decoration: none; }
+.gate { margin-top: 12px; color: #fbbf24; font-weight: 650; }
 """
 
 
@@ -297,7 +303,35 @@ def _flow_tab(readiness: dict[str, Any]) -> str:
 
 
 def _resolve_tab(readiness: dict[str, Any]) -> str:
-    return '<section class="tabpanel" id="tab-resolve"><h2 class="section">Resolve</h2></section>'
+    obligations = readiness.get("obligations") or []
+    cards = []
+    for ob in obligations:
+        pack = ob.get("pack") or {}
+        checks = ", ".join(pack.get("checks") or []) or "none"
+        header = f'{_e(ob.get("type",""))} — {_e(ob.get("outcome",""))} · approver {_e(pack.get("approver") or "—")}'
+        infra_pr = ob.get("infra_pr") or {}
+        diff = infra_pr.get("diff") or {}
+        diff_html = ""
+        for path, content in diff.items():
+            diff_html += f'<div class="diff-path">{_e(path)}</div><pre class="diff">{_e(content)}</pre>'
+        if ob.get("human_gate_pending"):
+            pending = ", ".join(ob["human_gate_pending"])
+            action_html = f'<div class="gate">Needs a human before merge: {_e(pending)}</div>'
+        elif infra_pr.get("create_url"):
+            action_html = (
+                f'<a class="btn" href="{_e(infra_pr["create_url"])}">Open infra PR ▸</a>'
+                f'<div class="points">Branch <code>{_e(infra_pr.get("branch",""))}</code>'
+                f'{" (pushed)" if infra_pr.get("pushed") else " (staged, dry-run)"}</div>'
+            )
+        else:
+            action_html = '<div class="points">No approved capability — escalate to platform.</div>'
+        cards.append(
+            f'<div class="resolve-card"><div class="resolve-head">{header}</div>'
+            f'<div class="points">Proof — checks: {_e(checks)}</div>'
+            f'{diff_html}{action_html}</div>'
+        )
+    body = "".join(cards) or '<p class="points">Nothing to resolve.</p>'
+    return f'<section class="tabpanel" id="tab-resolve"><h2 class="section">Resolve</h2>{body}</section>'
 
 
 def _audit_tab(readiness: dict[str, Any]) -> str:
