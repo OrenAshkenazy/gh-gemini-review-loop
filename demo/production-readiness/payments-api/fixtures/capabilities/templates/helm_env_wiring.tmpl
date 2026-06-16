@@ -1,0 +1,6 @@
+env:
+  - name: ${secret_name}
+    valueFrom:
+      secretKeyRef:
+        name: ${secret_name}
+        key: value

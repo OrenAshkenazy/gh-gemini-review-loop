@@ -13,3 +13,10 @@ checks:
 approval:
   required_from:
     - platform-runtime
+template_map:
+  worker_deployment:
+    template: templates/worker_deployment.tmpl
+    output: envs/prod/payments-api/workers/${worker_name}-deployment.yaml
+  helm_worker_values:
+    template: templates/helm_worker_values.tmpl
+    output: helm/payments-api/workers/${worker_name}.yaml

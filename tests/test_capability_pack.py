@@ -87,6 +87,23 @@ def test_missing_approver_rejected():
         cp.load_pack(text)
 
 
+def test_load_pack_preserves_template_map():
+    text = (
+        "capability: worker_deployment\n"
+        "inputs:\n  worker_name: required\n  service: required\n"
+        "generates:\n  - worker_deployment\n"
+        "checks:\n  - policy\n"
+        "approval:\n  required_from:\n    - platform-runtime\n"
+        "template_map:\n"
+        "  worker_deployment:\n"
+        "    template: templates/worker_deployment.tmpl\n"
+        "    output: envs/prod/x/${worker_name}.yaml\n"
+    )
+    from capability_pack import load_pack
+    pack = load_pack(text)
+    assert pack["template_map"]["worker_deployment"]["output"] == "envs/prod/x/${worker_name}.yaml"
+
+
 def test_capabilities_from_config_maps_type_to_template_and_approver():
     # The base-branch mergeproof.yaml declares which capability packs apply and
     # who approves each; capability_pack reads that declaration.

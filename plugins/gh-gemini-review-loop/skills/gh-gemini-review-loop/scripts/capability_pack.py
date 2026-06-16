@@ -74,6 +74,7 @@ def load_pack(text: str) -> dict[str, Any]:
         "checks": checks,
         "approval": {"required_from": required_from},
         "human_gate": human_gate.strip() if isinstance(human_gate, str) else None,
+        "template_map": data.get("template_map") if isinstance(data.get("template_map"), dict) else {},
     }
 
 
