@@ -141,3 +141,16 @@ def test_read_changed_falls_back_to_lines_for_non_json(tmp_path):
     p = tmp_path / "plain.txt"
     p.write_text("a.py\n\nb.py\n", encoding="utf-8")
     assert _read_changed(p) == ["a.py", "b.py"]
+
+
+def test_payments_api_fixtures_produce_matched_and_gated():
+    from pr_obligations import _read_changed
+    root = Path(__file__).resolve().parent.parent
+    fixtures = root / "demo" / "production-readiness" / "payments-api" / "fixtures"
+    capabilities, packs, service = load_capabilities_and_packs(fixtures / "mergeproof.yaml")
+    changed = _read_changed(str(fixtures / "changed_files.json"))
+    obligations = detect_obligations(changed, capabilities, packs, service=service)
+
+    by_type = {o["type"]: o for o in obligations}
+    assert by_type["worker_deployment"]["outcome"] == "matched"
+    assert by_type["secret_wiring"]["outcome"] == "human_gated"
