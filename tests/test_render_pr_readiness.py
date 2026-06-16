@@ -273,3 +273,30 @@ def test_markdown_renders_obligation_action_panel():
 def test_markdown_omits_obligation_panel_when_none():
     r = build_readiness(_PASS_LOOP, _ARCH, _NO_RISK)
     assert "### Production obligations" not in render_markdown(r)
+
+
+import json as _json
+from pathlib import Path as _Path
+from render_pr_readiness import main as render_main
+
+
+def _write_json(p, obj):
+    p.write_text(_json.dumps(obj), encoding="utf-8")
+    return str(p)
+
+
+def test_cli_accepts_obligations_file(tmp_path, capsys):
+    loop = _write_json(tmp_path / "loop.json", _PASS_LOOP)
+    arch = _write_json(tmp_path / "arch.json", _ARCH)
+    risks = _write_json(tmp_path / "risks.json", _NO_RISK)
+    obs = _write_json(tmp_path / "obs.json", {"obligations": [
+        {"type": "worker_deployment", "outcome": "blocked", "evidence_files": ["a"], "inputs": {}, "pack": None, "human_gate_pending": []}
+    ]})
+
+    rc = render_main(["--loop-summary", loop, "--architecture-context", arch,
+                      "--production-risks", risks, "--obligations", obs, "--json"])
+    out = _json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert out["status"] == "HUMAN_DECISION_REQUIRED"
+    assert out["obligations"][0]["outcome"] == "blocked"

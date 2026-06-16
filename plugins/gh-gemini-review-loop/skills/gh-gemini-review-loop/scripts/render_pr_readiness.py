@@ -441,6 +441,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--production-risks", required=True, help="Path to production risks JSON."
     )
+    parser.add_argument(
+        "--obligations",
+        help="Optional path to pr_obligations.py --json output.",
+    )
     out = parser.add_mutually_exclusive_group()
     out.add_argument("--markdown", action="store_true", help="Render GitHub Markdown.")
     out.add_argument(
@@ -464,7 +468,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    readiness = build_readiness(loop_summary, architecture, risks)
+    obligations: list[dict[str, Any]] = []
+    if args.obligations:
+        try:
+            ob_doc = _load_json(args.obligations, "obligations")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        raw = ob_doc.get("obligations")
+        obligations = raw if isinstance(raw, list) else []
+
+    readiness = build_readiness(loop_summary, architecture, risks, obligations=obligations)
 
     if args.json_output:
         print(json.dumps(readiness, indent=2, sort_keys=True))
