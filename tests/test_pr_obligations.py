@@ -154,3 +154,19 @@ def test_payments_api_fixtures_produce_matched_and_gated():
     by_type = {o["type"]: o for o in obligations}
     assert by_type["worker_deployment"]["outcome"] == "matched"
     assert by_type["secret_wiring"]["outcome"] == "human_gated"
+
+
+def test_approver_falls_back_to_none_when_required_from_empty():
+    pack = {
+        "capability": "topic_queue",
+        "inputs": {"service": "required"},
+        "generates": ["kafka_topic"],
+        "checks": ["policy"],
+        "approval": {"required_from": []},
+        "human_gate": None,
+    }
+    changed = [{"path": "app/topics/refunds.py", "status": "added"}]
+    # capability declared but with no approver, so the approver must come from the pack (empty) -> None
+    capabilities = {"topic_queue": {"type": "topic_queue", "template": "x", "approver": None}}
+    ob = detect_obligations(changed, capabilities, {"topic_queue": pack}, service="payments-api")[0]
+    assert ob["pack"]["approver"] is None

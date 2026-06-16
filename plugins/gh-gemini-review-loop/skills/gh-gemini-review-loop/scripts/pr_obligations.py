@@ -99,9 +99,10 @@ def detect_obligations(
         missing = [k for k in required if k not in inputs]
         gate = pack.get("human_gate")
         human_gate_pending = ([gate] if gate else []) + [f"input: {k}" for k in missing]
-        approver = (
-            capability.get("approver")
-            or (f"@{pack['approval']['required_from'][0].lstrip('@')}" if pack.get("approval") else None)
+        approval = pack.get("approval") or {}
+        required_from = approval.get("required_from") or []
+        approver = capability.get("approver") or (
+            f"@{required_from[0].lstrip('@')}" if required_from else None
         )
 
         obligations.append(
