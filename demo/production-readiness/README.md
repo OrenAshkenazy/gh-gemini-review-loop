@@ -87,9 +87,12 @@ python3 $SCRIPTS/mergeproof_readiness.py \
 ```
 
 If no terminal run is recorded for the PR yet, you get a clear error telling you
-to run the loop first. `--loop-summary <file>` is an **optional explicit
-override** (used by the offline fixture render below and for manual replay) — it
-is **not** a file the loop generates.
+to run the loop first unless the PR body already contains the demo CR-loop
+metrics table (`findings fixed`, `verification`, `cycles used`, etc.). That PR
+body fallback exists so the live demo repos can be replayed from a PR URL alone.
+`--loop-summary <file>` is an **optional explicit override** (used by the
+offline fixture render below and for manual replay) — it is **not** a file the
+loop generates.
 
 `--markdown` renders the GitHub-native card instead; `--publish` posts/updates a
 single PR comment keyed by the hidden marker `<!-- mergeproof-pr-readiness -->`
@@ -131,26 +134,66 @@ This is the path teams use. It runs against a real repository and a real PR.
   `--runs-jsonl ~/.config/gh-gemini-review-loop/runs.jsonl`.
 - Python 3.10+.
 
-From Claude Code, the product-level command is:
+### Invoking MergeProof: Claude phrase vs shell command
+
+`mergeproof init` and `mergeproof run …` are **phrases you say to Claude Code** —
+the plugin's skill recognizes them and runs the underlying script for you. There
+is **no `mergeproof` binary on your PATH**, so pasting `mergeproof …` into a
+terminal fails with `command not found`. To run it yourself in a shell, call the
+script directly:
+
+```bash
+SCRIPTS=plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts
+```
+
+In Claude Code you say:
 
 ```text
 mergeproof run --pr https://github.com/OWNER/REPO/pull/123
 ```
 
-That command means: run the existing Gemini CR loop to a terminal summary, then
-run the MergeProof readiness phase. The Python readiness scripts are internal
-phase tools; users should not have to start from `render_pr_readiness.py`.
-
-Demo stage 0: generate the trusted config:
+For the live app + infra demo, say:
 
 ```text
-mergeproof init --repo-root /path/to/repo --repo OWNER/REPO --service SERVICE
+mergeproof run --pr https://github.com/OrenAshkenazy/mergeproof-demo-payments-api/pull/1 --publish --stage-infra --create-infra-pr
 ```
 
-For the `familia-ai` same-repo demo, the shell helper is:
+That path detects capability obligations from the app PR, stages generated files
+in the configured infra repo, creates or reuses the infra PR, renders
+readiness/HTML, and updates the app PR comment with the infra PR link. The
+equivalent **shell** command is:
 
 ```bash
-python3 $SCRIPTS/mergeproof.py init \
+python3 "$SCRIPTS/mergeproof.py" run \
+  --pr https://github.com/OrenAshkenazy/mergeproof-demo-payments-api/pull/1 \
+  --publish --stage-infra --create-infra-pr \
+  --html-output /tmp/mergeproof-demo-readiness.html
+```
+
+`mergeproof run` runs the MergeProof readiness phase after the Gemini CR loop has
+reached a terminal summary; the Python readiness scripts are internal phase tools.
+
+**Demo stage 0 — generate the trusted config.** `mergeproof init` scans the infra
+layout and scaffolds the discovered capability packs. **`--repo-root` points at
+the infra repo checkout** being scanned; `--output` writes `mergeproof.yaml` into
+the **app** repo. The shell command for the live two-repo demo is:
+
+```bash
+python3 "$SCRIPTS/mergeproof.py" init \
+  --repo-root ~/dev/mergeproof-demo-platform-infra \
+  --repo OrenAshkenazy/mergeproof-demo-payments-api \
+  --infra-repo OrenAshkenazy/mergeproof-demo-platform-infra \
+  --service payments-api \
+  --output ~/dev/mergeproof-demo-payments-api/mergeproof.yaml \
+  --force
+```
+
+It scaffolds config and capability templates only — it does **not** mutate
+production or generate real secret values. For a same-repo (monorepo) layout,
+point `--repo-root` at the app repo itself and omit `--infra-repo`:
+
+```bash
+python3 "$SCRIPTS/mergeproof.py" init \
   --repo-root /Users/orenashkenazy/dev/familia-ai \
   --repo OrenAshkenazy/familia-ai \
   --service familia-ai
@@ -169,7 +212,7 @@ Config PR:
 mergeproof init -> commit mergeproof.yaml -> open PR -> merge to main
 
 App PR:
-change app code only -> mergeproof run --pr <APP_PR_URL>
+change app code only -> mergeproof run --pr <APP_PR_URL> --publish --stage-infra --create-infra-pr
 ```
 
 End-to-end sequence:
