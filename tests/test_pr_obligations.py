@@ -110,3 +110,38 @@ def test_load_capabilities_and_packs_reads_templates(tmp_path: Path):
     assert service == "payments-api"
     assert "worker_deployment" in capabilities
     assert packs["worker_deployment"]["generates"] == ["worker_deployment"]
+
+
+def test_multiple_worker_files_derive_name_from_first_but_keep_all_evidence():
+    changed = [
+        {"path": "app/workers/alpha_worker.py", "status": "added"},
+        {"path": "app/workers/beta_worker.py", "status": "added"},
+    ]
+    capabilities = {"worker_deployment": {"type": "worker_deployment", "template": "x", "approver": "@platform-runtime"}}
+    packs = {"worker_deployment": _worker_pack()}
+
+    ob = detect_obligations(changed, capabilities, packs, service="payments-api")[0]
+
+    assert ob["evidence_files"] == ["app/workers/alpha_worker.py", "app/workers/beta_worker.py"]
+    assert ob["inputs"]["worker_name"] == "alpha_worker"
+
+
+def test_read_changed_returns_empty_for_non_list_json(tmp_path):
+    from pr_obligations import _read_changed
+    p = tmp_path / "weird.json"
+    p.write_text('{"files": ["a.py"]}', encoding="utf-8")
+    assert _read_changed(p) == []
+
+
+def test_read_changed_parses_json_list(tmp_path):
+    from pr_obligations import _read_changed
+    p = tmp_path / "list.json"
+    p.write_text('[{"path": "a.py", "status": "added"}]', encoding="utf-8")
+    assert _read_changed(p) == [{"path": "a.py", "status": "added"}]
+
+
+def test_read_changed_falls_back_to_lines_for_non_json(tmp_path):
+    from pr_obligations import _read_changed
+    p = tmp_path / "plain.txt"
+    p.write_text("a.py\n\nb.py\n", encoding="utf-8")
+    assert _read_changed(p) == ["a.py", "b.py"]

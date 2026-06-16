@@ -47,6 +47,7 @@ def _normalize(changed_files: list[Any]) -> list[dict[str, str]]:
 def _derive_inputs(obligation_type: str, evidence: list[str], service: str) -> dict[str, str]:
     """Inputs derivable from the changed-file path alone (deterministic)."""
     inputs: dict[str, str] = {"service": service} if service else {}
+    # Advisory: derived inputs come from the first matching file; evidence_files keeps all.
     stem = Path(evidence[0]).stem
     if obligation_type == "worker_deployment":
         inputs["worker_name"] = stem
@@ -144,11 +145,10 @@ def _read_changed(path: str | Path) -> list[Any]:
     text = Path(path).read_text(encoding="utf-8", errors="replace")
     try:
         data = json.loads(text)
-        if isinstance(data, list):
-            return data
     except json.JSONDecodeError:
-        pass
-    return [line.strip() for line in text.splitlines() if line.strip()]
+        # Not JSON: treat as a newline-delimited list of paths.
+        return [line.strip() for line in text.splitlines() if line.strip()]
+    return data if isinstance(data, list) else []
 
 
 def build_parser() -> argparse.ArgumentParser:
