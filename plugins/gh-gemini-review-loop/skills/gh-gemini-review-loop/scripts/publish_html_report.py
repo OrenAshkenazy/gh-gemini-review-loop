@@ -76,6 +76,31 @@ def _existing_file_sha(repo: str, path: str, branch: str, runner: GitHubRunner) 
     return None
 
 
+def _put_file(
+    repo: str, path: str, content_b64: str, branch: str, runner: GitHubRunner, message: str
+) -> None:
+    """Create or update *path* on *branch* (sha-aware, idempotent)."""
+    sha = _existing_file_sha(repo, path, branch, runner)
+    args = [
+        "--method", "PUT", f"repos/{repo}/contents/{path}",
+        "-f", f"message={message}",
+        "-f", f"content={content_b64}",
+        "-f", f"branch={branch}",
+    ]
+    if sha:
+        args += ["-f", f"sha={sha}"]
+    runner(args)
+
+
+def _ensure_nojekyll(repo: str, branch: str, runner: GitHubRunner) -> None:
+    """A ``.nojekyll`` marker disables Jekyll so the static report serves as-is
+    (the branch is seeded from the default branch, whose source would otherwise
+    make the Jekyll build error)."""
+    if _existing_file_sha(repo, ".nojekyll", branch, runner) is None:
+        _put_file(repo, ".nojekyll", "", branch, runner,
+                  "mergeproof: disable Jekyll for static report serving")
+
+
 def _enable_pages(repo: str, branch: str, runner: GitHubRunner) -> bool:
     # Best-effort: enabling Pages can fail for reasons outside our control
     # (already enabled, missing scope, or — most commonly for demos — a private
@@ -109,18 +134,16 @@ def publish_report(
 ) -> str:
     """Push *html* to gh-pages at ``pr-<N>/index.html``; return the Pages URL."""
     _ensure_branch(repo, _BRANCH, runner)
-    path = _report_path(pr)
-    sha = _existing_file_sha(repo, path, _BRANCH, runner)
+    _ensure_nojekyll(repo, _BRANCH, runner)
     content = base64.b64encode(html.encode("utf-8")).decode("ascii")
-    args = [
-        "--method", "PUT", f"repos/{repo}/contents/{path}",
-        "-f", f"message={message or f'mergeproof: readiness report for PR #{pr}'}",
-        "-f", f"content={content}",
-        "-f", f"branch={_BRANCH}",
-    ]
-    if sha:
-        args += ["-f", f"sha={sha}"]
-    runner(args)
+    _put_file(
+        repo,
+        _report_path(pr),
+        content,
+        _BRANCH,
+        runner,
+        message or f"mergeproof: readiness report for PR #{pr}",
+    )
     _enable_pages(repo, _BRANCH, runner)
     return pages_url(repo, pr)
 

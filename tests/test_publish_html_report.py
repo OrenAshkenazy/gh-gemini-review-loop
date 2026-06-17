@@ -38,8 +38,11 @@ class _FakeGH:
         return {}
 
 
-def _put_call(calls):
-    return next(c for c in calls if "--method" in c and c[c.index("--method") + 1] == "PUT")
+def _put_call(calls, needle="index.html"):
+    return next(
+        c for c in calls
+        if "--method" in c and c[c.index("--method") + 1] == "PUT" and any(needle in a for a in c)
+    )
 
 
 def test_pages_url():
@@ -52,10 +55,15 @@ def test_publish_creates_branch_and_file_when_absent():
     assert url == pages_url(REPO, 1)
     # a branch-create POST happened
     assert any("--method" in c and c[c.index("--method") + 2].endswith("/git/refs") for c in gh.calls)
-    # the PUT created the file WITHOUT a sha (new file)
-    put = _put_call(gh.calls)
+    # the report PUT created the file WITHOUT a sha (new file)
+    put = _put_call(gh.calls, "pr-1/index.html")
     assert f"repos/{REPO}/contents/pr-1/index.html" in put
     assert not any(a.startswith("sha=") for a in put)
+    # a .nojekyll marker was written so the static report serves without Jekyll
+    assert any(
+        "--method" in c and c[c.index("--method") + 2].endswith("/contents/.nojekyll")
+        for c in gh.calls
+    )
     # Pages enable was attempted
     assert any("--method" in c and c[c.index("--method") + 2].endswith("/pages") for c in gh.calls)
 
