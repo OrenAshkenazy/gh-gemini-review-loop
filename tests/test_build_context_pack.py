@@ -103,6 +103,87 @@ def test_pack_has_facts_provenance_and_safety():
     assert pack["safety"]["config_changed"] is False
 
 
+def test_pack_includes_read_only_production_flow_with_evidence():
+    gh = FakeGH(INFRA)
+    pack = bcp.build_pack(
+        "acme/app", 7, changed_files=[], runner=gh, now_iso="2026-06-14T00:00:00Z"
+    )
+    flow = pack["facts"]["production_flow"]
+    labels = [node["label"] for node in flow]
+
+    assert "ALB" in labels
+    assert "Ingress controller" in labels
+    assert "aegislocal-api" in labels
+    assert "sqs:scan-events" in labels
+    assert all("evidence" in node for node in flow)
+
+
+def test_pack_derives_rich_payments_production_flow_from_infra_evidence():
+    infra = {
+        "terraform/payments-api/alb.tf": (
+            'resource "aws_lb" "payments_alb" {\n'
+            '  name = "payments-api-alb"\n'
+            '  load_balancer_type = "application"\n'
+            "}\n"
+        ),
+        "envs/prod/payments-api/ingress.yaml": (
+            "apiVersion: networking.k8s.io/v1\n"
+            "kind: Ingress\n"
+            "metadata:\n"
+            "  name: payments-api\n"
+            "  annotations:\n"
+            "    kubernetes.io/ingress.class: alb\n"
+            "    konghq.com/strip-path: 'true'\n"
+        ),
+        "envs/prod/payments-api/kong-route.yaml": (
+            "apiVersion: gateway.networking.k8s.io/v1\n"
+            "kind: HTTPRoute\n"
+            "metadata:\n"
+            "  name: payments-refunds\n"
+            "spec:\n"
+            "  parentRefs:\n"
+            "    - name: kong\n"
+        ),
+        "envs/prod/payments-api/service.yaml": (
+            "apiVersion: v1\n"
+            "kind: Service\n"
+            "metadata:\n"
+            "  name: payment-api\n"
+        ),
+        "envs/prod/payments-api/workers/refund-worker.yaml": (
+            "apiVersion: apps/v1\n"
+            "kind: Deployment\n"
+            "metadata:\n"
+            "  name: payment-refund-worker\n"
+        ),
+        "envs/prod/payments-api/egress/payment-provider.yaml": (
+            "apiVersion: networking.k8s.io/v1\n"
+            "kind: NetworkPolicy\n"
+            "metadata:\n"
+            "  name: external-payment-service-egress\n"
+            "spec:\n"
+            "  egress:\n"
+            "    - to:\n"
+            "        - ipBlock:\n"
+            "            cidr: 203.0.113.10/32\n"
+        ),
+    }
+    gh = FakeGH(infra)
+
+    pack = bcp.build_pack("acme/app", 7, changed_files=[], runner=gh)
+    labels = [node["label"] for node in pack["facts"]["production_flow"]]
+
+    assert labels == [
+        "Public edge",
+        "ALB",
+        "Ingress controller",
+        "Kong API Gateway",
+        "Payment API",
+        "Payment refund worker",
+        "External payment service",
+    ]
+
+
 def test_pack_never_contains_raw_file_contents_or_changed_files():
     gh = FakeGH(INFRA)
     pack = bcp.build_pack("acme/app", 7, changed_files=["core/api/routes.py"], runner=gh)

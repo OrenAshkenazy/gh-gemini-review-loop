@@ -202,6 +202,41 @@ def test_flow_tab_places_obligations_on_flow():
     assert "worker_deployment" in html
 
 
+def test_flow_tab_renders_explicit_production_flow_evidence():
+    readiness = json.loads(json.dumps(_READY))
+    readiness["architecture"]["production_flow"] = [
+        {
+            "id": "alb",
+            "label": "ALB",
+            "type": "load_balancer",
+            "evidence": ["envs/prod/payments-api/ingress.yaml"],
+            "status": "observed",
+        },
+        {
+            "id": "payment_api",
+            "label": "Payment API",
+            "type": "service",
+            "evidence": ["envs/prod/payments-api/deployment.yaml"],
+            "status": "observed",
+        },
+        {
+            "id": "external_payment_service",
+            "label": "External payment service",
+            "type": "external_dependency",
+            "evidence": [],
+            "status": "inferred",
+        },
+    ]
+
+    html = rdu.render_html(readiness)
+
+    assert "ALB" in html
+    assert "Payment API" in html
+    assert "External payment service" in html
+    assert "envs/prod/payments-api/ingress.yaml" in html
+    assert "missing evidence" in html
+
+
 def test_resolve_tab_shows_diff_proof_and_button():
     readiness = dict(_READY)
     readiness["obligations"] = [

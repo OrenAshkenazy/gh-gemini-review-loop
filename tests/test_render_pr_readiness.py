@@ -119,6 +119,12 @@ def test_markdown_renders_human_decision_section():
     assert "Recommended next options" in md
 
 
+def test_markdown_ready_uses_production_decision_heading():
+    md = rpr.render_markdown(rpr.build_readiness(LOOP_SUMMARY, ARCH, RISKS_NONE))
+    assert "### Production decision" in md
+    assert "### Human decision required" not in md
+
+
 def test_markdown_renders_merge_evidence():
     md = rpr.render_markdown(rpr.build_readiness(LOOP_SUMMARY, ARCH, RISKS_HIGH))
     assert "Merge evidence" in md

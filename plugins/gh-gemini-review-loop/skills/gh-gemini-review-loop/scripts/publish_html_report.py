@@ -114,6 +114,8 @@ def _enable_pages(repo: str, branch: str, runner: GitHubRunner) -> bool:
         ])
         return True
     except RuntimeError as exc:
+        if "already enabled" in str(exc).lower() or "http 409" in str(exc).lower():
+            return True
         print(
             f"[mergeproof] note: could not enable GitHub Pages for {repo}: {exc}\n"
             f"  The report was pushed to the '{branch}' branch, but the linked URL "

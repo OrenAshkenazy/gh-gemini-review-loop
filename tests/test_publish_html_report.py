@@ -103,3 +103,18 @@ def test_pages_enable_failure_warns_but_still_returns_url(capsys):
     assert url == pages_url(REPO, 3)  # upload still succeeded; URL returned
     err = capsys.readouterr().err
     assert "could not enable GitHub Pages" in err
+
+
+def test_pages_already_enabled_is_not_a_warning(capsys):
+    class _PagesAlreadyEnabled(_FakeGH):
+        def __call__(self, args):
+            if "--method" in args and args[args.index("--method") + 2].endswith("/pages"):
+                raise RuntimeError("gh: GitHub Pages is already enabled. (HTTP 409)")
+            return super().__call__(args)
+
+    gh = _PagesAlreadyEnabled(branch_exists=True, file_sha="old")
+    url = publish_report(REPO, 3, "<html/>", runner=gh)
+
+    err = capsys.readouterr().err
+    assert url == pages_url(REPO, 3)
+    assert err == ""

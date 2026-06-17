@@ -240,6 +240,7 @@ def build_readiness(
             "ingress": list(architecture.get("ingress") or []),
             "datastores": list(architecture.get("datastores") or []),
             "queues": list(architecture.get("queues") or []),
+            "production_flow": list(architecture.get("production_flow") or []),
         },
         "production_risks": risks,
         "obligations": obligations,
@@ -443,7 +444,12 @@ def render_markdown(readiness: dict[str, Any]) -> str:
     if readiness.get("obligations"):
         lines.extend(_render_obligations(readiness["obligations"]))
 
-    lines.append("### Human decision required")
+    decision_heading = (
+        "### Human decision required"
+        if readiness["human_decision"]["required"]
+        else "### Production decision"
+    )
+    lines.append(decision_heading)
     lines.append("")
     if readiness["human_decision"]["required"]:
         lines.append(

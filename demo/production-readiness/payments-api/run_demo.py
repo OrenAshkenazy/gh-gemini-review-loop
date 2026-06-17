@@ -45,6 +45,50 @@ ARCHITECTURE = {
     "datastores": [],
     "queues": ["redis:arq"],
     "owners": [],
+    "production_flow": [
+        {
+            "id": "alb",
+            "label": "ALB",
+            "type": "load_balancer",
+            "evidence": ["envs/prod/payments-api/service.yaml"],
+            "status": "observed",
+        },
+        {
+            "id": "ingress_controller",
+            "label": "Ingress Controller",
+            "type": "ingress",
+            "evidence": ["envs/prod/payments-api/service.yaml"],
+            "status": "observed",
+        },
+        {
+            "id": "api_gateway",
+            "label": "API Gateway",
+            "type": "gateway",
+            "evidence": [],
+            "status": "inferred",
+        },
+        {
+            "id": "payment_api",
+            "label": "Payment API",
+            "type": "service",
+            "evidence": ["envs/prod/payments-api/service.yaml"],
+            "status": "observed",
+        },
+        {
+            "id": "refund_worker",
+            "label": "Payment refund worker",
+            "type": "worker",
+            "evidence": [],
+            "status": "inferred",
+        },
+        {
+            "id": "external_payment_service",
+            "label": "External payment service",
+            "type": "external_dependency",
+            "evidence": [],
+            "status": "inferred",
+        },
+    ],
 }
 NO_RISK = {
     "production_risks": [],

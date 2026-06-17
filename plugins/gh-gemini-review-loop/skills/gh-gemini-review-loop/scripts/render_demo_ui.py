@@ -145,6 +145,21 @@ def _e(value: Any) -> str:
 
 
 def _arch_flow(arch: dict[str, Any]) -> str:
+    production_flow = arch.get("production_flow") or []
+    if production_flow:
+        nodes: list[str] = []
+        for node in production_flow:
+            if not isinstance(node, dict):
+                continue
+            node_type = str(node.get("type") or "")
+            cls = "node service" if node_type == "service" else "node exposure" if node_type in {"external_entrypoint", "load_balancer"} else "node"
+            status = str(node.get("status") or "unknown")
+            label = node.get("label") or node.get("id") or node_type or "node"
+            nodes.append(f'<span class="{cls}" title="{_e(status)}">{_e(label)}</span>')
+        if nodes:
+            flow = '<span class="arrow">→</span>'.join(nodes)
+            return f'<div class="flow">{flow}</div>'
+
     nodes: list[str] = []
     exposure = (arch.get("exposure") or "unknown").title()
     if arch.get("exposure") == "public":
@@ -163,6 +178,8 @@ def _arch_flow(arch: dict[str, Any]) -> str:
 
 
 def _arch_async(arch: dict[str, Any]) -> str:
+    if arch.get("production_flow"):
+        return ""
     queues = arch.get("queues") or []
     if not queues:
         return ""
@@ -282,6 +299,25 @@ def _safety_panel(readiness: dict[str, Any]) -> str:
 def _flow_tab(readiness: dict[str, Any]) -> str:
     arch = readiness.get("architecture") or {}
     obligations = readiness.get("obligations") or []
+    production_flow = arch.get("production_flow") or []
+    evidence_rows = []
+    for node in production_flow:
+        if not isinstance(node, dict):
+            continue
+        evidence = node.get("evidence") or []
+        evidence_text = ", ".join(str(item) for item in evidence) if evidence else "missing evidence"
+        evidence_rows.append(
+            '<div class="safety-row">'
+            f'<strong>{_e(node.get("label") or node.get("id") or "node")}</strong>'
+            f'<span>{_e(node.get("type") or "unknown")} · {_e(node.get("status") or "unknown")} · {_e(evidence_text)}</span>'
+            '</div>'
+        )
+    evidence_html = (
+        '<h2 class="section">Production evidence</h2>'
+        f'<div class="safety">{"".join(evidence_rows)}</div>'
+        if evidence_rows
+        else ""
+    )
     nodes = []
     for ob in obligations:
         pack = ob.get("pack") or {}
@@ -297,6 +333,7 @@ def _flow_tab(readiness: dict[str, Any]) -> str:
         '<section class="tabpanel" id="tab-flow">'
         '<h2 class="section">Production flow</h2>'
         f'<div class="arch">{_arch_flow(arch)}{_arch_async(arch)}</div>'
+        f'{evidence_html}'
         '<h2 class="section">Obligations on this change</h2>'
         f'<div class="obl-grid">{obl_html}</div>'
         '</section>'

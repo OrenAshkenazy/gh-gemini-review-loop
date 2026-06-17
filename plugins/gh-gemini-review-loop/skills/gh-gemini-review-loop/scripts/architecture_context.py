@@ -64,6 +64,8 @@ _EXTERNAL_HINTS = {
     "stripe": "stripe_api",
     "twilio": "twilio_api",
     "sendgrid": "sendgrid_api",
+    "external-payment-service": "external_payment_service",
+    "payment-provider": "external_payment_service",
 }
 
 # environment / secret names worth surfacing.
@@ -285,6 +287,230 @@ def _detect_verification_commands(files: dict[str, str]) -> list[str]:
     return commands
 
 
+def _evidence_paths(files: dict[str, str], *patterns: str) -> list[str]:
+    """Return relpaths whose path or content supports a production-flow node."""
+    compiled = [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
+    found: list[str] = []
+    for rel, text in files.items():
+        haystack = f"{rel}\n{text}"
+        if any(pattern.search(haystack) for pattern in compiled):
+            found.append(rel)
+    return found
+
+
+def _flow_node(
+    node_id: str,
+    label: str,
+    node_type: str,
+    evidence: list[str],
+) -> dict[str, Any]:
+    return {
+        "id": node_id,
+        "label": label,
+        "type": node_type,
+        "evidence": evidence,
+        "status": "observed" if evidence else "inferred",
+    }
+
+
+def _title_label(value: str) -> str:
+    words = [word for word in re.split(r"[-_\s]+", value.strip()) if word]
+    if not words:
+        return ""
+    normalized: list[str] = []
+    for index, word in enumerate(words):
+        lowered = word.lower()
+        if lowered == "api":
+            normalized.append("API")
+        elif index == 0:
+            normalized.append(lowered.title())
+        else:
+            normalized.append(lowered)
+    return " ".join(normalized)
+
+
+def _metadata_name(text: str) -> str:
+    metadata = re.search(r"(?ms)^\s*metadata:\s*\n(?P<body>(?:\s+\S.*\n?)+)", text)
+    scope = metadata.group("body") if metadata else text
+    name = re.search(r"(?m)^\s*name:\s*['\"]?([a-zA-Z0-9_.-]+)", scope)
+    return name.group(1) if name else ""
+
+
+def _metadata_name_for_kind(text: str, kinds: set[str]) -> str:
+    for doc in re.split(r"(?m)^---\s*$", text):
+        kind = _yaml_scalar(doc, "kind")
+        if kind not in kinds:
+            continue
+        name = _metadata_name(doc)
+        if name:
+            return name
+    return ""
+
+
+def _first_metadata_label(files: dict[str, str], evidence: list[str]) -> str:
+    for rel in evidence:
+        label = _title_label(_metadata_name(files.get(rel, "")))
+        if label:
+            return label
+    return ""
+
+
+def _first_kind_metadata_label(
+    files: dict[str, str], evidence: list[str], kinds: set[str]
+) -> str:
+    for rel in evidence:
+        label = _title_label(_metadata_name_for_kind(files.get(rel, ""), kinds))
+        if label:
+            return label
+    return ""
+
+
+def _worker_evidence(files: dict[str, str]) -> list[str]:
+    found: list[str] = []
+    for rel, text in files.items():
+        rel_lower = rel.lower()
+        if "/worker" not in rel_lower and "worker" not in Path(rel).name.lower():
+            continue
+        if re.search(r"\b(worker|consumer|cronjob|job)\b", f"{rel}\n{text}", re.IGNORECASE):
+            found.append(rel)
+    return found
+
+
+def _derive_production_flow(
+    files: dict[str, str],
+    *,
+    service_name: str,
+    exposure: str,
+    ingress: list[str],
+    queues: list[str],
+    datastores: list[str],
+    external_dependencies: list[str],
+) -> list[dict[str, Any]]:
+    """Build a read-only, evidence-backed view of the current production path."""
+    flow: list[dict[str, Any]] = []
+
+    if exposure == "public":
+        flow.append(
+            _flow_node(
+                "public_edge",
+                "Public edge",
+                "external_entrypoint",
+                _evidence_paths(files, r"\bkind:\s*Ingress\b", r"\btype:\s*LoadBalancer\b"),
+            )
+        )
+
+    if "alb" in ingress:
+        flow.append(
+            _flow_node(
+                "alb",
+                "ALB",
+                "load_balancer",
+                _evidence_paths(files, r"\balb\b", r"application load balancer"),
+            )
+        )
+
+    if ingress:
+        flow.append(
+            _flow_node(
+                "ingress_controller",
+                "Ingress controller",
+                "ingress",
+                _evidence_paths(files, r"\bkind:\s*Ingress\b", r"ingress\.class", r"\bkong\b"),
+            )
+        )
+
+    gateway_evidence = _evidence_paths(
+        files,
+        r"api[-_ ]?gateway",
+        r"aws_api_gateway",
+        r"gateway\.networking\.k8s\.io",
+        r"\bkong\b",
+    )
+    if gateway_evidence:
+        gateway_label = "Kong API Gateway" if any(
+            "kong" in f"{rel}\n{files.get(rel, '')}".lower() for rel in gateway_evidence
+        ) else "API Gateway"
+        flow.append(_flow_node("api_gateway", gateway_label, "gateway", gateway_evidence))
+
+    service_evidence = [
+        rel
+        for rel in _evidence_paths(
+            files,
+            r"\bkind:\s*(Deployment|Service)\b",
+            r"\bkubernetes_deployment\b",
+            r"\bhelm/.*/values\.ya?ml\b",
+        )
+        if "/worker" not in rel.lower() and "worker" not in Path(rel).name.lower()
+    ]
+    flow.append(
+        _flow_node(
+            "service",
+            _first_kind_metadata_label(files, service_evidence, {"Service", "Deployment"})
+            or (service_name if service_name != "unknown" else "Service"),
+            "service",
+            service_evidence,
+        )
+    )
+
+    for queue in queues:
+        queue_id = re.sub(r"[^a-zA-Z0-9_]+", "_", queue).strip("_") or "queue"
+        flow.append(
+            _flow_node(
+                f"queue_{queue_id}",
+                queue,
+                "queue",
+                _evidence_paths(files, re.escape(queue.split(":", 1)[-1]), r"\b(sqs|queue|redis|arq)\b"),
+            )
+        )
+
+    worker_evidence = _worker_evidence(files)
+    if worker_evidence:
+        flow.append(
+            _flow_node(
+                "worker",
+                _first_kind_metadata_label(
+                    files, worker_evidence, {"Deployment", "CronJob", "Job"}
+                )
+                or _first_metadata_label(files, worker_evidence)
+                or "Worker",
+                "worker",
+                worker_evidence,
+            )
+        )
+
+    for datastore in datastores:
+        flow.append(
+            _flow_node(
+                f"datastore_{datastore}",
+                datastore,
+                "datastore",
+                _evidence_paths(files, re.escape(datastore)),
+            )
+        )
+
+    for dependency in external_dependencies:
+        label = (
+            "External payment service"
+            if dependency == "external_payment_service"
+            else _title_label(dependency)
+        )
+        evidence = (
+            _evidence_paths(files, r"external-payment-service", r"payment-provider")
+            if dependency == "external_payment_service"
+            else _evidence_paths(files, re.escape(dependency.split("_", 1)[0]))
+        )
+        flow.append(
+            _flow_node(
+                f"external_{dependency}",
+                label,
+                "external_dependency",
+                evidence,
+            )
+        )
+
+    return flow
+
+
 def _derive_sensitive_surfaces(
     exposure: str,
     queues: list[str],
@@ -331,6 +557,15 @@ def extract_facts(
     secrets = _detect_secrets_or_env(blob)
     resource_limits = _detect_resource_limits(files)
     verification_commands = _detect_verification_commands(files)
+    production_flow = _derive_production_flow(
+        files,
+        service_name=service_name,
+        exposure=exposure,
+        ingress=ingress,
+        queues=queues,
+        datastores=datastores,
+        external_dependencies=external,
+    )
     sensitive_surfaces = _derive_sensitive_surfaces(
         exposure, queues, datastores, secrets, blob
     )
@@ -356,6 +591,7 @@ def extract_facts(
         "datastores": datastores,
         "queues": queues,
         "external_dependencies": external,
+        "production_flow": production_flow,
         "secrets_or_env": secrets,
         "resource_limits": resource_limits,
         "verification_commands": verification_commands,

@@ -81,6 +81,13 @@ def build_pack(
     facts = extract_facts(all_files, files_found=sorted(all_files))
     if facts.get("service_name") == "unknown":
         facts["service_name"] = config["service"]
+        for node in facts.get("production_flow") or []:
+            if (
+                isinstance(node, dict)
+                and node.get("id") == "service"
+                and node.get("label") == "Service"
+            ):
+                node["label"] = config["service"]
     return {
         "service": config["service"],
         "facts": facts,

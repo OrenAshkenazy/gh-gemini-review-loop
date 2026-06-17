@@ -4,6 +4,56 @@
     "exposure": "public",
     "ingress": [],
     "owners": [],
+    "production_flow": [
+      {
+        "evidence": [
+          "envs/prod/payments-api/service.yaml"
+        ],
+        "id": "alb",
+        "label": "ALB",
+        "status": "observed",
+        "type": "load_balancer"
+      },
+      {
+        "evidence": [
+          "envs/prod/payments-api/service.yaml"
+        ],
+        "id": "ingress_controller",
+        "label": "Ingress Controller",
+        "status": "observed",
+        "type": "ingress"
+      },
+      {
+        "evidence": [],
+        "id": "api_gateway",
+        "label": "API Gateway",
+        "status": "inferred",
+        "type": "gateway"
+      },
+      {
+        "evidence": [
+          "envs/prod/payments-api/service.yaml"
+        ],
+        "id": "payment_api",
+        "label": "Payment API",
+        "status": "observed",
+        "type": "service"
+      },
+      {
+        "evidence": [],
+        "id": "refund_worker",
+        "label": "Payment refund worker",
+        "status": "inferred",
+        "type": "worker"
+      },
+      {
+        "evidence": [],
+        "id": "external_payment_service",
+        "label": "External payment service",
+        "status": "inferred",
+        "type": "external_dependency"
+      }
+    ],
     "queues": [
       "redis:arq"
     ],
