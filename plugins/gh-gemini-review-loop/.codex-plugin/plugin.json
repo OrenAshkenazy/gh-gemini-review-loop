@@ -1,0 +1,43 @@
+{
+  "name": "gh-gemini-review-loop",
+  "version": "0.2.22",
+  "description": "Run the gemini-code-assist PR review loop: wait, fetch actionable threads, fix, push, re-request review. Capped by preference, severity-aware, auditable.",
+  "author": {
+    "name": "Oren Ashkenazy",
+    "email": "oren.as@gmail.com",
+    "url": "https://github.com/OrenAshkenazy"
+  },
+  "homepage": "https://github.com/OrenAshkenazy/gh-gemini-review-loop",
+  "repository": "https://github.com/OrenAshkenazy/gh-gemini-review-loop",
+  "license": "MIT",
+  "keywords": [
+    "gemini-code-assist",
+    "pull-request",
+    "code-review",
+    "gh-cli",
+    "graphql",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "gh-gemini-review-loop",
+    "shortDescription": "Turn Gemini Code Assist PR comments into a capped fix loop.",
+    "longDescription": "Run an opinionated Gemini Code Assist PR loop from Codex: wait for review activity, read real GitHub review-thread state, fix actionable comments, verify with repo-aware checks, push, request re-review, and stop at a configurable cap.",
+    "developerName": "Oren Ashkenazy",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/OrenAshkenazy/gh-gemini-review-loop",
+    "privacyPolicyURL": "https://github.com/OrenAshkenazy/gh-gemini-review-loop",
+    "termsOfServiceURL": "https://github.com/OrenAshkenazy/gh-gemini-review-loop",
+    "defaultPrompt": [
+      "Run the Gemini loop",
+      "Audit Gemini comments without editing",
+      "Show Gemini loop stats"
+    ],
+    "brandColor": "#1F6FEB",
+    "screenshots": []
+  }
+}

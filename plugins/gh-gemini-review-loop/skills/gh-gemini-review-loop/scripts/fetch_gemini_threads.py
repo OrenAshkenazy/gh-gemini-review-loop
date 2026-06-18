@@ -24,6 +24,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import metrics  # noqa: E402 — sibling module, pure/stdlib-only
+import cluster_findings  # noqa: E402 — sibling module, pure/stdlib-only
 from loop_color import color_loop, colors_enabled  # noqa: E402 — sibling module
 
 
@@ -1042,6 +1043,36 @@ def read_fixed_markers(pr: PullRequest) -> dict[str, set[str]]:
     }
 
 
+def accumulate_swept_patterns(pr: PullRequest, signatures: list[str]) -> None:
+    """Union agent-supplied --swept-pattern signatures into run tracking.
+
+    Twin of accumulate_fixed_markers. A pattern the agent reports as swept this
+    cycle is matched against later cycles' findings to flag recurrence.
+    """
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key)
+    entry = dict(entry) if isinstance(entry, dict) else {}
+    run = entry.get("run")
+    run = dict(run) if isinstance(run, dict) else {}
+    val = run.get("swept_pattern_sigs")
+    sigs = {x for x in val if isinstance(x, str)} if isinstance(val, list) else set()
+    for s in signatures or []:
+        if s:
+            sigs.add(s)
+    run["swept_pattern_sigs"] = sorted(sigs)
+    entry["run"] = run
+    state[key] = entry
+    save_sticky_state(state)
+
+
+def read_swept_patterns(pr: PullRequest) -> set[str]:
+    """Return the accumulated swept pattern signatures, or empty set."""
+    run = read_run_tracking(pr)
+    val = run.get("swept_pattern_sigs", []) if isinstance(run, dict) else []
+    return {x for x in val if isinstance(x, str)} if isinstance(val, list) else set()
+
+
 def changed_files_in_range(
     base: str | None, head: str | None, *, cwd: str | None = None
 ) -> set[str]:
@@ -1163,6 +1194,41 @@ def prior_finding_fingerprints(pr: PullRequest) -> set[str]:
     entry = state.get(_state_key(pr), {})
     run = entry.get("run", {}) if isinstance(entry, dict) else {}
     value = run.get("prior_seen_finding_fps", []) if isinstance(run, dict) else []
+    return {x for x in value if isinstance(x, str)} if isinstance(value, list) else set()
+
+
+def track_pattern_signatures(pr: PullRequest, current_sigs: set[str]) -> dict[str, set[str]]:
+    """Pattern-granularity twin of track_finding_fingerprints.
+
+    Moves the running union into ``prior_seen_pattern_sigs`` BEFORE folding in
+    this cycle's signatures, so a later read can ask "was this pattern present
+    in a previous cycle?" without the current fetch poisoning the answer.
+    Returns ``{"prior": <prior union>, "new": <current − prior>}``. Fails open.
+    """
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key, {})
+    if not isinstance(entry, dict):
+        entry = {}
+    run = entry.get("run", {})
+    if not isinstance(run, dict):
+        run = {}
+    prior_val = run.get("seen_pattern_sigs", [])
+    prior = {x for x in prior_val if isinstance(x, str)} if isinstance(prior_val, list) else set()
+    run["prior_seen_pattern_sigs"] = sorted(prior)
+    run["seen_pattern_sigs"] = sorted(prior | current_sigs)
+    entry["run"] = run
+    state[key] = entry
+    save_sticky_state(state)
+    return {"prior": prior, "new": current_sigs - prior}
+
+
+def prior_pattern_signatures(pr: PullRequest) -> set[str]:
+    """Pattern signatures seen in cycles before the current one. Empty on cycle 1."""
+    state = load_sticky_state()
+    entry = state.get(_state_key(pr), {})
+    run = entry.get("run", {}) if isinstance(entry, dict) else {}
+    value = run.get("prior_seen_pattern_sigs", []) if isinstance(run, dict) else []
     return {x for x in value if isinstance(x, str)} if isinstance(value, list) else set()
 
 
@@ -2156,6 +2222,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--swept-pattern",
+        action="append",
+        default=[],
+        metavar="SIG",
+        help="Pattern signature (from the Patterns receipt 'sig:' token) the agent "
+             "swept across changed files this cycle. Repeatable. Accumulates for "
+             "the convergence advisory.",
+    )
+    parser.add_argument(
         "--changed-base",
         default=None,
         help="Optional git base ref for changed-file evidence (`git diff --name-only base..head`).",
@@ -2362,6 +2437,11 @@ def main() -> int:
                 )
             except OSError as exc:
                 print(f"warning: could not persist fixed markers: {exc}", file=sys.stderr)
+        if args.swept_pattern:
+            try:
+                accumulate_swept_patterns(pr, args.swept_pattern)
+            except OSError as exc:
+                print(f"warning: could not persist swept patterns: {exc}", file=sys.stderr)
         if args.wait and args.wait_chunk_seconds is not None:
             if args.wait_chunk_seconds <= 0:
                 parser.error("--wait-chunk-seconds must be a positive integer.")
@@ -2499,6 +2579,14 @@ def main() -> int:
                 )
             except OSError as exc:
                 print(f"warning: could not track finding fingerprints: {exc}", file=sys.stderr)
+            try:
+                track_pattern_signatures(
+                    pr,
+                    {cluster_findings.pattern_signature(t) for t in threads if isinstance(t, dict)}
+                    - {""},
+                )
+            except OSError as exc:
+                print(f"warning: could not track pattern signatures: {exc}", file=sys.stderr)
 
         # ---- Judge (optional, opt-in via prefs file or --judge-mode) -------
         # The script is the single source of truth for whether the judge
@@ -2673,6 +2761,22 @@ def main() -> int:
                         "warning: --verification-details is not valid JSON; storing {}.",
                         file=sys.stderr,
                     )
+            clusters = cluster_findings.cluster(
+                [t for t in threads if isinstance(t, dict)]
+            )
+            # One signature entry per finding (repeat per cluster member) so the
+            # recurrence rate is over findings, not distinct patterns.
+            current_sigs = [c.signature for c in clusters for _ in range(c.count)]
+            # Cross-run history: --record-run clears the live accumulator, so a
+            # resumed loop folds in pattern signatures recorded by prior runs of
+            # this PR (runs.jsonl) — otherwise recurrence resets to 0 on resume.
+            history = metrics.pattern_history_for_pr(f"{pr.owner}/{pr.repo}", pr.number)
+            swept_sigs = read_swept_patterns(pr) | history["swept"]
+            conv_stats = cluster_findings.recurrence_stats(
+                current_sigs,
+                prior_sigs=prior_pattern_signatures(pr) | history["seen"],
+                swept_sigs=swept_sigs,
+            )
             record = metrics.build_record(
                 repo=f"{pr.owner}/{pr.repo}",
                 pr=pr.number,
@@ -2689,6 +2793,16 @@ def main() -> int:
                 judge=metrics.build_judge_block(judge_ran, merged_judge_results),
                 cycles=run.get("cycles", []),
                 terminal_breakdown=terminal_breakdown,
+                patterns={
+                    "distinct_patterns": conv_stats["distinct_patterns"],
+                    "max_cluster_size": max((c.count for c in clusters), default=0),
+                    "pattern_recurrence_rate": round(conv_stats["recurrence_rate"], 3),
+                    "swept_count": len(swept_sigs),
+                    # Persisted so later runs of this PR can compute cross-run
+                    # recurrence after --record-run clears the live accumulator.
+                    "signatures": sorted({c.signature for c in clusters}),
+                    "swept": sorted(swept_sigs),
+                } if clusters else None,
                 **derived,
             )
             # --cycle-summary is read-only: print the block but never append a
@@ -2737,6 +2851,17 @@ def main() -> int:
                 suite_block = metrics.format_suite_block(verification_details)
                 if suite_block:
                     print(suite_block)
+                # Printed directly (like suite_block / findings_block): these
+                # start with "Patterns ("/"Convergence:", not "[loop]", so
+                # color_loop_block would be a no-op wrap.
+                patterns_block = metrics.format_patterns_block(clusters)
+                if patterns_block:
+                    print(patterns_block)
+                convergence_line = metrics.format_convergence_line(
+                    conv_stats, swept_count=len(swept_sigs)
+                )
+                if convergence_line:
+                    print(convergence_line)
                 prior_fps = prior_finding_fingerprints(pr)
                 findings_view = []
                 for thread in threads:

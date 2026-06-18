@@ -1,0 +1,92 @@
+[
+  {
+    "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/architecture_context.py",
+    "line": 133,
+    "sev": "medium",
+    "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nIn `CODEOWNERS`, inline comments starting with `#` are allowed. The current implementation only checks if the line starts with `#`. If there is an inline comment (e.g., `* @owner # comment`), the `#` and subsequent words will be parsed as owners, leading to incorrect owners like `#`, `comment`, etc. We should strip comments from the line before parsing.\n\n```suggestion\n    for line in codeowners.splitlines():\n        line = line.split(\"#\", 1)[0].strip()\n        if not line:\n            continue\n        for tok in line.split()[1:]:\n            _add(tok)\n```"
+  },
+  {
+    "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/publish_pr_readiness.py",
+    "line": 150,
+    "sev": "medium",
+    "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nReading the readiness file without `errors=\"replace\"` or catching `ValueError` can crash the script if the file contains invalid UTF-8 bytes. We should use `errors=\"replace\"` and catch both `OSError` and `ValueError` to prevent crashes.\n\n```suggestion\n    try:\n        card = Path(args.readiness).read_text(encoding=\"utf-8\", errors=\"replace\")\n    except (OSError, ValueError) as exc:\n        print(f\"error: could not read readiness file: {exc}\", file=sys.stderr)\n        return 2\n```\n\n<details>\n<summary>References</summary>\n\n1. When reading text files that may contain invalid UTF-8 bytes, use errors='replace' and catch both OSError and ValueError (which covers UnicodeDecodeError) to prevent crashes.\n</details>"
+  },
+  {
+    "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/publish_pr_readiness.py",
+    "line": 156,
+    "sev": "medium",
+    "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nThe `main` function only catches `RuntimeError` when invoking `publish`. However, `subprocess.run` (used by the GitHub client) can raise `OSError` (e.g., `FileNotFoundError` if the `gh` CLI is not installed). We should catch `OSError` as well to prevent unhandled crashes.\n\n```suggestion\n    try:\n        result = publish(repo, number, card)\n    except (RuntimeError, OSError) as exc:\n        print(f\"error: {exc}\", file=sys.stderr)\n        return 1\n```"
+  },
+  {
+    "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/fetch_infra_files.py",
+    "line": 34,
+    "sev": "medium",
+    "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nCompiling the glob pattern to a regular expression on every call to `path_matches` can be inefficient, especially when processing a large number of files. Decorating `_glob_to_regex` with `functools.lru_cache` will cache the compiled regex patterns and significantly improve performance.\n\n```suggestion\nfrom functools import lru_cache\n\n\n@lru_cache(maxsize=128)\ndef _glob_to_regex(pattern: str) -> re.Pattern[str]:\n```"
+  },
+  {
+    "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/mergeproof_readiness.py",
+    "line": 182,
+    "sev": "medium",
+    "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nWhen reading text files that may contain invalid UTF-8 bytes, use `errors='replace'` and catch both `OSError` and `ValueError` (which covers `UnicodeDecodeError`) to prevent crashes.\n\n```suggestion\n        try:\n            text = Path(args.mergeproof).read_text(encoding=\"utf-8\", errors=\"replace\")\n        except (OSError, ValueError):\n            text = \"\"\n```\n\n<details>\n<summary>References</summary>\n\n1. When reading text files that may contain invalid UTF-8 bytes, use errors='replace' and catch both OSError and ValueError (which covers UnicodeDecodeError) to prevent crashes.\n</details>"
+  },
+  {
+    "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/render_demo_ui.py",
+    "line": 352,
+    "sev": "medium",
+    "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nWhen reading and parsing JSON files, use `errors='replace'` and catch both `OSError` and `ValueError` (which covers `json.JSONDecodeError` and `UnicodeDecodeError`) to prevent crashes on decoding or file system errors.\n\n```suggestion\n        try:\n            readiness = json.loads(Path(args.readiness).read_text(encoding=\"utf-8\", errors=\"replace\"))\n        except (OSError, ValueError):\n            readiness = {}\n```\n\n<details>\n<summary>References</summary>\n\n1. When reading text files that may contain invalid UTF-8 bytes, use errors='replace' and catch both OSError and ValueError (which covers UnicodeDecodeError) to prevent crashes.\n2. When parsing JSON files, catch ValueError (which covers json.JSONDecodeError) and OSError to safely handle both decoding/parsing errors and file system issues.\n</details>"
+  },
+  {
+    "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/init_mergeproof.py",
+    "line": 250,
+    "sev": "medium",
+    "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nWrap file writing operations in a try-except block to catch `OSError` and handle it gracefully instead of crashing with a traceback.\n\n```suggestion\n    try:\n        output.parent.mkdir(parents=True, exist_ok=True)\n        output.write_text(payload, encoding=\"utf-8\")\n    except OSError as exc:\n        print(f\"error: could not write config file: {exc}\", file=sys.stderr)\n        return 1\n```\n\n<details>\n<summary>References</summary>\n\n1. Avoid catching broad exceptions like Exception when handling expected operational failures (such as file I/O or validation errors). Instead, catch specific exceptions (e.g., OSError, ValueError) to prevent swallowing unexpected bugs like AttributeError or TypeError that should be surfaced.\n</details>"
+  },
+  {
+    "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/init_mergeproof.py",
+    "line": 174,
+    "sev": "medium",
+    "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nThe call to `config.read_text` is not wrapped in a `try...except` block that catches both `OSError` and `ValueError`. If the file is unreadable or contains invalid UTF-8 bytes, it can cause the script to crash. Wrapping it in a `try...except (OSError, ValueError)` block and using `errors='replace'` ensures the function handles such failures gracefully by returning `None`.\n\n```suggestion\n    try:\n        config_content = config.read_text(encoding=\"utf-8\", errors=\"replace\")\n    except (OSError, ValueError):\n        return None\n    for line in config_content.splitlines():\n```\n\n<details>\n<summary>References</summary>\n\n1. When reading text files that may contain invalid UTF-8 bytes, use errors='replace' and catch both OSError and ValueError (which covers UnicodeDecodeError) to prevent crashes.\n</details>"
+  },
+  {
+    "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/fetch_infra_files.py",
+    "line": 86,
+    "sev": "medium",
+    "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nIf the GitHub API returns a response where the `\"tree\"` key is present but its value is `null` or not a list, `tree.get(\"tree\", [])` will return that non-list value, which will cause a `TypeError` when iterating over `entries`. Explicitly validating that `entries` is a list prevents potential crashes.\n\n```suggestion\n    entries = tree.get(\"tree\") if isinstance(tree, dict) else []\n    if not isinstance(entries, list):\n        entries = []\n```"
+  },
+  {
+    "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/resolve_mergeproof.py",
+    "line": 72,
+    "sev": "medium",
+    "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nIf `commit` is not a dictionary (e.g., if the API returns an unexpected list or string), calling `.get()` on it will raise an `AttributeError`. We should defensively verify that `commit` is a dictionary before attempting to access its keys.\n\n```python\ncommit = runner([\"api\", f\"repos/{source['repo']}/commits/{source['ref']}\"])\nsource[\"resolved_sha\"] = commit.get(\"sha\") if isinstance(commit, dict) else None\n```\n\n<details>\n<summary>References</summary>\n\n1. When writing functions that process configuration values or API keys, explicitly verify that the input is of the expected type before performing type-specific operations to prevent runtime crashes.\n</details>"
+  },
+  {
+    "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/mergeproof_config.py",
+    "line": 68,
+    "sev": "high",
+    "body": "![high](https://www.gstatic.com/codereviewagent/high-priority.svg)\n\nThe current leading tab detection logic fails if a line starts with a tab character. Since `stripped.lstrip(\" \")` only strips spaces, `indent` is calculated as `0` for lines starting with tabs, which bypasses the check `\"\\t\" in stripped[:indent]`. Using `stripped.lstrip()` to extract all leading whitespace and checking for tabs within it ensures robust detection of invalid tab indentation.\n\n```suggestion\n        indent_whitespace = stripped[:len(stripped) - len(stripped.lstrip())]\n        if \"\\t\" in indent_whitespace:\n            raise MergeProofConfigError(_SYNTAX_ERR)\n        indent = len(indent_whitespace)\n```"
+  },
+  {
+    "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/mergeproof_config.py",
+    "line": 143,
+    "sev": "medium",
+    "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nQuoted string scalars in lists that contain a colon followed by a space (e.g., `\"Note: this is a string\"` or `\"envs/prod: api/**\"`) are incorrectly matched by the regex and parsed as inline maps instead of string scalars. Checking if the item is quoted before applying the regex prevents this incorrect parsing behavior.\n\n```suggestion\n        is_quoted = len(item) >= 2 and item[0] == item[-1] and item[0] in (\"'\", '\"')\n        if not is_quoted and re.match(r\"[^:\\s][^:]*:(\\s|$)\", item):\n            lines[idx] = (indent + 2, item)\n            child, idx = _parse_map(lines, idx, indent + 2)\n            result.append(child)\n            continue\n```"
+  },
+  {
+    "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/resolve_mergeproof.py",
+    "line": 47,
+    "sev": "medium",
+    "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nIf `base_sha` cannot be resolved from the PR metadata, subsequent API calls will fail or use `\"None\"` as the ref, which is highly confusing. Adding explicit validation for `base_sha` ensures the orchestrator fails fast with a clear error message. Additionally, explicitly validate the types of nested keys and check for `None` explicitly rather than using falsy checks to prevent runtime crashes and preserve valid falsy values.\n\n```suggestion\n    base = pr.get(\"base\")\n    base_sha = base.get(\"sha\") if isinstance(base, dict) else None\n    if not base_sha:\n        raise RuntimeError(f\"Could not resolve base SHA for PR {pr_number}\")\n    head = pr.get(\"head\")\n    head_sha = pr_head_sha if pr_head_sha is not None else (head.get(\"sha\") if isinstance(head, dict) else None)\n```\n\n<details>\n<summary>References</summary>\n\n1. When parsing configuration files (such as JSON), explicitly validate the types of nested keys before performing membership checks or type-specific operations to prevent TypeError crashes.\n2. When defaulting or coercing values from external payloads (such as LLM responses), check for None explicitly rather than using falsy checks (e.g., val or \"\") to preserve valid falsy values like 0, False, or empty strings, while still allowing defensive type coercion.\n</details>"
+  },
+  {
+    "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/render_demo_ui.py",
+    "line": 204,
+    "sev": "medium",
+    "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nIf `source` is not a dictionary or `files` is not a list (e.g., due to malformed or partial readiness data), accessing `source.get` or calling `\", \".join` will raise an `AttributeError` or `TypeError`. Explicitly validating the types of these nested keys before performing operations prevents runtime crashes. Also, ensure to check for `None` explicitly rather than using falsy checks to preserve valid falsy values.\n\n```python\n    source = sources[0]\n    if not isinstance(source, dict):\n        return \"\"\n    resolved_sha = source.get(\"resolved_sha\")\n    sha = resolved_sha[:7] if isinstance(resolved_sha, str) else \"unknown\"\n    repo = source.get(\"repo\")\n    repo = repo if repo is not None else \"unknown\"\n    count = provenance.get(\"file_count\", 0) if isinstance(provenance, dict) else 0\n    fetched_at = provenance.get(\"fetched_at\") if isinstance(provenance, dict) else None\n    fetched_at = fetched_at if fetched_at is not None else \"unknown\"\n    files = source.get(\"files\")\n    file_list = \", \".join(files) if isinstance(files, list) else \"\"\n```\n\n<details>\n<summary>References</summary>\n\n1. When parsing configuration files (such as JSON), explicitly validate the types of nested keys before performing membership checks or type-specific operations to prevent TypeError crashes.\n2. When defaulting or coercing values from external payloads (such as LLM responses), check for None explicitly rather than using falsy checks (e.g., val or \"\") to preserve valid falsy values like 0, False, or empty strings, while still allowing defensive type coercion.\n</details>"
+  },
+  {
+    "path": "plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/render_pr_readiness.py",
+    "line": 336,
+    "sev": "medium",
+    "body": "![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)\n\nIf `provenance[\"sources\"]` is not a list or `source` is not a dictionary, accessing `source.get` will raise an `AttributeError`. Explicitly validating the types of these nested keys before performing operations prevents runtime crashes. When validating that a dictionary field is a non-empty list, use `isinstance(val, list) and val` to prevent type errors from non-list truthy values while safely excluding empty lists.\n\n```suggestion\n    provenance = readiness.get(\"provenance\")\n    if isinstance(provenance, dict):\n        sources = provenance.get(\"sources\")\n        if isinstance(sources, list) and sources:\n            source = sources[0]\n            if isinstance(source, dict):\n                resolved_sha = source.get(\"resolved_sha\")\n                sha = resolved_sha[:7] if isinstance(resolved_sha, str) else \"\"\n                repo = source.get(\"repo\")\n                repo_str = repo if repo is not None else \"\"\n                lines.append(\n                    f\"| Production context | {provenance.get('file_count', 0)} files from \"\n                    f\"`{repo_str}@{sha}` |\"\n                )\n```\n\n<details>\n<summary>References</summary>\n\n1. When parsing configuration files (such as JSON), explicitly validate the types of nested keys before performing membership checks or type-specific operations to prevent TypeError crashes.\n2. When defaulting or coercing values from external payloads (such as LLM responses), check for None explicitly rather than using falsy checks (e.g., val or \"\") to preserve valid falsy values like 0, False, or empty strings, while still allowing defensive type coercion.\n3. When validating that a dictionary field is a non-empty list, use isinstance(val, list) and val to prevent type errors from non-list truthy values (like True or non-empty strings) while safely excluding empty lists.\n</details>"
+  }
+]

@@ -17,7 +17,6 @@ the edit. A visibility/ordering aid must never wedge unrelated editing.
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 
@@ -30,6 +29,7 @@ from fetch_gemini_threads import (  # noqa: E402
     find_active_run,
     resolve_current_repo,
 )
+from hook_runtime import load_hook_payload, tool_name  # noqa: E402
 
 
 def profile_required_for_repo(repo_full: str) -> bool:
@@ -59,13 +59,12 @@ BLOCK_MESSAGE = (
 
 def main() -> int:
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
-        if not isinstance(payload, dict):
-            return 0
-    except (json.JSONDecodeError, ValueError, OSError):
+        raw_payload = sys.stdin.read() if sys.stdin is not None else ""
+        payload = load_hook_payload(raw_payload)
+    except (OSError, ValueError):
         return 0  # malformed/unreadable payload -> fail open
 
-    tool = payload.get("tool_name", "")
+    tool = tool_name(payload)
     if tool not in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
         return 0
 

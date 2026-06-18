@@ -108,6 +108,41 @@ def load_records(path: Path | None = None) -> tuple[list[dict[str, Any]], int]:
     return records, skipped
 
 
+def pattern_history_for_pr(
+    repo: str, pr_number: int, path: Path | None = None
+) -> dict[str, set[str]]:
+    """Union of pattern signatures (seen + swept) from prior recorded runs of a PR.
+
+    The live per-run accumulator is cleared by --record-run, so a resumed loop
+    would otherwise see an empty prior set and report recurrence as 0. Reading
+    the append-only runs.jsonl lets convergence detection survive across resumes:
+    a pattern recorded in an earlier run of this same repo+PR still counts as
+    "seen before". Returns ``{"seen": set, "swept": set}``; empty on any error.
+    """
+    seen: set[str] = set()
+    swept: set[str] = set()
+    try:
+        records, _ = load_records(path)
+    except (OSError, ValueError):
+        return {"seen": seen, "swept": swept}
+    for rec in records:
+        if rec.get("repo") != repo:
+            continue
+        try:
+            if int(rec.get("pr") or 0) != pr_number:
+                continue
+        except (TypeError, ValueError):
+            continue
+        patterns = rec.get("patterns")
+        if not isinstance(patterns, dict):
+            continue
+        for key, bucket in (("signatures", seen), ("swept", swept)):
+            values = patterns.get(key)
+            if isinstance(values, list):
+                bucket.update(v for v in values if isinstance(v, str))
+    return {"seen": seen, "swept": swept}
+
+
 def build_judge_block(judge_ran: bool, judge_results: dict[str, Any]) -> dict[str, Any]:
     if not judge_ran:
         return {"enabled": False}
@@ -568,6 +603,45 @@ def format_findings_block(findings: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def format_patterns_block(clusters: list[Any]) -> str:
+    """Clustered view of the current findings, or '' when none.
+
+    ``clusters`` is a list of cluster_findings.Cluster. Renders above the
+    per-finding Findings block: one stanza per pattern with severity, label,
+    site count, signature token (for --swept-pattern), and up to 4 sites.
+    """
+    valid = [c for c in clusters if c is not None]
+    if not valid:
+        return ""
+    lines = [f"Patterns ({len(valid)}):"]
+    for c in valid:
+        plural = "site" if c.count == 1 else "sites"
+        lines.append(f"  [{c.severity}] {c.label} — {c.count} {plural}   (sig: {c.signature})")
+        shown = c.sites[:4]
+        suffix = f", +{len(c.sites) - 4} more" if len(c.sites) > 4 else ""
+        lines.append(f"           {', '.join(shown)}{suffix}")
+    return "\n".join(lines)
+
+
+def format_convergence_line(stats: dict[str, Any], *, swept_count: int) -> str:
+    """One-line advisory convergence summary, or '' when no patterns this cycle."""
+    distinct = stats.get("distinct_patterns", 0)
+    if not distinct:
+        return ""
+    recurred = stats.get("recurred_after_sweep") or []
+    swept_plural = "pattern" if swept_count == 1 else "patterns"
+    if recurred:
+        names = ", ".join(recurred)
+        return (
+            f"Convergence: ⚠ pattern(s) {names} RECURRED after sweep. "
+            "Sweep missed a variant or Gemini keeps re-flagging."
+        )
+    return (
+        f"Convergence: {distinct} distinct patterns this cycle, "
+        f"0 recurred. Swept {swept_count} {swept_plural}."
+    )
+
+
 def _mode(items: list[Any]) -> Any | None:
     if not items:
         return None
@@ -770,6 +844,7 @@ def build_record(
     judge: dict[str, Any] | None,
     cycles: list[dict[str, Any]] | None = None,
     terminal_breakdown: dict[str, Any] | None = None,
+    patterns: dict[str, Any] | None = None,
     ts: str | None = None,
 ) -> dict[str, Any]:
     ts = ts or now_iso()
@@ -809,4 +884,5 @@ def build_record(
         "finding_paths": paths,
         "judge": judge or {"enabled": False},
         "terminal_breakdown": dict(terminal_breakdown) if isinstance(terminal_breakdown, dict) else {},
+        "patterns": dict(patterns) if isinstance(patterns, dict) else {},
     }

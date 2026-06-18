@@ -1,4 +1,12 @@
+from cluster_findings import Cluster
 import metrics
+from metrics import (
+    RECORD_SCHEMA_VERSION,
+    build_record,
+    format_convergence_line,
+    format_patterns_block,
+    pattern_history_for_pr,
+)
 
 
 class TestHelpers:
@@ -803,3 +811,91 @@ class TestFormatStats:
         }
         out = metrics.format_stats("o/r", agg, skipped=2)
         assert "(2 unreadable records skipped)" in out
+
+def test_format_patterns_block_orders_and_lists_sites():
+    clusters = [
+        Cluster(signature="a1b2c3d4", label="tab-vs-space indent detection",
+                severity="high", sites=["mergeproof_config.py:68"], count=1),
+        Cluster(signature="e5f6a7b8", label="missing isinstance guard",
+                severity="medium",
+                sites=[f"f{i}.py:{i}" for i in range(8)], count=8),
+    ]
+    block = format_patterns_block(clusters)
+    assert "Patterns (2):" in block
+    assert "[high]" in block and "[medium]" in block
+    assert "sig: a1b2c3d4" in block
+    assert "1 site" in block and "8 sites" in block
+    assert "+" in block and "more" in block
+
+
+def test_format_patterns_block_empty():
+    assert format_patterns_block([]) == ""
+
+
+def test_format_convergence_line_plain():
+    line = format_convergence_line(
+        {"distinct_patterns": 2, "recurrence_rate": 0.0, "recurred_after_sweep": []},
+        swept_count=1,
+    )
+    assert "Convergence:" in line
+    assert "2 distinct patterns" in line
+    assert "Swept 1 pattern" in line
+    assert "⚠" not in line
+
+
+def test_format_convergence_line_recurred_after_sweep_warns():
+    line = format_convergence_line(
+        {"distinct_patterns": 1, "recurrence_rate": 1.0, "recurred_after_sweep": ["e5f6a7b8"]},
+        swept_count=1,
+    )
+    assert "⚠" in line
+    assert "RECURRED after sweep" in line
+
+def _min_record_kwargs():
+    return dict(
+        repo="o/r", pr=46, provider="gemini-code-assist",
+        findings_fetched=3, fixed_count=3, observed_fixed_count=3,
+        remaining_actionable=0, needs_human=0, addressed_by_reply=0,
+        cycles_used=2, cycle_cap=5, verification="passed",
+        verification_details=None, outcome="clean", outcome_reason="",
+        started_at=None, finding_paths=[], judge=None,
+    )
+
+
+def test_build_record_includes_patterns_block_when_passed():
+    rec = build_record(**_min_record_kwargs(), patterns={
+        "distinct_patterns": 4, "max_cluster_size": 14,
+        "pattern_recurrence_rate": 0.0, "swept_count": 1,
+    })
+    assert rec["patterns"]["max_cluster_size"] == 14
+    assert rec["patterns"]["swept_count"] == 1
+
+
+def test_build_record_patterns_defaults_to_empty_dict():
+    rec = build_record(**_min_record_kwargs())
+    assert rec["patterns"] == {}
+
+def _write_run(path, repo, pr, signatures, swept):
+    import json
+    rec = {
+        "schema_version": RECORD_SCHEMA_VERSION, "repo": repo, "pr": pr,
+        "patterns": {"signatures": signatures, "swept": swept},
+    }
+    with path.open("a") as fh:
+        fh.write(json.dumps(rec) + "\n")
+
+
+def test_pattern_history_unions_signatures_and_swept_for_matching_pr(tmp_path):
+    log = tmp_path / "runs.jsonl"
+    _write_run(log, "o/r", 46, ["type-guard", "io-decode-guard"], ["type-guard"])
+    _write_run(log, "o/r", 46, ["io-decode-guard", "yaml-scalar-parse"], ["io-decode-guard"])
+    _write_run(log, "o/r", 99, ["other-pattern"], ["other-pattern"])  # different PR, ignored
+    hist = pattern_history_for_pr("o/r", 46, path=log)
+    assert hist["seen"] == {"type-guard", "io-decode-guard", "yaml-scalar-parse"}
+    assert hist["swept"] == {"type-guard", "io-decode-guard"}
+    assert "other-pattern" not in hist["seen"]
+
+
+def test_pattern_history_empty_when_no_log(tmp_path):
+    hist = pattern_history_for_pr("o/r", 46, path=tmp_path / "missing.jsonl")
+    assert hist == {"seen": set(), "swept": set()}

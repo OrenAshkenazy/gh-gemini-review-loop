@@ -42,6 +42,35 @@ threads, classify fixed-pending findings, and print or record the final summary.
 
 Gemini prefixes inline review comments with a markdown image whose alt text is the severity (`critical` / `high` / `medium` / `low`). The script parses this and orders actionable threads `critical → high → medium → low → unknown`, so high-severity findings are reported and fixed first. The severity tag also appears in the per-thread markdown header, e.g. `## 1. src/auth.py:42 [high]`.
 
+## Pattern → Sweep → Converge
+
+Gemini is an LLM reviewer: when it flags a code pattern, fixing only the flagged
+sites teaches it to flag *more* instances of the same pattern in other changed
+files next cycle. To collapse that expansion into one cycle, each cycle runs:
+
+**Finding → Pattern → Sweep → Verify → Re-review**
+
+1. **Cluster.** The cycle receipt's `Patterns (N):` section groups findings by a
+   deterministic pattern signature. Reason about patterns, not a flat finding list.
+2. **Sweep (report-then-go).** For each multi-site pattern (`count >= 2`), grep the
+   PR's **changed files** for sibling instances of the same shape — including ones
+   Gemini has not flagged yet — using the cluster's example sites as the template.
+   Print a short sweep report (which extra sites, why), then fix the whole cluster
+   plus the swept siblings in this cycle. Do not block on approval, but never edit
+   unflagged code silently — the report must appear first.
+3. **Mark.** Pass `--swept-pattern <sig>` (the `sig:` token from the Patterns
+   receipt) for each pattern you swept, alongside the usual `--fixed-finding`
+   markers, so the convergence advisory can detect recurrence.
+4. **Verify** (the repo profile) and **re-review** as usual.
+
+The receipt's `Convergence:` line is advisory only. When a swept pattern reappears
+("⚠ … RECURRED after sweep"), the sweep missed a variant or Gemini keeps
+re-flagging — decide whether to refine the sweep, stop, or continue. It never
+changes control flow; the re-review cap remains the only hard stop.
+
+Sweep scope is **changed files only** — that is both safe (blast radius = the PR's
+own diff) and sufficient (Gemini only reviews changed files).
+
 ## Loop Receipt
 
 Pass `--post-receipt` to leave a one-comment audit trail on the PR after the loop runs: cycles used, threads resolved (outdated + addressed-by-reply), threads still pending, and severity breakdown of remaining actionable threads. Use `--dry-run --post-receipt` to preview the receipt without posting.
@@ -70,7 +99,7 @@ Requires an OpenAI API key resolved by `key_resolver.py` (env var → dotfile �
 
 If the user asks how to set their key permanently, recommend the OS-keystore path:
 ```bash
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py" --set
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py" --set
 ```
 This stores in macOS Keychain (Touch ID / password-protected), Linux Secret Service, or a chmod-600 dotfile fallback. No rc-file edits, no `ps` leakage, no shell-restart dance. For diagnostics, suggest `key_resolver.py --print-source` and `judge_doctor.py`.
 
@@ -110,7 +139,7 @@ Use README examples, `--help` output, and marketplace description for broader di
 
 ### When to prompt
 
-Prompt with `AskUserQuestion` **only** when the user explicitly requests judge eval without specifying a mode:
+Prompt with the current runtime's choice-prompt mechanism **only** when the user explicitly requests judge eval without specifying a mode. In Claude Code this may be `AskUserQuestion`; in Codex use the available user-input flow or ask one concise question directly.
 
 > **"enable judge eval" / "use judge eval" / "turn on eval"**
 
@@ -211,7 +240,7 @@ A check may carry its own `working_directory` (relative to the repo root);
 
 1. Run `detect_profile.py <repo_root>`. It returns `{stack, confidence, reasons,
    candidate_checks, presets}`. `presets` is an explicit, ordered, code-built
-   option list — do **not** hand-roll the menu or rely on `AskUserQuestion`
+   option list — do **not** hand-roll the menu or rely on the runtime prompt UI
    auto-adding an option.
 2. If `stack == "unknown"` (empty `candidate_checks`, empty `presets`) → do
    **not** prompt or persist; use ad-hoc verification.
@@ -219,8 +248,8 @@ A check may carry its own `working_directory` (relative to the repo root);
    pin a non-standard invocation, surface it as a note beside the menu — *"Repo
    docs pin `/opt/homebrew/bin/pytest`; pick **Customize manually** to use it."*
    Never auto-persist an absolute path from prose.
-4. Prompt once with `AskUserQuestion`, using each `presets[i].label` verbatim as
-   an option. Example menu for a multi-check Python repo:
+4. Prompt once with the current runtime's choice-prompt mechanism, using each
+   `presets[i].label` verbatim as an option. Example menu for a multi-check Python repo:
    *"All detected — pytest + ruff check ." / "Tests only — pytest" / "Skip — use
    ad-hoc verification" / "Customize manually"*.
 5. Persist the chosen preset via `judge.save_profile(...)`:
@@ -237,7 +266,7 @@ A profile (including a `skipped` one) exists → **no prompt**. If `source` is
 intro block:
 
 ```bash
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
   --profile-intro \
   --repo OWNER/REPO
 ```
@@ -270,7 +299,7 @@ Before running checks, render and relay the deterministic planned-verification
 block:
 
 ```bash
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
   --planned-verification \
   --repo OWNER/REPO
 ```
@@ -297,7 +326,7 @@ The run's start timestamp and per-finding accumulation reuse the same per-PR key
 Call exactly once after the loop reaches a terminal state:
 
 ```bash
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
     --record-run \
     --fixed-count <n> \
     --verification <passed|failed|skipped>
@@ -310,6 +339,8 @@ Optional additions:
 - `--outcome-reason '<text>'` — one-line explanation
 - `--gemini-confirmed` — final wait/re-review completed and confirmed the latest state
 - `--gemini-unconfirmed` — final wait timed out or otherwise did not confirm the latest fixes
+- `--fixed-finding <fp>` — finding fingerprint the agent fixed locally; repeatable; stored in run tracking and used for terminal classification
+- `--swept-pattern <sig>` — pattern-level swept marker; the `sig:` token from the `Patterns (N):` receipt; repeatable; feeds the convergence advisory to detect recurrence after a sweep (see [Pattern → Sweep → Converge](#pattern--sweep--converge))
 
 The script fetches the current thread state, derives counts, appends the record, and prints a `[loop] Summary` block to stdout.
 
@@ -318,7 +349,7 @@ The script fetches the current thread state, derives counts, appends the record,
 `--record-run` is terminal: it writes a record **and clears** the run accumulator, so it must be called exactly once at loop end. To show a mid-loop receipt **during** the loop — at the end of each cycle — use `--cycle-summary` instead:
 
 ```bash
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
     --cycle-summary \
     --fixed-count <n-this-cycle> \
     --verification <passed|failed|skipped>
@@ -385,7 +416,7 @@ behavior in ways that passing tests may not fully cover, especially:
 Example:
 
 ```bash
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
     --cycle-summary \
     --fixed-count <n-this-cycle> \
     --verification passed \
@@ -413,7 +444,7 @@ unless the user explicitly asked to see machine output.
 Print aggregated stats for the current repo from `runs.jsonl` and exit. Never touches GitHub.
 
 ```bash
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --stats
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --stats
 ```
 
 Options: `--stats-window N` (default 10 most-recent runs), `--stats-all-repos`, `--format json`.
@@ -441,7 +472,7 @@ While the loop is running, the agent MUST emit one-line status updates to the us
 
 1. **`loop_summary_gate.py` (PreToolUse:Bash)** — Blocks `git push` when `update_seq > last_summary_seq`. Exit code 2 with an error message tells the agent exactly which `--cycle-summary` command to run first. This is the primary gate: the agent cannot push a new cycle's commits without first emitting the summary.
 
-2. **`loop_summary_hook.py` (Stop)** — On every turn end, if a loop advanced without a summary being emitted, runs `--cycle-summary --auto-snapshot` and surfaces the result via `systemMessage`. Catches the terminal-cycle gap (between `--record-run` output existing in Bash tool output and the agent relaying it to the user).
+2. **`loop_summary_hook.py` (Stop)** — On every turn end, if a loop advanced without a summary being emitted, runs `--cycle-summary --auto-snapshot` and surfaces the result through the runtime hook output (`systemMessage` in Claude Code). Catches the terminal-cycle gap (between `--record-run` output existing in Bash tool output and the agent relaying it to the user).
 
 3. **Memory feedback** — Saved in the session memory to reinforce the rule across future sessions.
 
@@ -483,7 +514,7 @@ Human decision required
 1. <file>:<line> · <GitHub comment URL>
    Finding: <what Gemini flagged, verbatim or closely paraphrased>
    Why human: <concrete reason — format consistency, security policy, product behavior tradeoff>
-   Claude did not auto-fix this because <specific reason: changes report format behavior / requires policy decision / both options are valid>.
+   The agent did not auto-fix this because <specific reason: changes report format behavior / requires policy decision / both options are valid>.
    Options:
    - <option A>
    - <option B>
@@ -496,7 +527,7 @@ Human decision required
 1. main.py:828 · https://github.com/Owner/Repo/pull/9#discussion_r3369882171
    Finding: OWASP tags appear in console and JSON reports, but not in Markdown.
    Why human: this changes report format behavior. Both choices are valid.
-   Claude did not auto-fix this because it is a product decision, not a safe mechanical fix.
+   The agent did not auto-fix this because it is a product decision, not a safe mechanical fix.
    Options:
    - Add OWASP tags to Markdown output for consistency.
    - Keep Markdown simpler; document that OWASP tags are JSON/console only.
@@ -548,13 +579,13 @@ formatter. Do not hand-write the options unless the script fails.
 
 Always run verification through `run_profile.py` when a profile is confirmed for the repo:
 ```bash
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
   --planned-verification \
   --repo owner/repo
 ```
 
 ```bash
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/run_profile.py" owner/repo /path/to/repo
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/run_profile.py" owner/repo /path/to/repo
 ```
 
 Relay the planned-verification block before running checks. Feed the runner's
@@ -565,7 +596,7 @@ details. This matters even when you know the profile command (the runner times
 it, captures structured output, and sets the right exit code for downstream
 processing).
 
-Skip narration only when running in pure non-interactive batch mode (e.g. `gh pr create` chained into a script that captures output for later — but in Claude Code interactive sessions, never skip).
+Skip narration only when running in pure non-interactive batch mode (e.g. `gh pr create` chained into a script that captures output for later — but in interactive Claude Code or Codex sessions, never skip).
 
 Rationale: in interactive Claude Code sessions, the user is watching the chat. Silent loops feel broken even when they're working. One line per phase is the right cadence — enough to show progress without burying signal.
 
@@ -608,10 +639,10 @@ When the user phrases the request differently, dispatch to the right flag combin
 | **Loop + judge at completion** | "run the Gemini loop with judge eval at completion" / "with judge eval at completion" | `save_preferences("on_complete")`. Phase is auto-inferred (`complete` at `--record-run`). No prompt. |
 | **Loop + judge every cycle** | "run the Gemini loop with judge eval on every cycle" / "with judge eval on every cycle" | `save_preferences("on_cycle")`. Phase is auto-inferred (`cycle` per fetch, `complete` at `--record-run`). No prompt. |
 | **Judge just this once** | "run judge eval just this once" / "with judge eval just this once" | `--judge-mode once --judge-phase complete`. No save. No prompt. |
-| **Enable judge eval (no mode)** | "enable judge eval" / "use judge eval" / "turn on eval" | Show `AskUserQuestion` prompt; act on answer. |
+| **Enable judge eval (no mode)** | "enable judge eval" / "use judge eval" / "turn on eval" | Show the runtime choice prompt; act on answer. |
 | **Explain judge eval** | "what is judge eval?" / "how does judge eval work?" | Explain it. Do not enable it. |
 | **Disable judge for this run** | "skip the judge this time" | `--judge-mode off` |
-| **Change saved preference** | "change my eval preference" / "reset judge mode" | Show `AskUserQuestion` prompt; overwrite prefs file. |
+| **Change saved preference** | "change my eval preference" / "reset judge mode" | Show the runtime choice prompt; overwrite prefs file. |
 | **Default loop with saved judge mode** | (no special phrasing — agent reads saved prefs) | No `--judge-phase` needed — phase is auto-inferred. Script obeys saved mode. |
 | **History investigation** | "show me all Gemini threads ever, including resolved" | `--include-resolved --include-outdated --include-addressed-by-reply --no-resolve-outdated --no-resolve-addressed-by-reply` |
 | **Local stats** | "show Gemini loop stats" / "loop stats for this repo" / "how's the loop doing here" | `--stats` |
@@ -741,7 +772,7 @@ infra files      -> allowlisted paths from trusted config
 ## Workflow
 
 1. Trigger the loop by default after PR creation.
-   - When Claude creates or opens a PR and this skill is available, continue into this workflow automatically unless the user explicitly says not to.
+   - When the agent creates or opens a PR and this skill is available, continue into this workflow automatically unless the user explicitly says not to.
    - Treat "create the PR", "open a PR", "yeet this", "ship this PR", and "run the Gemini loop" as permission to complete the full loop: wait, fetch, acknowledge, fix, verify, commit, push, and request Gemini re-review.
 
 2. Resolve the PR.
@@ -777,7 +808,7 @@ infra files      -> allowlisted paths from trusted config
    - If there are no actionable unresolved threads, say so and stop after reporting the clean result.
    - **GATE — verification profile before any edit.** On the first run for this repo with no saved profile, set up the verification profile NOW (detect → preset menu → save) — *before* applying a single fix, so the verify strategy is fixed before edits. See the **Verification Profile** section. This is enforced mechanically: a bundled `PreToolUse` hook (`scripts/loop_profile_gate.py`) blocks `Edit`/`Write`/`MultiEdit` while a loop is active for the repo and no profile is saved. Saving any profile — including a deliberate **Skip** — clears the gate. If an edit is blocked, that is the signal you skipped this step: make the profile decision, then proceed.
    - After prefs/profile state is known, render and relay the profile intro:
-     `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --profile-intro --repo OWNER/REPO`
+     `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --profile-intro --repo OWNER/REPO`
 
 7. Classify comments.
    - Group by file and behavioral area.
@@ -795,7 +826,7 @@ infra files      -> allowlisted paths from trusted config
 
 9. Verify.
    - Before running checks, render and relay the planned verification block:
-     `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --planned-verification --repo OWNER/REPO`
+     `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --planned-verification --repo OWNER/REPO`
    - If a `confirmed`/`customized` profile exists for this repo, run
      `run_profile.py <owner/repo> <repo_root>` — it prints `to_details()` JSON
      and exits non-zero if a required check failed; feed its `verification` into
@@ -810,12 +841,12 @@ infra files      -> allowlisted paths from trusted config
     - For this skill's full loop, commit fixes to the PR branch. Push only after the required cycle receipt has been relayed for non-terminal cycles.
     - Use a clear commit message such as `fix: address Gemini Code Assist review`.
     - Before pushing a non-terminal cycle, emit the per-cycle receipt:
-      `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --cycle-summary --fixed-count <n-this-cycle> --verification <passed|failed|skipped>`
+      `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --cycle-summary --fixed-count <n-this-cycle> --verification <passed|failed|skipped>`
       then relay the printed `[loop] Cycle receipt` block verbatim. This is read-only — it does not write `runs.jsonl`.
     - Post the re-review request after a successful push only if this would not exceed the configured total re-review request cap.
     - Request re-review through the script-owned helper and parse JSON stdout:
       ```bash
-      python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/request_rereview.py" \
+      python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/request_rereview.py" \
         --repo OWNER/REPO \
         --pr PR_NUMBER \
         --json
@@ -823,7 +854,7 @@ infra files      -> allowlisted paths from trusted config
       Capture `created_at` from the JSON payload as `REREVIEW_AT`. If the repository uses a different Gemini trigger phrase, pass it with `--phrase`.
     - Wait for Gemini using chunked foreground waits — never a background wait:
       ```bash
-      python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+      python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
         --wait \
         --after "$REREVIEW_AT" \
         --wait-chunk-seconds 60
@@ -840,7 +871,7 @@ infra files      -> allowlisted paths from trusted config
       guess `clean`, do not blindly mark `capped`, and allow
       `fixed_pending_confirmation`.
     - After the final wait has established confirmed/unconfirmed state, record the run exactly once:
-      `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --record-run --fixed-count <n> --verification <passed|failed|skipped> [--outcome <state>] [--gemini-confirmed|--gemini-unconfirmed]`
+      `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --record-run --fixed-count <n> --verification <passed|failed|skipped> [--outcome <state>] [--gemini-confirmed|--gemini-unconfirmed]`
       then relay the printed `[loop] Summary` block verbatim.
     - After the terminal summary is relayed, the optional MergeProof readiness phase may run. The preceding `--record-run` already wrote the terminal record to `runs.jsonl`, so readiness reads that by default; it does **not** rerun the CR loop and needs no hand-authored summary file:
       `python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/mergeproof.py" run --pr https://github.com/OWNER/REPO/pull/123 --publish`
@@ -850,10 +881,27 @@ infra files      -> allowlisted paths from trusted config
 
 ## Script Usage
 
-**`$CLAUDE_PLUGIN_ROOT` is not set in the shell environment.** Before running any script command, resolve it:
+**`$GGRL_PLUGIN_ROOT` is the runtime-neutral plugin root.** Before running any
+script command, resolve it once. Claude Code usually provides
+`$CLAUDE_PLUGIN_ROOT`; Codex installs are discoverable from the Codex plugin
+cache. Local development checkouts use the repo's `plugins/gh-gemini-review-loop`
+folder.
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(find ~/.claude/plugins/cache -type d -path "*/skills/gh-gemini-review-loop" 2>/dev/null | sort -rV | head -1 | sed 's|/skills/gh-gemini-review-loop$||')
+GGRL_PLUGIN_ROOT="${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"
+if [ -z "$GGRL_PLUGIN_ROOT" ]; then
+  GGRL_PLUGIN_ROOT=$(
+    find ~/.codex/plugins ~/.codex/plugins/cache ~/.claude/plugins/cache \
+      -type d -path "*/skills/gh-gemini-review-loop" 2>/dev/null \
+      | sort -rV \
+      | head -1 \
+      | sed 's|/skills/gh-gemini-review-loop$||'
+  )
+fi
+if [ -z "$GGRL_PLUGIN_ROOT" ] && [ -d "$(git rev-parse --show-toplevel 2>/dev/null)/plugins/gh-gemini-review-loop" ]; then
+  GGRL_PLUGIN_ROOT="$(git rev-parse --show-toplevel)/plugins/gh-gemini-review-loop"
+fi
+export GGRL_PLUGIN_ROOT
 ```
 
 This must be run as a Bash tool call first — do not inline it into the `python3` invocation. Once set, use it in subsequent calls.
@@ -861,7 +909,7 @@ This must be run as a Bash tool call first — do not inline it into the `python
 From any repository with a GitHub PR:
 
 ```bash
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py"
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py"
 ```
 
 By default this resolves unresolved outdated Gemini threads AND addressed-by-reply
@@ -876,58 +924,58 @@ Useful options:
 # No --after → returns as soon as activity is present; it does NOT wait for a
 # quiet/settle period. At the initial review there either are comments or there
 # aren't, so settling buys nothing — the wait only blocks until Gemini has shown up.
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --wait
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --wait
 
 # Wait for a NEW Gemini review after a re-review request (cycle 2+).
 # Pass the re-review comment timestamp so prior-cycle activity is ignored.
 # WITH --after the wait settles (waits for the new review to stabilize) before
 # returning, so a fast-forward fetch doesn't catch a half-posted re-review.
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
     --wait --after "$REREVIEW_AT"
 
 # Chunked wait (preferred): return within 60s with a deterministic status
 # instead of blocking. Relay the printed heartbeat verbatim, then run the next
 # chunk with the suggested --wait-chunk-seconds. Never run the wait in the
 # background.
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
     --wait --after "$REREVIEW_AT" --wait-chunk-seconds 60
 
 # After a --format json chunk, render the human heartbeat for relay:
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
     --wait-heartbeat
 
 # Request Gemini re-review via the script-owned helper.
 # Parse JSON stdout and capture `created_at` as REREVIEW_AT.
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/request_rereview.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/request_rereview.py" \
     --repo OWNER/REPO \
     --pr PR_NUMBER \
     --json
 
 # Render deterministic human-readable formatter blocks for relay.
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
     --profile-intro --repo OWNER/REPO
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
     --planned-verification --repo OWNER/REPO
 
 # Read-only fetch (no GraphQL mutations)
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
     --no-resolve-outdated --no-resolve-addressed-by-reply
 
 # Dry-run all resolutions (logs intended writes to stderr without calling GraphQL)
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --dry-run
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --dry-run
 
 # Specific PR URL
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --pr https://github.com/OWNER/REPO/pull/123
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --pr https://github.com/OWNER/REPO/pull/123
 
 # JSON for automation
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --format json
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --format json
 
 # Include outdated, resolved, or addressed-by-reply threads while investigating history
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
     --no-resolve-outdated --include-outdated --include-resolved --include-addressed-by-reply
 
 # Use a different bot login
-python3 "$CLAUDE_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --author google-gemini-code-assist
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --author google-gemini-code-assist
 ```
 
 The script emits `warning: ... hit page limit ...` to stderr if any GraphQL page maxes out (review threads, reviews, PR comments, or comments within a thread), indicating older items may be silently missing.
