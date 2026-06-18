@@ -1,0 +1,16 @@
+image:
+  repository: ghcr.io/orenashkenazy/mergeproof-demo-payments-api
+  tag: demo
+
+service:
+  name: payments-api
+  namespace: payments
+
+workers:
+  refund_worker:
+    enabled: false
+    service: payments-api
+
+env:
+  LOG_LEVEL: info
+  WORKER_QUEUE: refunds

@@ -1,0 +1,15 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${service}-${worker_name}
+  labels:
+    app: ${service}
+    component: ${worker_name}
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: ${worker_name}
+          image: ${service}:latest
+          command: ["python", "-m", "app.workers.${worker_name}"]
