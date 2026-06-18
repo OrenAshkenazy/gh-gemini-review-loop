@@ -1,0 +1,6 @@
+[
+  {"path": "app/providers/acme.py", "status": "modified"},
+  {"path": "app/secrets/stripe_webhook.py", "status": "added"},
+  {"path": "app/workers/refund_worker.py", "status": "added"},
+  {"path": "tests/test_refund_worker.py", "status": "added"}
+]

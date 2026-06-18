@@ -1,0 +1,10 @@
+{
+  "pr_url": "https://github.com/OrenAshkenazy/familia-ai/pull/106",
+  "fixed_count": 6,
+  "false_positives_skipped": 1,
+  "verification": "passed",
+  "verification_command": "uv run pytest",
+  "rereview": "completed",
+  "cycles_used": 2,
+  "cycles_total": 3
+}

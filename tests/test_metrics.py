@@ -1,4 +1,12 @@
+from cluster_findings import Cluster
 import metrics
+from metrics import (
+    RECORD_SCHEMA_VERSION,
+    build_record,
+    format_convergence_line,
+    format_patterns_block,
+    pattern_history_for_pr,
+)
 
 
 class TestHelpers:
@@ -804,11 +812,6 @@ class TestFormatStats:
         out = metrics.format_stats("o/r", agg, skipped=2)
         assert "(2 unreadable records skipped)" in out
 
-
-from cluster_findings import Cluster
-from metrics import format_patterns_block, format_convergence_line
-
-
 def test_format_patterns_block_orders_and_lists_sites():
     clusters = [
         Cluster(signature="a1b2c3d4", label="tab-vs-space indent detection",
@@ -848,10 +851,6 @@ def test_format_convergence_line_recurred_after_sweep_warns():
     assert "⚠" in line
     assert "RECURRED after sweep" in line
 
-
-from metrics import build_record
-
-
 def _min_record_kwargs():
     return dict(
         repo="o/r", pr=46, provider="gemini-code-assist",
@@ -875,10 +874,6 @@ def test_build_record_includes_patterns_block_when_passed():
 def test_build_record_patterns_defaults_to_empty_dict():
     rec = build_record(**_min_record_kwargs())
     assert rec["patterns"] == {}
-
-
-from metrics import pattern_history_for_pr, RECORD_SCHEMA_VERSION
-
 
 def _write_run(path, repo, pr, signatures, swept):
     import json

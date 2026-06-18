@@ -1,0 +1,4 @@
+backend/app/routers/scraper_connectors.py
+backend/app/core/crypto.py
+backend/app/jobs/worker.py
+infra/terraform/modules/ecs/main.tf

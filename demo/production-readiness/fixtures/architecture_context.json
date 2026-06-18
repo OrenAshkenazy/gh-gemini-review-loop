@@ -1,0 +1,17 @@
+{
+  "service_name": "aegislocal-api",
+  "owners": ["platform"],
+  "runtime": "kubernetes",
+  "deployment_type": "service",
+  "exposure": "public",
+  "ingress": ["alb", "kong"],
+  "datastores": ["postgresql", "redis"],
+  "queues": ["sqs:scan-events"],
+  "external_dependencies": ["openai_api"],
+  "secrets_or_env": ["OPENAI_API_KEY", "DATABASE_URL"],
+  "resource_limits": {"cpu": "500m", "memory": "512Mi"},
+  "verification_commands": ["uv run pytest"],
+  "sensitive_surfaces": ["public_api", "auth", "worker_retry", "database_write"],
+  "architecture_files_found": ["catalog-info.yaml", "k8s/deployment.yaml", "k8s/ingress.yaml", "terraform/sqs.tf"],
+  "confidence": "high"
+}

@@ -1,4 +1,12 @@
-from cluster_findings import pattern_signature
+import json
+from pathlib import Path
+
+from cluster_findings import cluster, pattern_signature, recurrence_stats
+
+
+_CORPUS = json.loads(
+    (Path(__file__).parent / "fixtures" / "cluster_corpus_pr46.json").read_text()
+)
 
 
 def _thread(body: str, path: str = "a.py") -> dict:
@@ -48,10 +56,6 @@ def test_first_body_handles_graphql_nodes_shape():
     t = {"path": "a.py", "comments": {"nodes": [{"body": "![low](x.svg) Use isinstance check."}]}}
     assert pattern_signature(t)  # non-empty, doesn't raise
 
-
-from cluster_findings import Cluster, cluster
-
-
 def _thread_full(body, path, line, sev_alt):
     return {
         "path": path,
@@ -80,16 +84,6 @@ def test_cluster_ignores_non_dict_members():
     clusters = cluster([None, "nope", {}])
     assert clusters == []
 
-
-import json
-from pathlib import Path
-from cluster_findings import cluster
-
-_CORPUS = json.loads(
-    (Path(__file__).parent / "fixtures" / "cluster_corpus_pr46.json").read_text()
-)
-
-
 def _corpus_threads():
     return [
         {"path": f["path"], "line": f["line"], "comments": [{"body": f["body"]}]}
@@ -99,16 +93,12 @@ def _corpus_threads():
 
 def test_real_corpus_clusters_into_intent_categories():
     clusters = cluster(_corpus_threads())
-    by_label = {c.label: c for c in clusters if c.label in {
-        "io-decode-guard", "type-guard", "exception-wrap"}}
+    by_label = {c.label: c for c in clusters}
     assert by_label["io-decode-guard"].count == 4
     assert by_label["type-guard"].count == 4
     assert by_label["exception-wrap"].count == 2
-    # 15 findings collapse to 8 groups (3 clusters + 5 singletons), not 15.
+    # 15 real findings collapse to 8 groups (3 clusters + 5 singletons), not 15.
     assert len(clusters) == 8
-
-
-from cluster_findings import recurrence_stats
 
 
 def test_recurrence_stats_basic():
@@ -126,33 +116,6 @@ def test_recurrence_stats_empty():
     assert stats["distinct_patterns"] == 0
     assert stats["recurrence_rate"] == 0.0
     assert stats["recurred_after_sweep"] == []
-
-
-import json
-from pathlib import Path
-from cluster_findings import cluster as cluster_fn
-
-
-_CORPUS = json.loads(
-    (Path(__file__).parent / "fixtures" / "cluster_corpus_pr46.json").read_text()
-)
-
-
-def _corpus_threads():
-    return [
-        {"path": f["path"], "line": f["line"], "comments": [{"body": f["body"]}]}
-        for f in _CORPUS
-    ]
-
-
-def test_real_corpus_clusters_into_intent_categories():
-    clusters = cluster_fn(_corpus_threads())
-    by_label = {c.label: c for c in clusters}
-    assert by_label["io-decode-guard"].count == 4
-    assert by_label["type-guard"].count == 4
-    assert by_label["exception-wrap"].count == 2
-    # 15 real findings collapse to 8 groups (3 clusters + 5 singletons), not 15.
-    assert len(clusters) == 8
 
 
 def test_recurrence_no_false_alarm_when_swept_same_cycle():

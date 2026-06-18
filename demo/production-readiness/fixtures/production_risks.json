@@ -1,0 +1,42 @@
+{
+  "changed_files": [
+    "backend/app/routers/scraper_connectors.py",
+    "backend/app/core/crypto.py",
+    "backend/app/jobs/worker.py",
+    "infra/terraform/modules/ecs/main.tf"
+  ],
+  "production_risks": [
+    {
+      "files": [
+        "backend/app/routers/scraper_connectors.py"
+      ],
+      "human_decision_required": true,
+      "reason": "PR touches API route/handler code in a public-facing service",
+      "severity": "high",
+      "surface": "public_api"
+    },
+    {
+      "files": [
+        "backend/app/jobs/worker.py"
+      ],
+      "human_decision_required": false,
+      "reason": "PR changes worker/consumer code and the service uses queues",
+      "severity": "medium",
+      "surface": "async_processing"
+    },
+    {
+      "files": [
+        "infra/terraform/modules/ecs/main.tf"
+      ],
+      "human_decision_required": true,
+      "reason": "PR changes infrastructure-as-code (Terraform / Kubernetes / Helm)",
+      "severity": "high",
+      "surface": "infrastructure"
+    }
+  ],
+  "summary": {
+    "highest_severity": "high",
+    "human_decision_required": true,
+    "risk_count": 3
+  }
+}
