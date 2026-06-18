@@ -84,6 +84,7 @@ load_capabilities_and_packs + detect_obligations   (pr_obligations.py)
 | `fixtures/changed_files.json` | The seeded app PR's changed files |
 | `fixtures/loop_summary.json` | The CR loop's terminal record (green) |
 
-This is the deterministic replay path. The live demo path uses two real GitHub
-repositories and `mergeproof run --pr <APP_PR> --publish --stage-infra
---create-infra-pr`; see `../live-demo/`.
+This is the deterministic replay path. The live demo path uses the external
+`OrenAshkenazy/mergeproof-demo-payments-api` and
+`OrenAshkenazy/mergeproof-demo-platform-infra` repositories with
+`mergeproof run --pr <APP_PR> --publish --stage-infra --create-infra-pr`.
