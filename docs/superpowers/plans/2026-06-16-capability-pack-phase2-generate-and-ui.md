@@ -1046,7 +1046,7 @@ def _packs_tab(readiness: dict[str, Any]) -> str:
 ## Task B6: End-to-end demo regenerate + investor-acceptance gate
 
 **Files:**
-- Modify: `demo/production-readiness/payments-api/` committed artifacts (new `readiness.json`, `pr_readiness_report.html`)
+- Modify: local generated artifacts under `demo/production-readiness/payments-api/` (`readiness.json`, `pr_readiness_report.html`)
 - Test: one integration test in `tests/test_render_demo_ui.py`
 
 - [ ] **Step 1: Write an integration test** that runs detector → stage → readiness → HTML end-to-end on the payments-api fixtures and asserts the five-point investor story is present in the HTML (status, obligations seen, on the flow, generated diff, human-owned gate):
@@ -1082,7 +1082,7 @@ def test_payments_api_demo_html_tells_the_five_point_story(tmp_path):
 
 - [ ] **Step 2: Run it (PASS).** Run: `/opt/homebrew/bin/pytest tests/test_render_demo_ui.py::test_payments_api_demo_html_tells_the_five_point_story -v`
 
-- [ ] **Step 3: Regenerate the committed demo artifacts** (run the same pipeline via a short script or the CLIs) and write `demo/production-readiness/payments-api/readiness.json` + `pr_readiness_report.html`. Open the HTML to eyeball all five tabs render.
+- [ ] **Step 3: Regenerate the local demo artifacts** (run the same pipeline via a short script or the CLIs) and write ignored `demo/production-readiness/payments-api/readiness.json` + `pr_readiness_report.html`. Open the HTML to eyeball all five tabs render.
 
 - [ ] **Step 4: Full gates.** Run: `/opt/homebrew/bin/pytest -q` (fully green) ; `ruff check plugins/ tests/` (exit 0).
 

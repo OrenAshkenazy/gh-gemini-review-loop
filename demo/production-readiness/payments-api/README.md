@@ -26,9 +26,9 @@ status: HUMAN_DECISION_REQUIRED
   obligation: secret_wiring -> human_gated
 ```
 
-`run_demo.py` is idempotent — it regenerates the two committed artifacts
-(`readiness.json`, `pr_readiness_report.html`) byte-for-byte, so re-running leaves
-a clean git tree.
+`run_demo.py` is idempotent and writes ignored local artifacts
+(`readiness.json`, `pr_readiness_report.html`) next to the script, so the demo can
+be replayed without committing generated output.
 
 ## The 90-second story (what the report shows)
 

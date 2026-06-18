@@ -12,3 +12,9 @@ wait_err.log
 wait_out.json
 prof_out.json
 skills-lock.json
+
+# MergeProof demo output artifacts are regenerated locally by the demo scripts.
+demo/production-readiness/**/pr_readiness_report.html
+demo/production-readiness/**/production_context_pack.json
+demo/production-readiness/**/readiness.json
+demo/production-readiness/**/readiness.md

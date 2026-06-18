@@ -10,8 +10,8 @@ Nothing here touches the network, GitHub, or any real repo: the infra repo
 (``acme/platform-infra``) is fictional, so staging runs in dry-run — real
 generated file contents and a constructed PR-create deep-link, no push.
 
-Writes ``readiness.json`` and ``pr_readiness_report.html`` next to this file
-(the committed demo artifacts). Run it, then open the HTML in any browser:
+Writes ignored local ``readiness.json`` and ``pr_readiness_report.html`` files
+next to this script. Run it, then open the HTML in any browser:
 
     python3 demo/production-readiness/payments-api/run_demo.py
 """

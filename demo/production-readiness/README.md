@@ -43,9 +43,8 @@ PR #106 changes `backend/app/routers/scraper_connectors.py` (public API /
 connector surface → **high**) and `backend/app/jobs/worker.py` (ARQ async worker
 → **medium**). Because tests pass but both surfaces are production-facing, the
 expected outcome is **`HUMAN_DECISION_REQUIRED`** (or `VERIFICATION_FAILED` if
-verification failed). A committed render of this exact outcome lives in
-[`familia/`](familia) (`readiness.md`, `readiness.json`,
-`production_context_pack.json`, `pr_readiness_report.html`).
+verification failed). Generated renders are local artifacts and are intentionally
+not committed.
 
 ### 1. Generate config (onboarding, not PR runtime)
 
@@ -108,9 +107,7 @@ that.
 > not, readiness proceeds on partial context and records the failures in
 > `safety.failed_sources` (with a stderr warning). If **every** declared source
 > is unreadable (e.g. the repo 404s for your token), readiness **fails with a
-> clear error and writes no artifact** rather than emitting a hollow card. The
-> committed `familia/` artifacts are rendered from a fixture-backed run so the
-> demo outcome is reproducible without live infra access.
+> clear error and writes no artifact** rather than emitting a hollow card.
 
 ---
 
@@ -397,7 +394,7 @@ When you do not have a live PR (a recorded demo, a screenshot, CI), use the
 committed fixtures under [`fixtures/`](fixtures). Fixtures are a fallback — the
 real PR flow above is the product.
 
-These commands regenerate the checked-in report from fixture data; they do not
+These commands generate a local report from fixture data; they do not
 run the CR loop, fetch PR metadata, fetch changed files, read `mergeproof.yaml`,
 or call GitHub. That is why they do **not** include `--pr`; the PR-shaped data is
 already baked into the fixture files.
@@ -422,13 +419,13 @@ mkdir -p "$OUT"
 
 python3 $SCRIPTS/render_pr_readiness.py \
   --loop-summary $F/loop_summary.json \
-  --architecture-context $F/production_context_pack.json \
+  --architecture-context $F/architecture_context.json \
   --production-risks $F/production_risks.json \
   --json > $OUT/readiness.json
 
 python3 $SCRIPTS/render_pr_readiness.py \
   --loop-summary $F/loop_summary.json \
-  --architecture-context $F/production_context_pack.json \
+  --architecture-context $F/architecture_context.json \
   --production-risks $F/production_risks.json \
   --markdown > $OUT/readiness.md
 
@@ -442,7 +439,7 @@ file with embedded CSS, no JavaScript, and no external network assets.
 
 ---
 
-## Artifacts in this directory
+## Local generated artifacts
 
 | File | What it is |
 |---|---|
@@ -450,6 +447,9 @@ file with embedded CSS, no JavaScript, and no external network assets.
 | `readiness.md` | The GitHub Markdown readiness card |
 | `readiness.json` | Canonical readiness data the HTML is rendered from |
 | `fixtures/` | Inputs for the offline flow and tests |
+
+The rendered files are ignored by git. Re-run the commands above whenever you
+need a fresh local copy.
 
 ---
 
