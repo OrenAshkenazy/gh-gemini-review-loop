@@ -136,3 +136,18 @@ capabilities:
             "approver": "@data-platform",
         },
     }
+
+
+def test_runtime_config_fixture_pack_loads():
+    from pathlib import Path
+    from capability_pack import load_pack
+    root = Path(__file__).resolve().parent.parent
+    pack_path = (
+        root / "demo" / "production-readiness" / "payments-api"
+        / "fixtures" / "capabilities" / "runtime_config.yaml"
+    )
+    pack = load_pack(pack_path.read_text(encoding="utf-8"))
+    assert pack["capability"] == "runtime_config"
+    assert "helm_env_wiring" in pack["generates"]
+    assert pack["human_gate"] is None
+    assert pack["approval"]["required_from"] == ["platform-config"]
