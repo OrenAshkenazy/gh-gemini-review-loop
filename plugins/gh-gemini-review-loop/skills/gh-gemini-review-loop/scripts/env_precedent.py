@@ -55,9 +55,12 @@ def _scan(name: str, paths: list[str], infra_files: dict[str, str]) -> tuple[lis
         peers = {n for n in _ENV_TOKEN.findall(text) if n != name and _suffix(n) == target}
         if not peers:
             continue
+        # A file that reads as BOTH a secret and a config source is ambiguous;
+        # record it in both buckets so classify_env surfaces it as `unknown`
+        # rather than silently resolving to one mechanism.
         if _is_secret_source(path, text):
             secret_ev.append(path)
-        elif _is_config_source(path, text):
+        if _is_config_source(path, text):
             config_ev.append(path)
     return sorted(secret_ev), sorted(config_ev)
 

@@ -33,3 +33,15 @@ def test_ignores_non_python_and_lowercase_names():
         "app/api/z.py": "import os\nos.getenv('lower_case')\n",
     }
     assert detect_env_reads(changed) == []
+
+
+def test_ignores_commented_out_reads():
+    changed = {
+        "app/api/z.py": (
+            "import os\n"
+            "# LEGACY = os.getenv('OLD_PROVIDER_URL')\n"
+            "ACTIVE = os.getenv('NEW_PROVIDER_URL')  # trailing comment\n"
+        ),
+    }
+    names = {r["name"] for r in detect_env_reads(changed)}
+    assert names == {"NEW_PROVIDER_URL"}

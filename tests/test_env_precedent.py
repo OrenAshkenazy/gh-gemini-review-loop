@@ -56,3 +56,16 @@ def test_no_precedent_anywhere_is_unknown():
     assert result["classification"] == "unknown"
     assert result["precedent_scope"] == "none"
     assert result["evidence_files"] == []
+
+
+def test_single_file_that_is_both_secret_and_config_source_is_unknown():
+    # One file reads as both a secret source (kind: ExternalSecret) and a config
+    # source (path ends in values.yaml) -> ambiguous -> unknown, not silently secret.
+    infra = {
+        "helm/payments-api/values.yaml": (
+            "kind: ExternalSecret\nenv:\n  REFUND_PROVIDER_URL: https://refunds.internal\n"
+        ),
+    }
+    result = classify_env("CHARGEBACK_PROVIDER_URL", infra, service="payments-api")
+    assert result["classification"] == "unknown"
+    assert result["precedent_scope"] == "workload"

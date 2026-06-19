@@ -42,6 +42,9 @@ def detect_env_reads(changed_content: dict[str, str]) -> list[dict[str, Any]]:
         text = changed_content[path]
         scope = _scope_for(path)
         for match in _ENV_ACCESS.finditer(text):
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            if "#" in text[line_start:match.start()]:
+                continue  # commented-out read; skip rather than emit a false obligation
             name = match.group(1)
             line = text.count("\n", 0, match.start()) + 1
             existing = reads.get(name)
