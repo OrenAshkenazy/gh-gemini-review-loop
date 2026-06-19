@@ -56,6 +56,62 @@ def _derive_inputs(obligation_type: str, evidence: list[str], service: str) -> d
     return inputs
 
 
+def assemble_obligation(
+    obligation_type: str,
+    evidence_files: list[str],
+    inputs: dict[str, str],
+    capability: dict[str, Any] | None,
+    pack: dict[str, Any] | None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build one obligation dict with its outcome computed.
+
+    Single source of truth for outcome: ``blocked`` when no capability is
+    declared, ``human_gated`` when a human gate or a required input is missing,
+    else ``matched``. *extra* merges additional keys (e.g. classification fields).
+    """
+    if capability is None:
+        obligation = {
+            "type": obligation_type,
+            "outcome": "blocked",
+            "evidence_files": evidence_files,
+            "inputs": {},
+            "pack": None,
+            "human_gate_pending": [],
+        }
+        if extra:
+            obligation.update(extra)
+        return obligation
+
+    pack = pack or {}
+    required = [k for k, v in (pack.get("inputs") or {}).items() if v == "required"]
+    missing = [k for k in required if k not in inputs]
+    gate = pack.get("human_gate")
+    human_gate_pending = ([gate] if gate else []) + [f"input: {k}" for k in missing]
+    approval = pack.get("approval") or {}
+    required_from = approval.get("required_from") or []
+    approver = capability.get("approver") or (
+        f"@{required_from[0].lstrip('@')}" if required_from else None
+    )
+    obligation = {
+        "type": obligation_type,
+        "outcome": "human_gated" if human_gate_pending else "matched",
+        "evidence_files": evidence_files,
+        "inputs": inputs,
+        "pack": {
+            "generates": list(pack.get("generates") or []),
+            "checks": list(pack.get("checks") or []),
+            "approver": approver,
+            "human_gate": gate,
+            "template_map": pack.get("template_map") or {},
+        },
+        "human_gate_pending": human_gate_pending,
+    }
+    if extra:
+        obligation.update(extra)
+    return obligation
+
+
 def detect_obligations(
     changed_files: list[Any],
     capabilities: dict[str, dict[str, Any]],
@@ -80,46 +136,10 @@ def detect_obligations(
             continue
 
         capability = capabilities.get(obligation_type)
-        if capability is None:
-            obligations.append(
-                {
-                    "type": obligation_type,
-                    "outcome": "blocked",
-                    "evidence_files": evidence,
-                    "inputs": {},
-                    "pack": None,
-                    "human_gate_pending": [],
-                }
-            )
-            continue
-
-        pack = packs.get(obligation_type) or {}
-        inputs = _derive_inputs(obligation_type, evidence, service)
-        required = [k for k, v in (pack.get("inputs") or {}).items() if v == "required"]
-        missing = [k for k in required if k not in inputs]
-        gate = pack.get("human_gate")
-        human_gate_pending = ([gate] if gate else []) + [f"input: {k}" for k in missing]
-        approval = pack.get("approval") or {}
-        required_from = approval.get("required_from") or []
-        approver = capability.get("approver") or (
-            f"@{required_from[0].lstrip('@')}" if required_from else None
-        )
-
+        pack = packs.get(obligation_type) if capability is not None else None
+        inputs = _derive_inputs(obligation_type, evidence, service) if capability is not None else {}
         obligations.append(
-            {
-                "type": obligation_type,
-                "outcome": "human_gated" if human_gate_pending else "matched",
-                "evidence_files": evidence,
-                "inputs": inputs,
-                "pack": {
-                    "generates": list(pack.get("generates") or []),
-                    "checks": list(pack.get("checks") or []),
-                    "approver": approver,
-                    "human_gate": gate,
-                    "template_map": pack.get("template_map") or {},
-                },
-                "human_gate_pending": human_gate_pending,
-            }
+            assemble_obligation(obligation_type, evidence, inputs, capability, pack)
         )
 
     return obligations
