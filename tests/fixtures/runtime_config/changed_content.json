@@ -1,0 +1,4 @@
+{
+  "app/api/chargebacks.py": "import os\nPROVIDER = os.environ['CHARGEBACK_PROVIDER_URL']\n",
+  "app/workers/chargeback_worker.py": "import os\nKEY = os.getenv('CHARGEBACK_SIGNING_KEY')\n"
+}

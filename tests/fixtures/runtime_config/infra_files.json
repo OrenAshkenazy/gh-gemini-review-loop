@@ -1,0 +1,4 @@
+{
+  "helm/payments-api/values.yaml": "env:\n  REFUND_PROVIDER_URL: https://refunds.internal\n  STRIPE_API_BASE: https://api.stripe.com\n",
+  "envs/prod/payments-api/secrets/external-secret.yaml": "kind: ExternalSecret\ndata:\n  - secretKey: STRIPE_SIGNING_KEY\n"
+}
