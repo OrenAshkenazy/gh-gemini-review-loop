@@ -11,6 +11,9 @@ architecture_sources:
       - modules/kafka/**
       - modules/workers/**
 capabilities:
+  - type: runtime_config
+    template: capabilities/runtime_config.yaml
+    approver: "@platform-config"
   - type: secret_wiring
     template: capabilities/secret_wiring.yaml
     approver: "@platform-secrets"
