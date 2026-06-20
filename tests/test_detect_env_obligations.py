@@ -46,7 +46,10 @@ def test_url_read_becomes_matched_runtime_config():
     assert ob["outcome"] == "matched"
     assert ob["classification"]["classification"] == "config"
     assert ob["classification"]["evidence_files"] == ["helm/payments-api/values.yaml"]
-    assert ob["inputs"] == {"env_name": "CHARGEBACK_PROVIDER_URL", "service": "payments-api", "scope": "api"}
+    assert ob["inputs"] == {
+        "env_name": "CHARGEBACK_PROVIDER_URL", "service": "payments-api",
+        "scope": "api", "config_name": "chargeback-provider-url",
+    }
 
 
 def test_key_read_becomes_human_gated_secret_wiring():

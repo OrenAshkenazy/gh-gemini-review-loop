@@ -48,7 +48,10 @@ def test_runtime_config_pack_generates_config_shaped_infra():
 
     caps = capabilities_from_config((DEMO / "mergeproof.yaml").read_text(encoding="utf-8"))
     pack = load_pack((DEMO / caps["runtime_config"]["template"]).read_text(encoding="utf-8"))
-    inputs = {"env_name": "CHARGEBACK_PROVIDER_URL", "service": "payments-api", "scope": "api"}
+    inputs = {
+        "env_name": "CHARGEBACK_PROVIDER_URL", "service": "payments-api",
+        "scope": "api", "config_name": "chargeback-provider-url",
+    }
 
     files = generate_files(pack, inputs, DEMO / "capabilities", ["helm/payments-api/**"])
 
@@ -57,6 +60,40 @@ def test_runtime_config_pack_generates_config_shaped_infra():
     assert "CHARGEBACK_PROVIDER_URL" in blob
     assert "secretKeyRef" not in blob  # config wiring, never a secret mechanism
     assert "secret_name" not in blob
+
+
+def test_runtime_config_configmaps_have_distinct_rfc1123_names():
+    # Each fanned-out config var must render a ConfigMap with its OWN valid
+    # (RFC1123: lowercase, no underscores) metadata.name, or applying two of them
+    # collides on a single shared name.
+    import re
+
+    from detect_env_obligations import detect_env_obligations
+    from generate_infra_change import generate_files
+
+    caps = capabilities_from_config((DEMO / "mergeproof.yaml").read_text(encoding="utf-8"))
+    packs = {t: load_pack((DEMO / e["template"]).read_text(encoding="utf-8")) for t, e in caps.items()}
+    infra = {"helm/payments-api/values.yaml": "env:\n  REFUND_PROVIDER_URL: x\n"}
+    changed = {
+        "app/api/a.py": "import os\nos.environ['CHARGEBACK_PROVIDER_URL']\n",
+        "app/api/b.py": "import os\nos.environ['CHARGEBACK_BILLING_URL']\n",
+    }
+    rfc1123 = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+
+    names: list[str] = []
+    for ob in detect_env_obligations(changed, infra, caps, packs, service="payments-api"):
+        if ob["type"] != "runtime_config":
+            continue
+        files = generate_files(packs["runtime_config"], ob["inputs"], DEMO / "capabilities", ["helm/payments-api/**"])
+        for content in files.values():
+            for line in content.splitlines():
+                if line.strip().startswith("name:"):
+                    name = line.split("name:", 1)[1].strip()
+                    assert rfc1123.match(name), f"invalid k8s name: {name}"
+                    names.append(name)
+
+    assert len(names) == 2
+    assert len(set(names)) == 2  # one ConfigMap name per variable, no collision
 
 
 # --- 2. end-to-end through the injected-runner seam ---------------------------

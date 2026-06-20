@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -123,24 +124,36 @@ def _routes_for_read(
     return routes
 
 
+def _k8s_name(env_name: str) -> str:
+    """Normalize an env var name to an RFC1123 label fragment (lowercase, no _)."""
+    return re.sub(r"[^a-z0-9]+", "-", env_name.lower()).strip("-")
+
+
 def _obligations_for_read(
     read: dict[str, Any],
     routes: list[dict[str, Any]],
     service: str,
 ) -> list[dict[str, Any]]:
     """Assemble one obligation per route, all citing this read's evidence."""
-    inputs = {"env_name": read["name"], "service": service, "scope": read["scope"]}
-    return [
-        assemble_obligation(
-            route["type"],
-            [read["source_file"]],
-            inputs,
-            route["capability"],
-            route["pack"],
-            extra=route["extra"],
+    base_inputs = {"env_name": read["name"], "service": service, "scope": read["scope"]}
+    obligations: list[dict[str, Any]] = []
+    for route in routes:
+        inputs = dict(base_inputs)
+        # runtime_config renders a ConfigMap whose metadata.name must be a valid,
+        # per-variable RFC1123 name, or two generated ConfigMaps collide on apply.
+        if route["type"] == "runtime_config":
+            inputs["config_name"] = _k8s_name(read["name"])
+        obligations.append(
+            assemble_obligation(
+                route["type"],
+                [read["source_file"]],
+                inputs,
+                route["capability"],
+                route["pack"],
+                extra=route["extra"],
+            )
         )
-        for route in routes
-    ]
+    return obligations
 
 
 def detect_env_obligations(
