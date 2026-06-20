@@ -33,6 +33,7 @@ def build_pack(
     trust_pr_config: bool = False,
     now_iso: str | None = None,
     config_override: dict[str, Any] | None = None,
+    infra_sink: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     resolution = resolve(
         app_repo,
@@ -88,6 +89,12 @@ def build_pack(
                 and node.get("label") == "Service"
             ):
                 node["label"] = config["service"]
+    if infra_sink is not None:
+        # In-process side channel for consumers that need the raw infra slice
+        # (e.g. env-var precedent classification). Deliberately kept OUT of the
+        # returned pack: the pack is contractually content-free so it can be
+        # logged/persisted/rendered without leaking infra or secret text.
+        infra_sink.update(all_files)
     return {
         "service": config["service"],
         "facts": facts,

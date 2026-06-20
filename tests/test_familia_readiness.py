@@ -96,6 +96,8 @@ class FamiliaGH:
         if "familia-ai-infra/contents/" in url:
             path = url.split("/contents/")[1].split("?")[0]
             return {"encoding": "base64", "content": _b64(INFRA[path])}
+        if "familia-ai/contents/" in url:  # changed app file content at PR head
+            return {"encoding": "base64", "content": _b64("")}
         raise RuntimeError(f"unexpected url: {url}")
 
 

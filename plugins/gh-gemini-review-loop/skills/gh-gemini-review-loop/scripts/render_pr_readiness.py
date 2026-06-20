@@ -313,9 +313,23 @@ def _render_obligations(obligations: list[dict[str, Any]]) -> list[str]:
         if ob.get("outcome") == "blocked":
             action = f"**Evidence:** {files or '—'}<br>**Action:** escalate to platform; no approved capability matched."
         elif ob.get("human_gate_pending"):
+            precedent = ""
+            classification = ob.get("classification") or {}
+            if classification:
+                # Infra-precedent reason is the honest evidence line; the advisory
+                # name-pattern hint is fenced as non-authoritative so it informs
+                # the human without anchoring the engine to a guess.
+                precedent = f"**Precedent:** {classification.get('reason', '—')}<br>"
+                suggestion = ob.get("advisory_suggestion")
+                if suggestion in ("secret", "config"):
+                    precedent += (
+                        f"_Advisory hint (unverified, not a verdict): name pattern "
+                        f"suggests **{suggestion}**._<br>"
+                    )
             action = (
                 f"**Evidence:** {files or '—'}<br>"
-                f"**Human input required:** {', '.join(ob['human_gate_pending'])}<br>"
+                + precedent
+                + f"**Human input required:** {', '.join(ob['human_gate_pending'])}<br>"
                 "**Action:** complete the human gate before merge."
             )
         else:

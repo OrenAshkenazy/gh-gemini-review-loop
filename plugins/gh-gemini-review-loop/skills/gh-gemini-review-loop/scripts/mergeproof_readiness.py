@@ -11,11 +11,13 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 from build_context_pack import SKIP_MESSAGE, build_pack
 from capability_pack import capabilities_from_config, load_pack
 from fetch_infra_files import _decode_content
 from metrics import runs_log_path
+from detect_env_obligations import detect_env_obligations
 from pr_obligations import detect_obligations
 from pr_architecture_risk import _default_pr_runner, assess, fetch_pr_changed_file_entries, parse_pr
 from publish_html_report import publish_report, with_report_link
@@ -153,6 +155,34 @@ def _fetch_app_text(app_repo: str, ref: str, path: str, runner: Runner) -> str:
     return text
 
 
+def _fetch_changed_py_content(
+    app_repo: str,
+    pr_number: int,
+    changed_entries: list[dict[str, str]],
+    runner: Runner,
+) -> dict[str, str]:
+    """Fetch PR-head content of changed Python files as {path: content}.
+
+    Env-var classification needs the *content* of changed code at the PR head,
+    not just the path list. Deleted files and unreadable blobs are skipped so a
+    single bad file never sinks the readiness run.
+    """
+    head = runner(["api", f"repos/{app_repo}/pulls/{pr_number}"])
+    head_sha = head.get("head", {}).get("sha") if isinstance(head, dict) else None
+    if not head_sha:
+        return {}
+    content: dict[str, str] = {}
+    for entry in changed_entries:
+        path = entry.get("path", "")
+        if not path.endswith(".py") or entry.get("status") == "removed":
+            continue
+        payload = runner(["api", f"repos/{app_repo}/contents/{quote(path)}?ref={head_sha}"])
+        text = _decode_content(payload)
+        if text is not None:
+            content[path] = text
+    return content
+
+
 def _load_remote_capabilities(
     app_repo: str,
     config_text: str,
@@ -222,6 +252,7 @@ def run_readiness(
 ) -> dict[str, Any]:
     changed_entries = fetch_pr_changed_file_entries(app_repo, pr_number, runner=runner)
     changed_files = [entry["path"] for entry in changed_entries]
+    infra_files: dict[str, str] = {}
     pack = build_pack(
         app_repo,
         pr_number,
@@ -229,6 +260,7 @@ def run_readiness(
         runner=runner,
         trust_pr_config=trust_pr_config,
         config_override=config_override,
+        infra_sink=infra_files,
     )
     if pack is None:
         print(SKIP_MESSAGE, file=sys.stderr)
@@ -265,8 +297,24 @@ def run_readiness(
                 runner=runner,
                 templates_root=templates_root,
             )
+            service = str(pack.get("service") or "")
             obligations = detect_obligations(
-                changed_entries, capabilities, packs, service=str(pack.get("service") or "")
+                changed_entries, capabilities, packs, service=service
+            )
+            # Env-var precedent classification: merge into the same obligations
+            # list so `config` verdicts flow through the existing generation path
+            # and `secret`/`unknown` verdicts surface as human-gate rows.
+            changed_content = _fetch_changed_py_content(
+                app_repo, pr_number, changed_entries, runner
+            )
+            obligations.extend(
+                detect_env_obligations(
+                    changed_content,
+                    infra_files,
+                    capabilities,
+                    packs,
+                    service=service,
+                )
             )
             target = _infra_target(pack)
             if stage_infra or create_infra_pr:
