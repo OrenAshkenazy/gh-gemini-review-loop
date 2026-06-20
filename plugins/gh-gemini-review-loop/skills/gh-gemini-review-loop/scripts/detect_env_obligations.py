@@ -32,6 +32,75 @@ def _advisory_suggestion(name: str) -> str:
     return "unknown"
 
 
+def _routes_for_read(
+    read: dict[str, Any],
+    infra_files: dict[str, str],
+    capabilities: dict[str, dict[str, Any]],
+    packs: dict[str, dict[str, Any]],
+    service: str,
+) -> list[dict[str, Any]]:
+    """Resolve a single env read into a *list* of obligation routes (0..n).
+
+    This is the fan-out seam: today each read resolves to exactly one route,
+    but the list shape lets a single read imply several production obligations
+    (e.g. a queue-ish variable -> ``runtime_config`` *and* ``queue_topic``).
+    Each route is a self-contained spec for one obligation.
+    """
+    name = read["name"]
+    classification = classify_env(name, infra_files, service)
+    cap_type = classification["capability"]
+
+    if cap_type is None:
+        # unknown precedent -> human gate to classify, with an advisory suggestion.
+        return [
+            {
+                "type": "env_classification",
+                "capability": {"approver": None},
+                "pack": {
+                    "inputs": {},
+                    "human_gate": f"classify {name} as secret or config",
+                    "generates": [],
+                    "checks": [],
+                    "approval": {},
+                },
+                "extra": {
+                    "classification": classification,
+                    "advisory_suggestion": _advisory_suggestion(name),
+                },
+            }
+        ]
+
+    capability = capabilities.get(cap_type)
+    return [
+        {
+            "type": cap_type,
+            "capability": capability,
+            "pack": packs.get(cap_type) if capability is not None else None,
+            "extra": {"classification": classification},
+        }
+    ]
+
+
+def _obligations_for_read(
+    read: dict[str, Any],
+    routes: list[dict[str, Any]],
+    service: str,
+) -> list[dict[str, Any]]:
+    """Assemble one obligation per route, all citing this read's evidence."""
+    inputs = {"env_name": read["name"], "service": service, "scope": read["scope"]}
+    return [
+        assemble_obligation(
+            route["type"],
+            [read["source_file"]],
+            inputs,
+            route["capability"],
+            route["pack"],
+            extra=route["extra"],
+        )
+        for route in routes
+    ]
+
+
 def detect_env_obligations(
     changed_content: dict[str, str],
     infra_files: dict[str, str],
@@ -42,43 +111,8 @@ def detect_env_obligations(
     """Return classified env obligations for the changed Python files."""
     obligations: list[dict[str, Any]] = []
     for read in detect_env_reads(changed_content):
-        name = read["name"]
-        classification = classify_env(name, infra_files, service)
-        cap_type = classification["capability"]
-        inputs = {"env_name": name, "service": service, "scope": read["scope"]}
-
-        if cap_type is None:
-            # unknown precedent -> human gate to classify, with an advisory suggestion.
-            suggestion = _advisory_suggestion(name)
-            obligation = assemble_obligation(
-                "env_classification",
-                [read["source_file"]],
-                inputs,
-                capability={"approver": None},
-                pack={
-                    "inputs": {},
-                    "human_gate": f"classify {name} as secret or config",
-                    "generates": [],
-                    "checks": [],
-                    "approval": {},
-                },
-                extra={"classification": classification, "advisory_suggestion": suggestion},
-            )
-            obligations.append(obligation)
-            continue
-
-        capability = capabilities.get(cap_type)
-        pack = packs.get(cap_type) if capability is not None else None
-        obligations.append(
-            assemble_obligation(
-                cap_type,
-                [read["source_file"]],
-                inputs,
-                capability,
-                pack,
-                extra={"classification": classification},
-            )
-        )
+        routes = _routes_for_read(read, infra_files, capabilities, packs, service)
+        obligations.extend(_obligations_for_read(read, routes, service))
     return obligations
 
 

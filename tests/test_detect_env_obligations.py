@@ -1,4 +1,4 @@
-from detect_env_obligations import detect_env_obligations
+from detect_env_obligations import _obligations_for_read, detect_env_obligations
 
 
 def _caps_and_packs():
@@ -73,6 +73,34 @@ def test_unknown_classification_is_human_gated_with_suggestion():
     # BRAND_NEW_THING matches neither suffix table -> deterministic "unknown".
     assert ob["advisory_suggestion"] == "unknown"
     assert any("classify" in g for g in ob["human_gate_pending"])
+
+
+def test_single_read_emits_multiple_obligations():
+    # Fan-out plumbing: one read carrying two routes yields two obligations,
+    # each independently citing the same read's env_name / scope / source file.
+    caps, packs = _caps_and_packs()
+    read = {"name": "CHARGEBACK_QUEUE_NAME", "scope": "worker", "source_file": "app/workers/w.py"}
+    routes = [
+        {
+            "type": "runtime_config",
+            "capability": caps["runtime_config"],
+            "pack": packs["runtime_config"],
+            "extra": {"classification": {"classification": "config"}},
+        },
+        {
+            "type": "secret_wiring",
+            "capability": caps["secret_wiring"],
+            "pack": packs["secret_wiring"],
+            "extra": {"classification": {"classification": "config"}},
+        },
+    ]
+    obligations = _obligations_for_read(read, routes, "payments-api")
+
+    assert len(obligations) == 2
+    assert {o["type"] for o in obligations} == {"runtime_config", "secret_wiring"}
+    assert all(o["inputs"]["env_name"] == "CHARGEBACK_QUEUE_NAME" for o in obligations)
+    assert all(o["inputs"]["scope"] == "worker" for o in obligations)
+    assert all(o["evidence_files"] == ["app/workers/w.py"] for o in obligations)
 
 
 def test_classified_capability_without_declared_pack_is_blocked():
