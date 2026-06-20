@@ -148,6 +148,9 @@ def test_runtime_config_fixture_pack_loads():
     )
     pack = load_pack(pack_path.read_text(encoding="utf-8"))
     assert pack["capability"] == "runtime_config"
-    assert "helm_env_wiring" in pack["generates"]
+    assert "configmap_entry" in pack["generates"]
+    # runtime_config must NOT reuse the secret-shaped helm_env_wiring template
+    # (it needs secret_name); generation would fail for a config obligation.
+    assert "helm_env_wiring" not in pack["generates"]
     assert pack["human_gate"] is None
     assert pack["approval"]["required_from"] == ["platform-config"]

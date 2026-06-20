@@ -39,6 +39,26 @@ def test_demo_declares_runtime_config_backed_by_a_real_pack():
         assert tmpl.exists(), f"runtime_config pack references missing template {tmpl}"
 
 
+def test_runtime_config_pack_generates_config_shaped_infra():
+    # Staging a matched runtime_config obligation renders its templates with the
+    # obligation's inputs (env_name/service/scope). It must NOT reuse a secret
+    # template (which needs secret_name) — that only surfaces at generation time,
+    # not during detection/rendering, so it is exercised explicitly here.
+    from generate_infra_change import generate_files
+
+    caps = capabilities_from_config((DEMO / "mergeproof.yaml").read_text(encoding="utf-8"))
+    pack = load_pack((DEMO / caps["runtime_config"]["template"]).read_text(encoding="utf-8"))
+    inputs = {"env_name": "CHARGEBACK_PROVIDER_URL", "service": "payments-api", "scope": "api"}
+
+    files = generate_files(pack, inputs, DEMO / "capabilities", ["helm/payments-api/**"])
+
+    blob = "\n".join(files.values())
+    assert files  # generation produced at least one config artifact
+    assert "CHARGEBACK_PROVIDER_URL" in blob
+    assert "secretKeyRef" not in blob  # config wiring, never a secret mechanism
+    assert "secret_name" not in blob
+
+
 # --- 2. end-to-end through the injected-runner seam ---------------------------
 
 APP_REPO = "OrenAshkenazy/mergeproof-demo-payments-api"

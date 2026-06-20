@@ -5,7 +5,6 @@ inputs:
   scope: required
 generates:
   - configmap_entry
-  - helm_env_wiring
 checks:
   - helm_template
   - policy
@@ -17,6 +16,3 @@ template_map:
   configmap_entry:
     template: templates/configmap_entry.tmpl
     output: helm/payments-api/env/${env_name}.yaml
-  helm_env_wiring:
-    template: templates/helm_env_wiring.tmpl
-    output: helm/payments-api/values.yaml
