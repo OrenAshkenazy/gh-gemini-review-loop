@@ -29,6 +29,34 @@ def test_matched_obligation_gets_infra_pr_block(tmp_path):
     assert infra["diff"]["envs/prod/payments-api/workers/refund_worker.yaml"].startswith("name: payments-api-refund_worker")
 
 
+def test_fanned_out_runtime_config_obligations_get_distinct_branches(tmp_path):
+    # Two runtime_config obligations for different env vars must not collide on a
+    # single branch — stage_branch checks out -B from base and force-pushes, so a
+    # shared branch makes the second obligation overwrite the first's ConfigMap.
+    (tmp_path / "templates").mkdir()
+    (tmp_path / "templates" / "cfg.tmpl").write_text("data:\n  ${env_name}: set-me\n", encoding="utf-8")
+
+    def _ob(env_name):
+        return {
+            "type": "runtime_config", "outcome": "matched",
+            "evidence_files": ["app/x.py"],
+            "inputs": {"env_name": env_name, "service": "payments-api", "scope": "api"},
+            "pack": {"generates": ["configmap_entry"], "checks": [], "approver": "@platform-config",
+                     "human_gate": None,
+                     "template_map": {"configmap_entry": {"template": "templates/cfg.tmpl",
+                                      "output": "helm/payments-api/env/${env_name}.yaml"}}},
+            "human_gate_pending": [],
+        }
+
+    out = stage_obligations(
+        [_ob("CHARGEBACK_PROVIDER_URL"), _ob("CHARGEBACK_QUEUE_NAME")],
+        repo="acme/platform-infra", base="main", allow=["helm/payments-api/**"],
+        templates_root=tmp_path, source_pr="u", dry_run=True,
+    )
+    branches = {o["infra_pr"]["branch"] for o in out}
+    assert len(branches) == 2  # one branch per env var, so neither overwrites the other
+
+
 def test_human_gated_and_blocked_are_left_unstaged(tmp_path):
     obligations = [
         {"type": "secret_wiring", "outcome": "human_gated", "evidence_files": [], "inputs": {}, "pack": {}, "human_gate_pending": ["x"]},

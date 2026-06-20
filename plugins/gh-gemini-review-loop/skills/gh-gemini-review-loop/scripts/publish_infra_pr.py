@@ -27,7 +27,9 @@ def _slug(value: str) -> str:
 
 def branch_name(obligation_type: str, inputs: dict[str, str]) -> str:
     primary = ""
-    for key in ("worker_name", "secret_name", "topic", "service"):
+    # env_name precedes service so fanned-out env obligations (runtime_config /
+    # queue_topic) get one branch per variable instead of colliding on service.
+    for key in ("worker_name", "secret_name", "topic", "env_name", "service"):
         if inputs.get(key):
             primary = inputs[key]
             break
