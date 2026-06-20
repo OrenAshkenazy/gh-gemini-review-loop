@@ -42,6 +42,7 @@ def detect_queue_resource(infra_files: dict[str, str], service: str) -> dict[str
     present = any(
         marker.search(infra_files[path])
         for path in inspected
+        if isinstance(infra_files[path], str)
         for marker in _RESOURCE_MARKERS
     )
     return {"present": present, "inspected_paths": inspected}

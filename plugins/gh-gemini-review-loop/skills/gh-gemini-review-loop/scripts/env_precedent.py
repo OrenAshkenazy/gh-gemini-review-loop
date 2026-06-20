@@ -31,12 +31,14 @@ def _suffix(name: str) -> str:
 
 
 def _is_secret_source(path: str, text: str) -> bool:
-    lowered = path.lower().replace("\\", "/")  # normalize Windows separators
+    # Leading slash + backslash normalization: `/secrets/` then matches a
+    # top-level `secrets/` dir too, on POSIX and Windows paths alike.
+    lowered = "/" + path.lower().replace("\\", "/").lstrip("/")
     return "/secrets/" in lowered or "externalsecret" in lowered or bool(_SECRET_KIND.search(text))
 
 
 def _is_config_source(path: str, text: str) -> bool:
-    lowered = path.lower().replace("\\", "/")  # normalize Windows separators
+    lowered = "/" + path.lower().replace("\\", "/").lstrip("/")
     return (
         lowered.endswith("values.yaml")
         or "/env/" in lowered

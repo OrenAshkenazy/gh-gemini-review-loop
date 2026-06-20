@@ -25,7 +25,9 @@ _WORKER_SEGMENTS = ("/workers/", "/jobs/", "/consumers/")
 
 
 def _scope_for(path: str) -> str:
-    lowered = path.lower().replace("\\", "/")  # normalize Windows separators
+    # Leading slash + backslash normalization so `/workers/`-style checks match
+    # both nested and top-level dirs, on POSIX and Windows paths alike.
+    lowered = "/" + path.lower().replace("\\", "/").lstrip("/")
     return "worker" if any(seg in lowered for seg in _WORKER_SEGMENTS) else "api"
 
 
