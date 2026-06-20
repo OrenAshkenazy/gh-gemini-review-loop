@@ -65,3 +65,45 @@ Remaining (needs a human / live GitHub — not autonomously runnable):
   fixtures; record the live outcome as acceptance evidence.
 
 User decision (this session): do the offline slice only; leave the live run.
+
+---
+
+## Live acceptance evidence (2026-06-20) — COMPLETE
+
+Real `run_readiness` against demo PR `mergeproof-demo-payments-api#8`
+(`feat/chargeback-integration`), base on `main` after merging the two setup PRs:
+- payments-api#7 (declared runtime_config + queue_topic capabilities + packs)
+- platform-infra#2 (seeded URL/NAME config precedent + TOKEN secret precedent)
+
+Command:
+```
+python3 plugins/.../scripts/mergeproof.py run \
+  --pr OrenAshkenazy/mergeproof-demo-payments-api#8 \
+  --loop-summary <minimal: verification=passed> \
+  --markdown-output card.md --json-output readiness.json
+```
+
+Result — `STATUS: HUMAN_DECISION_REQUIRED`:
+
+| Variable | Surface | Obligation | Outcome |
+|---|---|---|---|
+| CHARGEBACK_PROVIDER_URL | api | runtime_config | matched |
+| CHARGEBACK_QUEUE_NAME | worker | runtime_config | matched |
+| CHARGEBACK_QUEUE_NAME | worker | queue_topic | human_gated |
+| CHARGEBACK_PROVIDER_TOKEN | api | secret_wiring | human_gated |
+
+(`worker_deployment` matched also appears — pre-existing architecture obligation,
+not part of the env-driven three.)
+
+- queue_topic cited 16 inspected infra paths + a count-only reason (no infra
+  content); evidence_files = app source. Matches the offline fixtures.
+- Content-free confirmed: no infra value / secret value / peer name / queue
+  resource text in the readiness JSON or rendered card.
+
+Gotcha recorded: the engine reads `mergeproof.yaml` + packs at the PR's **base
+SHA** (`resolve_mergeproof.py`: `config_ref = base_sha`), which is immutable. PR
+#8 was branched before #7 merged, so the first run read the old config and the
+new capabilities came back `blocked`. Fix = "Update branch" (merge current main
+into the PR head) to refresh base SHA, then re-run.
+
+All acceptance criteria met. Issue complete.
