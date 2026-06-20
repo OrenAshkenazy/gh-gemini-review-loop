@@ -72,8 +72,8 @@ def generate_files(
             raise GenerateError(f"pack has no template_map entry for generates key '{key}'")
         template_path = templates_root / entry["template"]
         try:
-            template_text = template_path.read_text(encoding="utf-8")
-        except OSError as exc:
+            template_text = template_path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, ValueError) as exc:
             raise GenerateError(f"cannot read template {entry['template']}: {exc}") from exc
         output_path = _subst_path(entry["output"], inputs)
         if not _allowed(output_path, allow):

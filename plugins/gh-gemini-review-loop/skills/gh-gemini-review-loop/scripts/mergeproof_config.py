@@ -19,10 +19,15 @@ class MergeProofConfigError(ValueError):
 def _strip_comment(line: str) -> str:
     out: list[str] = []
     quote: str | None = None
+    escaped = False
     for ch in line:
         if quote:
             out.append(ch)
-            if ch == quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
                 quote = None
             continue
         if ch in ("'", '"'):

@@ -86,3 +86,10 @@ def test_empty_or_bad_sources_rejected():
         mc.load_config("service: s\narchitecture_sources:\n", fmt="yaml")
     with pytest.raises(mc.MergeProofConfigError, match="allow"):
         mc.load_config("service: s\narchitecture_sources:\n  - repo: o/r\n", fmt="yaml")
+
+
+def test_strip_comment_keeps_escaped_quote_in_string():
+    # An escaped quote inside a double-quoted value must not end the string, so a
+    # '#' that follows inside the quotes is content, not a comment delimiter.
+    cfg = mc.parse_yaml_subset('key: "a \\" # b"\n')
+    assert cfg["key"] == 'a \\" # b'

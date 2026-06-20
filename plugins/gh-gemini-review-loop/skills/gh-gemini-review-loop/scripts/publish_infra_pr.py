@@ -43,7 +43,17 @@ def compare_url(repo: str, base: str, branch: str, title: str, body: str) -> str
 
 
 def default_runner(args: list[str]) -> str:
-    proc = subprocess.run(["git", *args], capture_output=True, text=True, check=False)
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"git command failed: {exc}") from exc
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or proc.stdout or "git failed").strip())
     return proc.stdout
