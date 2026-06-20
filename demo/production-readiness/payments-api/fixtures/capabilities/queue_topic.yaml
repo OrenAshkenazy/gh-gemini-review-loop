@@ -1,0 +1,14 @@
+capability: queue_topic
+inputs:
+  env_name: required
+  service: required
+  scope: required
+generates:
+  - queue_resource
+checks:
+  - policy
+  - naming_convention
+approval:
+  required_from:
+    - platform-runtime
+human_gate: provision queue/topic resource for the workload

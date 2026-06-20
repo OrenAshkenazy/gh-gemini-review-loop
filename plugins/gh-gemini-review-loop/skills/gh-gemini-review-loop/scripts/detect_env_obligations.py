@@ -18,10 +18,14 @@ from typing import Any
 from env_precedent import classify_env
 from env_reads import detect_env_reads
 from pr_obligations import assemble_obligation, load_capabilities_and_packs
+from queue_resource import detect_queue_resource
 
 # Advisory-only suggestion shown inside the human gate when precedent is absent.
 _SECRET_SUFFIXES = ("_KEY", "_SECRET", "_TOKEN", "_PASSWORD", "_CREDENTIALS", "_DSN")
 _CONFIG_SUFFIXES = ("_URL", "_HOST", "_NAME", "_PORT", "_ENDPOINT")
+
+# Name segments that mark a variable as naming a queue/topic.
+_QUEUE_TOKENS = ("QUEUE", "TOPIC")
 
 
 def _advisory_suggestion(name: str) -> str:
@@ -30,6 +34,13 @@ def _advisory_suggestion(name: str) -> str:
     if name.endswith(_CONFIG_SUFFIXES):
         return "config"
     return "unknown"
+
+
+def _is_queue_ish(read: dict[str, Any]) -> bool:
+    """A worker-scope read whose name carries a queue/topic token segment."""
+    if read.get("scope") != "worker":
+        return False
+    return any(tok in read["name"].split("_") for tok in _QUEUE_TOKENS)
 
 
 def _routes_for_read(
@@ -71,7 +82,7 @@ def _routes_for_read(
         ]
 
     capability = capabilities.get(cap_type)
-    return [
+    routes = [
         {
             "type": cap_type,
             "capability": capability,
@@ -79,6 +90,37 @@ def _routes_for_read(
             "extra": {"classification": classification},
         }
     ]
+
+    # Fan-out: a queue-ish worker-scope variable that wires as config also needs
+    # its queue/topic resource — but only when none is provisioned for the
+    # workload. The gate is structural (resource presence), never the var value.
+    if cap_type == "runtime_config" and _is_queue_ish(read):
+        resource = detect_queue_resource(infra_files, service)
+        if not resource["present"]:
+            qt_cap = capabilities.get("queue_topic")
+            routes.append(
+                {
+                    "type": "queue_topic",
+                    "capability": qt_cap,
+                    "pack": packs.get("queue_topic") if qt_cap is not None else None,
+                    "extra": {
+                        "classification": {
+                            "classification": "queue_absent",
+                            "capability": "queue_topic",
+                            "precedent_scope": "workload",
+                            "evidence_files": resource["inspected_paths"],
+                            "reason": (
+                                f"{name}: no provisioned queue/topic resource for "
+                                f"{service or 'the workload'}; inspected "
+                                f"{len(resource['inspected_paths'])} infra path(s)"
+                            ),
+                        },
+                        "resource_absence": resource,
+                    },
+                }
+            )
+
+    return routes
 
 
 def _obligations_for_read(

@@ -17,6 +17,9 @@ capabilities:
   - type: secret_wiring
     template: capabilities/secret_wiring.yaml
     approver: "@platform-secrets"
+  - type: queue_topic
+    template: capabilities/queue_topic.yaml
+    approver: "@platform-runtime"
   - type: topic_queue
     template: capabilities/topic_queue.yaml
     approver: "@data-platform"
