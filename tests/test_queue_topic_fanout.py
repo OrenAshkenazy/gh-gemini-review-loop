@@ -185,3 +185,8 @@ def test_e2e_infra_slice_never_leaks_into_pack_or_readiness():
     assert "refunds" not in repr(result["pack"])            # no infra value
     assert "aws_sqs_queue" not in repr(result["readiness"])  # no queue resource text
     assert "WORKER_QUEUE_NAME" not in repr(result["readiness"])  # no infra peer name
+
+
+def test_commented_out_queue_resource_does_not_count_as_provisioned():
+    infra = {**_CONFIG_ONLY, "terraform/payments-api/q.tf": '# resource "aws_sqs_queue" "old" {}\n'}
+    assert _types_for(infra) == ["queue_topic", "runtime_config"]

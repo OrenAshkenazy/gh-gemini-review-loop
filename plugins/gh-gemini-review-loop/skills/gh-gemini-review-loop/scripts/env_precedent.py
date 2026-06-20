@@ -31,12 +31,12 @@ def _suffix(name: str) -> str:
 
 
 def _is_secret_source(path: str, text: str) -> bool:
-    lowered = path.lower()
+    lowered = path.lower().replace("\\", "/")  # normalize Windows separators
     return "/secrets/" in lowered or "externalsecret" in lowered or bool(_SECRET_KIND.search(text))
 
 
 def _is_config_source(path: str, text: str) -> bool:
-    lowered = path.lower()
+    lowered = path.lower().replace("\\", "/")  # normalize Windows separators
     return (
         lowered.endswith("values.yaml")
         or "/env/" in lowered
@@ -52,6 +52,8 @@ def _scan(name: str, paths: list[str], infra_files: dict[str, str]) -> tuple[lis
     config_ev: list[str] = []
     for path in paths:
         text = infra_files[path]
+        if not isinstance(text, str):
+            continue  # defend against non-str values in the infra slice
         peers = {n for n in _ENV_TOKEN.findall(text) if n != name and _suffix(n) == target}
         if not peers:
             continue

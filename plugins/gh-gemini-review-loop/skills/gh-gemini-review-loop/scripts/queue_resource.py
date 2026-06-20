@@ -25,8 +25,8 @@ from typing import Any
 # `topic:` block declaring a provisioned queue. Env entries like
 # ``WORKER_QUEUE_NAME:`` do not match — the key must *be* the queue marker.
 _RESOURCE_MARKERS = (
-    re.compile(r'resource\s+"aws_sqs_queue"'),
-    re.compile(r'resource\s+"aws_sns_topic"'),
+    re.compile(r'(?m)^\s*resource\s+"aws_sqs_queue"'),
+    re.compile(r'(?m)^\s*resource\s+"aws_sns_topic"'),
     re.compile(r"(?im)^\s*(?:sqs|sns|queue|topic)s?\s*:"),
 )
 

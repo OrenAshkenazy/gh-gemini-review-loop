@@ -25,7 +25,7 @@ _WORKER_SEGMENTS = ("/workers/", "/jobs/", "/consumers/")
 
 
 def _scope_for(path: str) -> str:
-    lowered = path.lower()
+    lowered = path.lower().replace("\\", "/")  # normalize Windows separators
     return "worker" if any(seg in lowered for seg in _WORKER_SEGMENTS) else "api"
 
 
@@ -40,6 +40,8 @@ def detect_env_reads(changed_content: dict[str, str]) -> list[dict[str, Any]]:
         if not path.endswith(".py"):
             continue
         text = changed_content[path]
+        if not isinstance(text, str):
+            continue  # defend against non-str values in the content map
         scope = _scope_for(path)
         for match in _ENV_ACCESS.finditer(text):
             line_start = text.rfind("\n", 0, match.start()) + 1

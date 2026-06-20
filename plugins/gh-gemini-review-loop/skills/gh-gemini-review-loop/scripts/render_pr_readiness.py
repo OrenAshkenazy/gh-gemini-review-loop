@@ -314,8 +314,8 @@ def _render_obligations(obligations: list[dict[str, Any]]) -> list[str]:
             action = f"**Evidence:** {files or '—'}<br>**Action:** escalate to platform; no approved capability matched."
         elif ob.get("human_gate_pending"):
             precedent = ""
-            classification = ob.get("classification") or {}
-            if classification:
+            classification = ob.get("classification")
+            if isinstance(classification, dict) and classification:
                 # Infra-precedent reason is the honest evidence line; the advisory
                 # name-pattern hint is fenced as non-authoritative so it informs
                 # the human without anchoring the engine to a guess.

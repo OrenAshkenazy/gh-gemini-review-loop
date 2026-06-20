@@ -121,3 +121,11 @@ def test_classified_capability_without_declared_pack_is_blocked():
     assert ob["outcome"] == "blocked"
     assert ob["pack"] is None
     assert ob["classification"]["classification"] == "secret"
+
+
+def test_k8s_name_is_bounded_to_63_chars_and_valid():
+    import re
+    from detect_env_obligations import _k8s_name
+    n = _k8s_name("A_" * 60)  # 120-char env name
+    assert 0 < len(n) <= 63
+    assert re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", n), n

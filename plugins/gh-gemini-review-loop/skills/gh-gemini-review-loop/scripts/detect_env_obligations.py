@@ -125,8 +125,10 @@ def _routes_for_read(
 
 
 def _k8s_name(env_name: str) -> str:
-    """Normalize an env var name to an RFC1123 label fragment (lowercase, no _)."""
-    return re.sub(r"[^a-z0-9]+", "-", env_name.lower()).strip("-")
+    """Normalize an env var name to an RFC1123 label fragment: lowercase, no _,
+    bounded to the 63-char label limit (trailing '-' trimmed after truncation)."""
+    slug = re.sub(r"[^a-z0-9]+", "-", env_name.lower()).strip("-")
+    return slug[:63].rstrip("-")
 
 
 def _obligations_for_read(
