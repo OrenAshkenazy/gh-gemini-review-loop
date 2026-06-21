@@ -68,13 +68,13 @@ def test_cluster_groups_and_picks_max_severity_and_sorts():
     threads = [
         _thread_full("Validate x is a dict before .get", "render_demo_ui.py", 204, "medium"),
         _thread_full("Validate y is a dict before .get", "render_pr_readiness.py", 336, "medium"),
-        _thread_full("Leading tabs not detected by lstrip space", "mergeproof_config.py", 68, "high"),
+        _thread_full("Leading tabs not detected by lstrip space", "config_parser.py", 68, "high"),
     ]
     clusters = cluster(threads)
     assert len(clusters) == 2
     assert clusters[0].severity == "high"
     assert clusters[0].count == 1
-    assert clusters[0].sites == ("mergeproof_config.py:68",)
+    assert clusters[0].sites == ("config_parser.py:68",)
     assert clusters[1].severity == "medium"
     assert clusters[1].count == 2
     assert "render_demo_ui.py:204" in clusters[1].sites

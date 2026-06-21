@@ -188,14 +188,14 @@ def test_cluster_groups_and_picks_max_severity_and_sorts():
     threads = [
         _thread_full("Validate x is a dict before .get", "render_demo_ui.py", 204, "medium"),
         _thread_full("Validate y is a dict before .get", "render_pr_readiness.py", 336, "medium"),
-        _thread_full("Leading tabs not detected by lstrip space", "mergeproof_config.py", 68, "high"),
+        _thread_full("Leading tabs not detected by lstrip space", "config_parser.py", 68, "high"),
     ]
     clusters = cluster(threads)
     assert len(clusters) == 2
     # Sorted by severity desc: the HIGH (1 site) comes before the medium (2 sites).
     assert clusters[0].severity == "high"
     assert clusters[0].count == 1
-    assert clusters[0].sites == ["mergeproof_config.py:68"]
+    assert clusters[0].sites == ["config_parser.py:68"]
     assert clusters[1].severity == "medium"
     assert clusters[1].count == 2
     assert "render_demo_ui.py:204" in clusters[1].sites
@@ -392,7 +392,7 @@ from metrics import format_patterns_block, format_convergence_line
 def test_format_patterns_block_orders_and_lists_sites():
     clusters = [
         Cluster(signature="a1b2c3d4", label="tab-vs-space indent detection",
-                severity="high", sites=["mergeproof_config.py:68"], count=1),
+                severity="high", sites=["config_parser.py:68"], count=1),
         Cluster(signature="e5f6a7b8", label="missing isinstance guard",
                 severity="medium",
                 sites=[f"f{i}.py:{i}" for i in range(8)], count=8),
