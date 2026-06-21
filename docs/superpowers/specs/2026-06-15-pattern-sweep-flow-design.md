@@ -149,7 +149,7 @@ gains a `Patterns (N):` section above the existing `Findings (N):` list:
 ```
 Patterns (2):
   [HIGH]   tab-vs-space indent detection — 1 site            (sig: a1b2c3d4)
-           mergeproof_config.py:68
+           config_parser.py:68
   [medium] missing isinstance guard before .get/.str — 8 sites (sig: e5f6a7b8)
            render_pr_readiness.py:336, render_demo_ui.py:204, +6 more
 ```

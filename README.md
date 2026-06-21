@@ -113,40 +113,6 @@ From a repo with an open GitHub PR, say this to Claude Code or Codex:
 
 > Run the Gemini loop
 
-For the production-aware end-to-end flow, say:
-
-> mergeproof run --pr https://github.com/OWNER/REPO/pull/123
-
-For the live demo path that also stages generated infra and opens the linked
-infra PR, say:
-
-> mergeproof run --pr https://github.com/OWNER/APP_REPO/pull/123 --publish --stage-infra --create-infra-pr
-
-Before the first production-aware run in a repo, say:
-
-> mergeproof init
-
-> **Note — `mergeproof` is a phrase, not a shell binary.** The `mergeproof …`
-> lines above are what you *say to the agent*; the plugin's skill runs the script
-> for you. There is **no `mergeproof` command on your PATH** (running it in a
-> terminal gives `command not found`). To run it yourself in a shell, call the
-> script directly:
->
-> ```bash
-> SCRIPTS=plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts
-> python3 "$SCRIPTS/mergeproof.py" run --pr https://github.com/OWNER/REPO/pull/123
-> ```
->
-> See [the demo guide](demo/production-readiness/README.md) for the full
-> shell-command forms of `init` and `run`.
-
-The agent generates the repo's initial `mergeproof.yaml` so it can be reviewed and
-merged to the trusted base branch. Normal app PRs do not need to include infra
-changes; MergeProof reads the trusted config and reports production implications
-from the app diff. For replayable demos, `mergeproof run` can also read the
-CR-loop metrics table from the PR body when no local `runs.jsonl` terminal
-record exists.
-
 The agent will:
 
 1. Wait for Gemini Code Assist to finish reviewing.
@@ -157,8 +123,6 @@ The agent will:
 6. Commit and push to the PR branch.
 7. Ask Gemini to re-review.
 8. Stop once the PR is clean, a human decision is needed, or the configured re-review cap has been used.
-9. For `mergeproof run`, read trusted `mergeproof.yaml`, build the Production Context Pack, overlay PR production risks, and publish/update the PR Readiness Card.
-10. When `--stage-infra --create-infra-pr` is present, detect capability obligations, push the generated infra branch, create/reuse the infra PR, and include that link in the app PR readiness comment.
 
 You can also use more specific prompts:
 
@@ -170,9 +134,6 @@ You can also use more specific prompts:
 | *"One cycle only"* | Fixes once, then stops |
 | *"Show a live status comment on the PR"* | Maintains one edited status comment on the PR |
 | *"Run the Gemini loop with judge eval at completion"* | After the loop stops, OpenAI classifies any remaining Gemini findings as fix / reply / ignore / escalate, so you know whether to keep working or stop |
-| *"mergeproof init"* | Generates the initial `mergeproof.yaml` bootstrap config for review and merge |
-| *"mergeproof run --pr https://github.com/OWNER/REPO/pull/123"* | Runs the CR loop to terminal summary, then runs the MergeProof readiness phase and publishes the PR Readiness Card when configured |
-| *"mergeproof run --pr https://github.com/OWNER/APP_REPO/pull/123 --publish --stage-infra --create-infra-pr"* | Runs readiness, stages generated infra changes in the configured infra repo, opens/reuses the infra PR, and updates the app PR comment with the infra PR link |
 
 The skill also triggers naturally when the agent opens a PR and you ask it to keep going, handle review feedback, fix Gemini comments, or request Gemini re-review.
 

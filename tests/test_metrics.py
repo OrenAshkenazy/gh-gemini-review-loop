@@ -815,7 +815,7 @@ class TestFormatStats:
 def test_format_patterns_block_orders_and_lists_sites():
     clusters = [
         Cluster(signature="a1b2c3d4", label="tab-vs-space indent detection",
-                severity="high", sites=["mergeproof_config.py:68"], count=1),
+                severity="high", sites=["config_parser.py:68"], count=1),
         Cluster(signature="e5f6a7b8", label="missing isinstance guard",
                 severity="medium",
                 sites=[f"f{i}.py:{i}" for i in range(8)], count=8),
