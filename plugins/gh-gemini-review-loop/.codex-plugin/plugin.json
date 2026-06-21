@@ -1,6 +1,6 @@
 {
   "name": "gh-gemini-review-loop",
-  "version": "0.2.24",
+  "version": "0.2.25",
   "description": "Run the gemini-code-assist PR review loop: wait, fetch actionable threads, fix, push, re-request review. Capped by preference, severity-aware, auditable.",
   "author": {
     "name": "Oren Ashkenazy",
