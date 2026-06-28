@@ -1,15 +1,42 @@
 ---
-name: gh-gemini-review-loop
-description: Use after a GitHub PR is opened, or when the user asks to handle gemini-code-assist review feedback, run the Gemini review loop, fix Gemini comments, or re-request Gemini review. Waits, fixes, pushes, re-asks. Capped by user preference, default 3 cycles.
+name: gh-ai-review-loop
+description: Use after a GitHub PR is opened, or when the user asks to handle AI reviewer feedback from Gemini Code Assist or another configured reviewer bot, run the review loop, fix reviewer comments, or request re-review. Waits, fixes, pushes, re-asks. Capped by user preference, default 3 cycles.
 ---
 
-# Gemini Code Assist PR Review Loop
+# AI Reviewer PR Review Loop
 
 ## Overview
 
-Use this skill to run the full GitHub PR loop: after PR creation, wait for `gemini-code-assist` to finish reviewing, fetch unresolved actionable review threads, acknowledge the requested fixes, implement clear fixes, verify them, commit and push to the PR branch, and ask Gemini Code Assist to re-review the latest revision.
+Use this skill to run the full GitHub PR loop: after PR creation, wait for the configured AI reviewer to finish reviewing, fetch unresolved actionable review threads, acknowledge the requested fixes, implement clear fixes, verify them, commit and push to the PR branch, and ask the reviewer to re-review the latest revision.
+
+Gemini Code Assist is the bundled default adapter. On first use for a PR, discover reviewer candidates with `--list-reviewers`, confirm the chosen bot, and persist it with `--reviewer`. For compatible reviewer bots such as CodeRabbit, Copilot, Qodo, or Sourcery, pass a safe re-review mention only when it is known; never guess `@login` for an unknown bot.
 
 Prefer thread-aware review data over flat PR comments. GitHub review threads preserve `isResolved`, `isOutdated`, file paths, line anchors, and diff hunks, which are necessary for reliable automation.
+
+## Reviewer Selection
+
+The loop supports one configured reviewer bot per PR. The first run with no
+persisted reviewer must be prompt-first:
+
+1. Run `fetch_gemini_threads.py --list-reviewers --format json`.
+2. If candidates are returned, ask the user to confirm the single candidate or
+   choose among multiple candidates, then persist the choice with
+   `--reviewer <login> --reviewer-source confirmed [--reviewer-name <name>] [--review-trigger-mention <mention>]`.
+3. If zero candidates are returned on a fresh PR, offer **Use Gemini default and
+   wait**, **Pick another**, or **None**. Only **None** stops with "No AI
+   reviewer threads found on this PR."
+4. If the JSON result has `partial: true`, do not claim no reviewer exists; ask
+   the user to choose manually or retry discovery.
+
+Returning runs reuse the persisted reviewer silently. A new bot commenting later
+does not switch the source automatically; use `--reviewer` to switch or
+`--reset-reviewer` to rediscover.
+
+When `fetch_gemini_threads.py --format json` reports
+`reviewerSelection.confirmation_required: true`, stop before edits or
+re-review requests and run the prompt flow above. `source:
+default_unconfirmed` means Gemini is only the compatibility fallback, not a
+confirmed selection.
 
 ## Thread States
 
@@ -486,9 +513,9 @@ Required narration points:
 | After verify | `[loop] session cycle N — verified (<test summary>).` |
 | Before push | `[loop] session cycle N — committing and pushing <commit-sha>...` |
 | **Before push (HARD GATE)** | Run `--cycle-summary` and print its full output (`[loop] Cycle receipt` block). Only then push. |
-| After push, before re-review | `[loop] session cycle N — pushed. Requesting Gemini re-review. Cap now M/K.` |
-| After final re-review request | Wait for Gemini after `REREVIEW_AT` before terminal recording. If wait succeeds, record with `--gemini-confirmed`; if it times out, record with `--gemini-unconfirmed`. |
-| During any Gemini wait | Run chunked waits (`--wait-chunk-seconds`); after each non-ready chunk relay the script's heartbeat block verbatim, then start the next chunk. Never background the wait; never go silent for more than ~90s. |
+| After push, before re-review | `[loop] session cycle N — pushed. Requesting reviewer re-review. Cap now M/K.` |
+| After final re-review request | Wait for the configured reviewer after `REREVIEW_AT` before terminal recording. If wait succeeds, record with `--gemini-confirmed`; if it times out, record with `--gemini-unconfirmed`. |
+| During any reviewer wait | Run chunked waits (`--wait-chunk-seconds`); after each non-ready chunk relay the script's heartbeat block verbatim, then start the next chunk. Never background the wait; never go silent for more than ~90s. |
 | Stop condition triggered | `[loop] STOP — <stop-condition>: <one-line explanation>.` |
 | Loop complete (all clean) | `[loop] DONE — 0 actionable threads remaining. Cycles used: N/<cap>.` |
 | Loop complete / stopped (after DONE/STOP) | `[loop] Summary` block (from `--record-run`) — print the full stdout; this is the terminal receipt |
@@ -623,29 +650,29 @@ When the user phrases the request differently, dispatch to the right flag combin
 
 | User intent | Phrasing examples | Pass to script |
 |---|---|---|
-| **Default loop** | "run the gemini loop" / "handle gemini feedback" / "yeet this PR" | (no extra flags) |
+| **Default loop** | "run the AI reviewer loop" / "handle reviewer feedback" / "run the gemini loop" / "yeet this PR" | (no extra flags) |
 | **High-severity only** | "only fix high severity" / "skip the nits" / "just the important stuff" | `--min-severity high` |
 | **Medium and above** | "skip low-priority comments" | `--min-severity medium` |
 | **Critical only** | "just the critical findings" | `--min-severity critical` |
-| **Strict severity filter** | "only what Gemini flagged as high — ignore unmarked" | `--min-severity high --drop-unknown-severity` |
-| **Audit-only** | "summarize Gemini comments" / "read-only review" / "show me what's pending" | `--dry-run --post-receipt --no-resolve-outdated --no-resolve-addressed-by-reply` |
+| **Strict severity filter** | "only what the reviewer flagged as high — ignore unmarked" | `--min-severity high --drop-unknown-severity` |
+| **Audit-only** | "summarize reviewer comments" / "read-only review" / "show me what's pending" | `--dry-run --post-receipt --no-resolve-outdated --no-resolve-addressed-by-reply` |
 | **More cycles once** | "be persistent" / "do 4 cycles" | `--max-rereview-requests 4` |
 | **Fewer cycles once** | "one cycle only" / "don't loop, just fix once" | `--max-rereview-requests 1` |
 | **Persistent cap** | "always use 4 cycles" / "configure the cap max to 4" | Set `max_rereview_requests` in `~/.config/gh-gemini-review-loop/preferences.json` |
 | **Specific PR** | "handle PR https://github.com/..." | `--pr <URL>` |
-| **Different bot login** | "handle review comments from google-gemini-code-assist" | `--author google-gemini-code-assist` |
+| **Different reviewer bot** | "handle review comments from coderabbitai" | `--reviewer coderabbitai --review-trigger-mention @coderabbitai --reviewer-name CodeRabbit` |
 | **Post status without acting** | "leave a status comment without touching anything" | `--post-receipt --no-resolve-outdated --no-resolve-addressed-by-reply` |
 | **Live status comment** | "show me a live status comment on the PR" / "I want background visibility" | `--sticky-receipt --receipt-status running` per cycle; `--sticky-receipt --receipt-status done` at the final invocation |
-| **Loop + judge at completion** | "run the Gemini loop with judge eval at completion" / "with judge eval at completion" | `save_preferences("on_complete")`. Phase is auto-inferred (`complete` at `--record-run`). No prompt. |
-| **Loop + judge every cycle** | "run the Gemini loop with judge eval on every cycle" / "with judge eval on every cycle" | `save_preferences("on_cycle")`. Phase is auto-inferred (`cycle` per fetch, `complete` at `--record-run`). No prompt. |
+| **Loop + judge at completion** | "run the AI reviewer loop with judge eval at completion" / "with judge eval at completion" | `save_preferences("on_complete")`. Phase is auto-inferred (`complete` at `--record-run`). No prompt. |
+| **Loop + judge every cycle** | "run the AI reviewer loop with judge eval on every cycle" / "with judge eval on every cycle" | `save_preferences("on_cycle")`. Phase is auto-inferred (`cycle` per fetch, `complete` at `--record-run`). No prompt. |
 | **Judge just this once** | "run judge eval just this once" / "with judge eval just this once" | `--judge-mode once --judge-phase complete`. No save. No prompt. |
 | **Enable judge eval (no mode)** | "enable judge eval" / "use judge eval" / "turn on eval" | Show the runtime choice prompt; act on answer. |
 | **Explain judge eval** | "what is judge eval?" / "how does judge eval work?" | Explain it. Do not enable it. |
 | **Disable judge for this run** | "skip the judge this time" | `--judge-mode off` |
 | **Change saved preference** | "change my eval preference" / "reset judge mode" | Show the runtime choice prompt; overwrite prefs file. |
 | **Default loop with saved judge mode** | (no special phrasing — agent reads saved prefs) | No `--judge-phase` needed — phase is auto-inferred. Script obeys saved mode. |
-| **History investigation** | "show me all Gemini threads ever, including resolved" | `--include-resolved --include-outdated --include-addressed-by-reply --no-resolve-outdated --no-resolve-addressed-by-reply` |
-| **Local stats** | "show Gemini loop stats" / "loop stats for this repo" / "how's the loop doing here" | `--stats` |
+| **History investigation** | "show me all reviewer threads ever, including resolved" | `--include-resolved --include-outdated --include-addressed-by-reply --no-resolve-outdated --no-resolve-addressed-by-reply` |
+| **Local stats** | "show reviewer loop stats" / "loop stats for this repo" / "how's the loop doing here" | `--stats` |
 | **Set up verification profile** | "set up a verification profile for this repo" / "configure checks for this repo" | Run `detect_profile.py`, show preset menu, then persist the chosen preset |
 | **Customize profile** | "add mypy to this repo's checks" / "change the verification checks to X" | Edit checks, `save_profile(..., source="customized")` |
 | **Skip profile** | "skip verification profile" / "use ad-hoc checks for this repo" | `save_profile(repo, source="skipped")` — suppress automatic re-prompt |
@@ -654,14 +681,14 @@ Run metrics and `--stats` are local-only — stored under `~/.config/gh-gemini-r
 
 If the user explicitly opts out of any default behavior (e.g. "don't auto-resolve anything"), respect it for the rest of the session via `--no-resolve-outdated --no-resolve-addressed-by-reply`.
 
-This skill does NOT support multi-bot loops (CodeRabbit, Copilot, etc.). It is opinionated for `gemini-code-assist` only. If the user asks for a different bot, change `--author`, but severity parsing and addressed-by-reply heuristics are calibrated for Gemini's output format.
+This skill supports one configured reviewer bot per run. It does not aggregate several reviewers into one combined loop. Gemini Code Assist is the default adapter; for another compatible bot, pass `--reviewer`, `--review-trigger-mention`, and `--reviewer-name`. Severity parsing is generic for markdown image alt text (`![high]`, `![medium]`, etc.), so reviewers without that marker fall back to `unknown` severity.
 
 ## Stopping Conditions
 
-Stop the loop and report status instead of pushing or asking Gemini again when any condition is true:
+Stop the loop and report status instead of pushing or asking the reviewer again when any condition is true:
 
-1. **Cap reached** — Gemini has already been asked to re-review the PR up to the configured cap.
-2. **All clean** — There are no `UNRESOLVED` actionable Gemini threads after stale-thread cleanup.
+1. **Cap reached** — the reviewer has already been asked to re-review the PR up to the configured cap.
+2. **All clean** — There are no `UNRESOLVED` actionable reviewer threads after stale-thread cleanup.
 3. **Human decision required** — All remaining `UNRESOLVED` threads are informational, duplicate, contradictory, or require a human product/design/security decision.
 4. **Test regression** — Tests fail after a fix attempt and the failure is not clearly caused by the latest Gemini-addressing change.
 5. **No progress** — A thread that was UNRESOLVED in the previous cycle is still UNRESOLVED after a fix attempt AND the surrounding code/hunk was not changed AND no substantive maintainer reply (as defined in Thread States) was posted on it. This catches genuine stuckness — distinct from ADDRESSED_BY_REPLY, which is intentional deferral and should not trip this condition.
@@ -731,7 +758,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
 
 1. Trigger the loop by default after PR creation.
    - When the agent creates or opens a PR and this skill is available, continue into this workflow automatically unless the user explicitly says not to.
-   - Treat "create the PR", "open a PR", "yeet this", "ship this PR", and "run the Gemini loop" as permission to complete the full loop: wait, fetch, acknowledge, fix, verify, commit, push, and request Gemini re-review.
+   - Treat "create the PR", "open a PR", "yeet this", "ship this PR", "run the AI reviewer loop", and "run the Gemini loop" as permission to complete the full loop: wait, fetch, acknowledge, fix, verify, commit, push, and request reviewer re-review.
 
 2. Resolve the PR.
    - If the user provides a PR URL, repo, or PR number, use it directly.
@@ -740,49 +767,55 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
      - `gh pr view --json number,url,headRefName,baseRefName`
    - If no PR exists for the branch, report that blocker.
 
-3. Wait for Gemini to finish its first review.
+3. Select the reviewer for this PR.
+   - If a reviewer is already persisted, continue silently.
+   - Otherwise run:
+     `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --list-reviewers --format json`
+   - Use the **Reviewer Selection** rules above to confirm, pick, or stop. Persist confirmed choices with `--reviewer --reviewer-source confirmed`.
+
+4. Wait for the configured reviewer to finish its first review.
    - Run `scripts/fetch_gemini_threads.py --wait` from this skill.
-   - **Cycle 1 (no `--after`):** the script returns as soon as Gemini review
+   - **Cycle 1 (no `--after`):** the script returns as soon as reviewer
      activity is present — it does NOT wait for a quiet/settle period. The
      settle only matters on cycle 2+, where a freshly pushed fix needs the
-     re-review to stabilize; pass `--after "$REREVIEW_AT"` there (step 10).
-   - By default, the script resolves unresolved outdated Gemini threads after the wait and before returning current feedback.
-   - If the wait times out, report that Gemini did not finish within the timeout and do not invent feedback.
+     re-review to stabilize; pass `--after "$REREVIEW_AT"` there (step 11).
+   - By default, the script resolves unresolved outdated reviewer threads after the wait and before returning current feedback.
+   - If the wait times out, report that the reviewer did not finish within the timeout and do not invent feedback.
 
-4. Check loop status and clean stale threads.
-   - Count prior PR comments that ask `@gemini-code-assist` to review again.
+5. Check loop status and clean stale threads.
+   - Count prior PR comments that ask the configured reviewer mention to review again.
    - If the count is already at or above the configured cap, do not start a new fix cycle and do not post a new re-review request unless the user raises the cap.
    - The cap does **not** block cleanup, metrics, final report output, stale/fixed-pending classification, or terminal recording.
-   - Unresolved outdated Gemini review threads and addressed-by-reply threads are resolved automatically unless the user opted out; stale threads should not drive new fixes.
+   - Unresolved outdated reviewer threads and addressed-by-reply threads are resolved automatically unless the user opted out; stale threads should not drive new fixes.
    - For read-only inspection, pass `--no-resolve-outdated`.
 
-5. Fetch Gemini review threads.
-   - Default author filter: `gemini-code-assist`.
+6. Fetch reviewer threads.
+   - The script uses the persisted reviewer. For a one-off explicit switch, pass `--reviewer <bot-login> --review-trigger-mention <known-mention> --reviewer-name <display-name>`.
    - Default thread filter: unresolved and not outdated.
    - Use JSON output when another tool or script will consume the result; use Markdown for human triage.
 
-6. Acknowledge what needs to be fixed.
-   - Before editing, briefly summarize the actionable Gemini findings grouped by file or behavior.
+7. Acknowledge what needs to be fixed.
+   - Before editing, briefly summarize the actionable reviewer findings grouped by file or behavior.
    - If there are no actionable unresolved threads, say so and stop after reporting the clean result.
    - **GATE — verification profile before any edit.** On the first run for this repo with no saved profile, set up the verification profile NOW (detect → preset menu → save) — *before* applying a single fix, so the verify strategy is fixed before edits. See the **Verification Profile** section. This is enforced mechanically: a bundled `PreToolUse` hook (`scripts/loop_profile_gate.py`) blocks `Edit`/`Write`/`MultiEdit` while a loop is active for the repo and no profile is saved. Saving any profile — including a deliberate **Skip** — clears the gate. If an edit is blocked, that is the signal you skipped this step: make the profile decision, then proceed.
    - After prefs/profile state is known, render and relay the profile intro:
      `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --profile-intro --repo OWNER/REPO`
 
-7. Classify comments.
+8. Classify comments.
    - Group by file and behavioral area.
    - Treat clear requested changes as actionable.
    - Ignore already resolved threads, outdated threads, approvals, duplicates, and informational comments.
    - If a thread asks for explanation rather than a code change, draft a response instead of forcing a code edit.
    - If comments conflict or could cause a behavioral regression, stop and surface the tradeoff.
 
-8. Implement fixes.
-   - **Do not edit until the step-6 profile gate is satisfied** (a profile is saved, even a `skipped` one). The `PreToolUse` hook will block edits otherwise.
-   - Keep changes scoped to the Gemini feedback.
+9. Implement fixes.
+   - **Do not edit until the step-7 profile gate is satisfied** (a profile is saved, even a `skipped` one). The `PreToolUse` hook will block edits otherwise.
+   - Keep changes scoped to the reviewer feedback.
    - Read the relevant code before editing.
    - Preserve unrelated local changes.
    - Make each change traceable to a feedback cluster.
 
-9. Verify.
+10. Verify.
    - Before running checks, render and relay the planned verification block:
      `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --planned-verification --repo OWNER/REPO`
    - If a `confirmed`/`customized` profile exists for this repo, run
@@ -795,29 +828,30 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
      changes.
    - If checks cannot run, report why and what remains unverified.
 
-10. Commit, push, and request re-review.
+11. Commit, push, and request re-review.
     - For this skill's full loop, commit fixes to the PR branch. Push only after the required cycle receipt has been relayed for non-terminal cycles.
     - Use a clear commit message such as `fix: address Gemini Code Assist review`.
     - Before pushing a non-terminal cycle, emit the per-cycle receipt:
       `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --cycle-summary --fixed-count <n-this-cycle> --verification <passed|failed|skipped>`
       then relay the printed `[loop] Cycle receipt` block verbatim. This is read-only — it does not write `runs.jsonl`.
     - Post the re-review request after a successful push only if this would not exceed the configured total re-review request cap.
-    - Request re-review through the script-owned helper and parse JSON stdout:
+    - Request re-review through the script-owned helper and parse JSON stdout. Pass the persisted safe trigger as `--review-trigger-mention`; if no safe trigger is known, pass `--no-safe-trigger --reviewer-login <login>` and relay the returned `status: no_safe_trigger` message exactly.
       ```bash
       python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/request_rereview.py" \
         --repo OWNER/REPO \
         --pr PR_NUMBER \
+        --review-trigger-mention "$REVIEW_TRIGGER_MENTION" \
         --json
       ```
-      Capture `created_at` from the JSON payload as `REREVIEW_AT`. If the repository uses a different Gemini trigger phrase, pass it with `--phrase`.
-    - Wait for Gemini using chunked foreground waits — never a background wait:
+      Capture `created_at` from the JSON payload as `REREVIEW_AT`. If the payload has `status: no_safe_trigger`, stop without waiting and report the message.
+    - Wait for the configured reviewer using chunked foreground waits — never a background wait:
       ```bash
       python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
         --wait \
         --after "$REREVIEW_AT" \
         --wait-chunk-seconds 60
       ```
-      Statuses: `waiting` (no response yet), `settling` (Gemini responded,
+      Statuses: `waiting` (no response yet), `settling` (the reviewer responded,
       quiet period running), `ready` (proceed — the same call returns the
       fetched threads), `timed_out` (total `--timeout` budget exhausted).
       After each `waiting`/`settling` chunk: relay the printed `[loop]`
@@ -873,13 +907,13 @@ block this cleanup.
 Useful options:
 
 ```bash
-# Wait for Gemini review activity to appear (cycle 1 / initial review).
+# Wait for configured reviewer activity to appear (cycle 1 / initial review).
 # No --after → returns as soon as activity is present; it does NOT wait for a
 # quiet/settle period. At the initial review there either are comments or there
-# aren't, so settling buys nothing — the wait only blocks until Gemini has shown up.
+# aren't, so settling buys nothing — the wait only blocks until the reviewer has shown up.
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --wait
 
-# Wait for a NEW Gemini review after a re-review request (cycle 2+).
+# Wait for a NEW reviewer response after a re-review request (cycle 2+).
 # Pass the re-review comment timestamp so prior-cycle activity is ignored.
 # WITH --after the wait settles (waits for the new review to stabilize) before
 # returning, so a fast-forward fetch doesn't catch a half-posted re-review.
@@ -897,11 +931,12 @@ python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_thr
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
     --wait-heartbeat
 
-# Request Gemini re-review via the script-owned helper.
+# Request reviewer re-review via the script-owned helper.
 # Parse JSON stdout and capture `created_at` as REREVIEW_AT.
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/request_rereview.py" \
     --repo OWNER/REPO \
     --pr PR_NUMBER \
+    --review-trigger-mention "$REVIEW_TRIGGER_MENTION" \
     --json
 
 # Render deterministic human-readable formatter blocks for relay.
@@ -927,8 +962,14 @@ python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_thr
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
     --no-resolve-outdated --include-outdated --include-resolved --include-addressed-by-reply
 
-# Use a different bot login
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --author google-gemini-code-assist
+# Discover and persist a reviewer bot
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+    --list-reviewers --format json
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+    --reviewer coderabbitai --reviewer-source confirmed --reviewer-name CodeRabbit --review-trigger-mention @coderabbitai
+
+# Reset reviewer selection for this PR
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --reset-reviewer
 ```
 
 The script emits `warning: ... hit page limit ...` to stderr if any GraphQL page maxes out (review threads, reviews, PR comments, or comments within a thread), indicating older items may be silently missing.

@@ -1,14 +1,14 @@
-# gh-gemini-review-loop
+# gh-ai-review-loop
 
-**Move faster through Gemini Code Assist PR feedback from Claude Code or Codex.**
+**Move faster through AI reviewer PR feedback from Claude Code or Codex.**
 
 [![CI](https://github.com/OrenAshkenazy/gh-gemini-review-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/OrenAshkenazy/gh-gemini-review-loop/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/OrenAshkenazy/gh-gemini-review-loop?sort=semver)](https://github.com/OrenAshkenazy/gh-gemini-review-loop/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Built for solo builders and small teams who want review feedback handled while they stay in flow. Claude Code or Codex waits for Gemini, reads real GitHub review-thread state, fixes actionable comments, verifies, pushes, and asks Gemini to re-review. It stops at a configurable cap (default: 3 cycles) so it cannot spam your PR.
+Built for solo builders and small teams who want review feedback handled while they stay in flow. Claude Code or Codex waits for your configured AI reviewer, reads real GitHub review-thread state, fixes actionable comments, verifies, pushes, and asks the reviewer to re-review. It stops at a configurable cap (default: 3 cycles) so it cannot spam your PR.
 
-[Gemini Code Assist](https://github.com/apps/gemini-code-assist) gives you review comments. This plugin turns those comments into an interactive fix loop inside your coding agent: no dashboard hopping, no manual comment triage, no heavy process to adopt.
+[Gemini Code Assist](https://github.com/apps/gemini-code-assist) is the bundled default adapter. The same loop can target compatible reviewer bots such as CodeRabbit, GitHub Copilot, Qodo, or Sourcery by configuring the review author login and re-review mention. This plugin turns reviewer comments into an interactive fix loop inside your coding agent: no dashboard hopping, no manual comment triage, no heavy process to adopt.
 
 ### Verification Profiles — the loop that checks its own work
 
@@ -37,7 +37,7 @@ On the first run in a repository, you choose from a short menu — **All detecte
 - **Claude Code or Codex** with plugin support enabled.
 - **`gh` CLI** authenticated against the repos you'll run the loop on.
 - **Python 3.10+**.
-- **A repo where `gemini-code-assist` is configured as a reviewer.** This plugin is opinionated for Gemini Code Assist and does not aggregate other review bots.
+- **A repo where an AI reviewer posts GitHub review threads.** Gemini Code Assist works out of the box. Other compatible reviewer bots need their GitHub author login and re-review mention configured for the loop scripts.
 
 ## Installation
 
@@ -69,7 +69,7 @@ codex plugin marketplace add OrenAshkenazy/gh-gemini-review-loop
 Install the plugin:
 
 ```bash
-codex plugin add gh-gemini-review-loop@gh-gemini-review-loop
+codex plugin add gh-ai-review-loop@gh-gemini-review-loop
 ```
 
 ### Claude Code
@@ -87,7 +87,7 @@ In your Claude Code prompt:
 #### Step 2 — Install the plugin
 
 ```
-/plugin install gh-gemini-review-loop@gh-gemini-review-loop
+/plugin install gh-ai-review-loop@gh-gemini-review-loop
 ```
 
 That's it. The skill is now available to Claude Code.
@@ -111,44 +111,45 @@ The demo shows a full run in under a minute: the loop activates on a PR with 6 G
 
 From a repo with an open GitHub PR, say this to Claude Code or Codex:
 
-> Run the Gemini loop
+> Run the AI reviewer loop
 
 The agent will:
 
-1. Wait for Gemini Code Assist to finish reviewing.
-2. Fetch unresolved, actionable Gemini review threads.
+1. Wait for the configured AI reviewer to finish reviewing.
+2. Fetch unresolved, actionable reviewer threads.
 3. Ignore stale, resolved, duplicate, or already-addressed threads.
 4. Fix clear issues.
 5. Run relevant checks.
 6. Commit and push to the PR branch.
-7. Ask Gemini to re-review.
+7. Ask the reviewer to re-review.
 8. Stop once the PR is clean, a human decision is needed, or the configured re-review cap has been used.
 
 You can also use more specific prompts:
 
 | Say this to the agent | What happens |
 |---|---|
-| *"Run the Gemini loop"* | Full loop with defaults |
-| *"Only fix high-severity Gemini findings"* | Skips lower-severity findings |
-| *"Just audit Gemini comments, don't touch anything"* | Read-only inspection |
+| *"Run the AI reviewer loop"* | Full loop with defaults |
+| *"Run the Gemini loop"* | Full loop using the default Gemini Code Assist adapter |
+| *"Only fix high-severity reviewer findings"* | Skips lower-severity findings |
+| *"Just audit reviewer comments, don't touch anything"* | Read-only inspection |
 | *"One cycle only"* | Fixes once, then stops |
 | *"Show a live status comment on the PR"* | Maintains one edited status comment on the PR |
-| *"Run the Gemini loop with judge eval at completion"* | After the loop stops, OpenAI classifies any remaining Gemini findings as fix / reply / ignore / escalate, so you know whether to keep working or stop |
+| *"Run the AI reviewer loop with judge eval at completion"* | After the loop stops, OpenAI classifies any remaining reviewer findings as fix / reply / ignore / escalate, so you know whether to keep working or stop |
 
-The skill also triggers naturally when the agent opens a PR and you ask it to keep going, handle review feedback, fix Gemini comments, or request Gemini re-review.
+The skill also triggers naturally when the agent opens a PR and you ask it to keep going, handle review feedback, fix reviewer comments, or request re-review.
 
 ---
 
 ## Why This Plugin
 
-Run the full GitHub PR feedback loop with [Gemini Code Assist](https://github.com/apps/gemini-code-assist): wait for Gemini's review, fetch unresolved actionable threads, classify, fix, verify, commit, push, request re-review. Repeat up to the configured cap (default: 3 cycles).
+Run the full GitHub PR feedback loop with the AI reviewer you configure: wait for review activity, fetch unresolved actionable threads, classify, fix, verify, commit, push, request re-review. Repeat up to the configured cap (default: 3 cycles). [Gemini Code Assist](https://github.com/apps/gemini-code-assist) is the default adapter.
 
-**Why this is safer than a naive Gemini comment scraper:**
+**Why this is safer than a naive review-comment scraper:**
 
 - **Thread-state-aware.** Uses GitHub's `reviewThreads` GraphQL (with `isResolved` / `isOutdated`) instead of the flat REST endpoint, so it actually knows what's actionable vs already-handled.
 - **`ADDRESSED_BY_REPLY` detection.** Maintainer replied *"wontfix because X"*? The loop honors that — never re-tries the fix and auto-resolves the thread so it stops re-appearing every cycle.
-- **Severity-aware ordering + filtering.** Parses Gemini's `critical` / `high` / `medium` / `low` priority markers. Sorts fixes by severity. Filter with `--min-severity high` to skip nits.
-- **Configurable cycle cap, counted by the agent.** Only the agent's own re-review pings consume cycles (humans pinging Gemini don't burn cycles). Prevents runaway PR spam — a known failure mode of naive loops.
+- **Severity-aware ordering + filtering.** Parses reviewer `critical` / `high` / `medium` / `low` priority markers when present. Sorts fixes by severity. Filter with `--min-severity high` to skip nits.
+- **Configurable cycle cap, counted by the agent.** Only the agent's own re-review pings consume cycles (humans pinging the reviewer don't burn cycles). Prevents runaway PR spam — a known failure mode of naive loops.
 - **`--dry-run` for every write.** All GraphQL mutations route through one choke point that can log intended writes without executing.
 - **Sticky receipt for background visibility.** `--sticky-receipt` posts one comment per PR that gets edited in place as the loop progresses, so PR watchers see live phase status (`RUNNING` → `DONE`) without comment spam.
 
@@ -433,7 +434,9 @@ python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_thr
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --include-resolved --include-outdated --include-addressed-by-reply
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --max-rereview-requests 4
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --agent-login NAME
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --author google-gemini-code-assist
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --list-reviewers --format json
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --reviewer coderabbitai --reviewer-name CodeRabbit --review-trigger-mention @coderabbitai
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --reset-reviewer
 ```
 
 Run `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --help` for the complete list.
@@ -442,7 +445,7 @@ Run `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemin
 
 ## How It Works
 
-The script queries GitHub's `pullRequest.reviewThreads` via GraphQL, filters to threads authored by `gemini-code-assist`, partitions them into four states (`RESOLVED` / `OUTDATED` / `ADDRESSED_BY_REPLY` / `UNRESOLVED`), and surfaces only the actionable subset. The agent fixes those, commits, pushes, then posts `@gemini-code-assist please review the latest changes.` once per cycle — counted strictly against the agent's own GitHub login so humans can ping Gemini freely. After the configured cap is reached, hard stop. See the [Stopping Conditions](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md#stopping-conditions) section in SKILL.md for the full state machine.
+The script queries GitHub's `pullRequest.reviewThreads` via GraphQL, filters to threads authored by the configured reviewer login, partitions them into four states (`RESOLVED` / `OUTDATED` / `ADDRESSED_BY_REPLY` / `UNRESOLVED`), and surfaces only the actionable subset. The agent fixes those, commits, pushes, then posts the configured re-review mention once per cycle. Gemini Code Assist is the bundled default; `--list-reviewers` discovers reviewer bot candidates, `--reviewer` persists the chosen reviewer for the PR, and `--review-trigger-mention` enables safe re-review requests for non-default bots. Re-review requests are counted strictly against the agent's own GitHub login so humans can ping the reviewer freely. After the configured cap is reached, hard stop. See the [Stopping Conditions](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md#stopping-conditions) section in SKILL.md for the full state machine.
 
 ---
 

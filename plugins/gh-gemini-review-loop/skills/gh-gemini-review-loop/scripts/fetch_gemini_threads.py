@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch thread-aware Gemini Code Assist review comments for a GitHub PR."""
+"""Fetch thread-aware AI reviewer comments for a GitHub PR."""
 
 from __future__ import annotations
 
@@ -25,12 +25,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import metrics  # noqa: E402 — sibling module, pure/stdlib-only
 import cluster_findings  # noqa: E402 — sibling module, pure/stdlib-only
+import reviewer_resolver  # noqa: E402 — sibling module, pure/stdlib-only
 from loop_color import color_loop, colors_enabled  # noqa: E402 — sibling module
 
 
+DEFAULT_PROVIDER_NAME = "Gemini Code Assist"
 DEFAULT_AUTHOR = "gemini-code-assist"
+DEFAULT_REVIEW_TRIGGER_MENTION = "@gemini-code-assist"
 DEFAULT_REREVIEW_LIMIT = 3
-REREVIEW_TRIGGER_RE = re.compile(r"@gemini-code-assist\b.*\breview\b", re.IGNORECASE | re.DOTALL)
+
+
+def _review_trigger_re(mention: str) -> re.Pattern[str]:
+    mention = mention.strip() or DEFAULT_REVIEW_TRIGGER_MENTION
+    if not mention.startswith("@"):
+        mention = f"@{mention}"
+    return re.compile(
+        rf"{re.escape(mention)}\b.*\breview\b",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+
+REREVIEW_TRIGGER_RE = _review_trigger_re(DEFAULT_REVIEW_TRIGGER_MENTION)
 
 # Gemini prefixes inline review comments with a priority image whose alt text
 # is the severity. Example: ![high](https://www.gstatic.com/codereviewagent/high-priority.svg)
@@ -140,7 +155,7 @@ query($owner:String!, $repo:String!, $number:Int!) {
       comments(last:100) {
         nodes {
           id
-          author { login }
+          author { login __typename }
           body
           createdAt
           url
@@ -149,7 +164,7 @@ query($owner:String!, $repo:String!, $number:Int!) {
       reviews(last:100) {
         nodes {
           id
-          author { login }
+          author { login __typename }
           body
           state
           submittedAt
@@ -168,7 +183,7 @@ query($owner:String!, $repo:String!, $number:Int!) {
           comments(first:50) {
             nodes {
               id
-              author { login }
+              author { login __typename }
               body
               createdAt
               updatedAt
@@ -179,6 +194,53 @@ query($owner:String!, $repo:String!, $number:Int!) {
               diffHunk
             }
           }
+        }
+      }
+    }
+  }
+}
+"""
+
+REVIEWER_DISCOVERY_QUERY = """
+query($owner:String!, $repo:String!, $number:Int!, $threadsAfter:String) {
+  repository(owner:$owner, name:$repo) {
+    pullRequest(number:$number) {
+      number
+      url
+      reviewThreads(first:100, after:$threadsAfter) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          id
+          comments(first:100) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
+              author { login __typename }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+THREAD_COMMENTS_DISCOVERY_QUERY = """
+query($threadId:ID!, $commentsAfter:String) {
+  node(id:$threadId) {
+    ... on PullRequestReviewThread {
+      comments(first:100, after:$commentsAfter) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          author { login __typename }
         }
       }
     }
@@ -220,6 +282,138 @@ def fetch_threads(pr: PullRequest) -> dict[str, Any]:
         return result["data"]["repository"]["pullRequest"]
     except KeyError as exc:
         raise RuntimeError(f"Unexpected gh GraphQL shape: missing {exc}") from exc
+
+
+def fetch_remaining_discovery_comments(
+    thread_id: str,
+    *,
+    after: str | None,
+    max_pages: int,
+) -> dict[str, Any]:
+    nodes: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    partial = False
+    cursor = after
+    for _ in range(max_pages):
+        gh_args = [
+            "api",
+            "graphql",
+            "-f",
+            f"query={THREAD_COMMENTS_DISCOVERY_QUERY}",
+            "-F",
+            f"threadId={thread_id}",
+        ]
+        if cursor:
+            gh_args.extend(["-F", f"commentsAfter={cursor}"])
+        result = run_gh(gh_args)
+        if not isinstance(result, dict):
+            raise RuntimeError("Unexpected gh GraphQL response.")
+        try:
+            comments = result["data"]["node"]["comments"]
+        except KeyError as exc:
+            raise RuntimeError(f"Unexpected gh GraphQL shape: missing {exc}") from exc
+        page_nodes = comments.get("nodes") or []
+        nodes.extend(comment for comment in page_nodes if isinstance(comment, dict))
+        page_info = comments.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            return {"nodes": nodes, "partial": partial, "warnings": warnings}
+        cursor = page_info.get("endCursor")
+        if not cursor:
+            partial = True
+            warnings.append(
+                f"thread {thread_id} comments pagination stopped without an end cursor"
+            )
+            break
+    else:
+        partial = True
+        warnings.append(f"thread {thread_id} comments hit discovery page cap")
+    return {"nodes": nodes, "partial": partial, "warnings": warnings}
+
+
+def fetch_reviewer_discovery(pr: PullRequest, *, max_pages: int = 20) -> dict[str, Any]:
+    """Fetch review-thread comment authors for reviewer discovery.
+
+    Normal loop fetches intentionally stay single-page for compatibility. This
+    discovery-only path paginates review threads so a high-activity PR does not
+    falsely appear to have no AI reviewer candidates.
+    """
+    all_threads: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    after: str | None = None
+    partial = False
+    for _ in range(max_pages):
+        gh_args = [
+            "api",
+            "graphql",
+            "-f",
+            f"query={REVIEWER_DISCOVERY_QUERY}",
+            "-F",
+            f"owner={pr.owner}",
+            "-F",
+            f"repo={pr.repo}",
+            "-F",
+            f"number={pr.number}",
+        ]
+        if after:
+            gh_args.extend(["-F", f"threadsAfter={after}"])
+        result = run_gh(gh_args)
+        if not isinstance(result, dict):
+            raise RuntimeError("Unexpected gh GraphQL response.")
+        try:
+            pull_request = result["data"]["repository"]["pullRequest"]
+            review_threads = pull_request["reviewThreads"]
+        except KeyError as exc:
+            raise RuntimeError(f"Unexpected gh GraphQL shape: missing {exc}") from exc
+        nodes = review_threads.get("nodes") or []
+        for thread in nodes:
+            if not isinstance(thread, dict):
+                continue
+            comments = thread.get("comments") or {}
+            page_info = comments.get("pageInfo") or {}
+            comment_nodes = [
+                comment
+                for comment in (comments.get("nodes") or [])
+                if isinstance(comment, dict)
+            ]
+            if page_info.get("hasNextPage"):
+                thread_id = thread.get("id")
+                if isinstance(thread_id, str) and thread_id:
+                    remaining = fetch_remaining_discovery_comments(
+                        thread_id,
+                        after=page_info.get("endCursor"),
+                        max_pages=max_pages,
+                    )
+                    comment_nodes.extend(remaining["nodes"])
+                    partial = partial or bool(remaining["partial"])
+                    warnings.extend(remaining["warnings"])
+                else:
+                    partial = True
+                    warnings.append("(unknown) thread comments pagination missing thread id")
+            merged_thread = dict(thread)
+            merged_thread["comments"] = {"nodes": comment_nodes}
+            all_threads.append(merged_thread)
+        page_info = review_threads.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            merged = dict(pull_request)
+            merged["reviewThreads"] = {"nodes": all_threads}
+            return {"pull_request": merged, "partial": partial, "warnings": warnings}
+        after = page_info.get("endCursor")
+        if not after:
+            partial = True
+            warnings.append("reviewer discovery pagination stopped without an end cursor")
+            break
+    else:
+        partial = True
+        warnings.append("reviewer discovery hit page cap")
+    return {
+        "pull_request": {
+            "number": pr.number,
+            "url": pr.url,
+            "reviewThreads": {"nodes": all_threads},
+        },
+        "partial": partial,
+        "warnings": warnings,
+    }
 
 
 def resolve_thread(thread_id: str, *, dry_run: bool = False, label: str = "thread") -> None:
@@ -519,16 +713,22 @@ def filter_reviews(pull_request: dict[str, Any], author: str) -> list[dict[str, 
 
 
 def rereview_requests(
-    pull_request: dict[str, Any], agent_login: str | None = None
+    pull_request: dict[str, Any],
+    agent_login: str | None = None,
+    *,
+    review_trigger_mention: str | None = DEFAULT_REVIEW_TRIGGER_MENTION,
 ) -> list[dict[str, Any]]:
-    """Count comments that ping Gemini for a re-review.
+    """Count comments that ping the configured reviewer for a re-review.
 
     When agent_login is provided, only comments authored by that login count.
     This prevents arbitrary humans pinging Gemini from consuming the loop cap.
     """
+    if not review_trigger_mention:
+        return []
     out = []
+    trigger_re = _review_trigger_re(review_trigger_mention)
     for comment in pull_request.get("comments", {}).get("nodes", []):
-        if not REREVIEW_TRIGGER_RE.search(comment.get("body") or ""):
+        if not trigger_re.search(comment.get("body") or ""):
             continue
         if agent_login is not None:
             login = (comment.get("author") or {}).get("login") or ""
@@ -721,6 +921,76 @@ def save_sticky_state(state: dict[str, Any]) -> None:
     path = sticky_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2, sort_keys=True))
+
+
+def read_reviewer_selection(pr: PullRequest) -> dict[str, Any] | None:
+    entry = load_sticky_state().get(_state_key(pr), {})
+    reviewer = entry.get("reviewer") if isinstance(entry, dict) else None
+    if not isinstance(reviewer, dict):
+        return None
+    login = reviewer.get("login")
+    if not isinstance(login, str) or not login:
+        return None
+    return dict(reviewer)
+
+
+def save_reviewer_selection(pr: PullRequest, reviewer: dict[str, Any]) -> None:
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key)
+    entry = dict(entry) if isinstance(entry, dict) else {}
+    entry["reviewer"] = dict(reviewer)
+    state[key] = entry
+    save_sticky_state(state)
+
+
+def clear_reviewer_selection(pr: PullRequest) -> bool:
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key)
+    if not isinstance(entry, dict) or "reviewer" not in entry:
+        return False
+    del entry["reviewer"]
+    state[key] = entry
+    save_sticky_state(state)
+    return True
+
+
+def reviewer_selection_state(record: dict[str, Any], *, source: str) -> dict[str, Any]:
+    return {
+        "login": record["login"],
+        "display_name": record.get("display_name") or reviewer_resolver.display_name_for(record["login"]),
+        "review_trigger": record.get("review_trigger"),
+        "source": source,
+        "confirmation_required": source == "default_unconfirmed",
+        "candidates_partial": False,
+    }
+
+
+def resolve_reviewer_selection(args: argparse.Namespace, pr: PullRequest) -> dict[str, Any]:
+    login = args.reviewer or args.author
+    if login:
+        source = args.reviewer_source if args.reviewer else "explicit"
+        record = reviewer_resolver.make_reviewer_record(
+            login,
+            display_name=args.reviewer_name,
+            review_trigger=args.review_trigger_mention,
+            source=source,
+        )
+        save_reviewer_selection(pr, record)
+        return reviewer_selection_state(record, source=source)
+
+    persisted = read_reviewer_selection(pr)
+    if persisted:
+        return reviewer_selection_state(persisted, source="persisted")
+
+    record = reviewer_resolver.make_reviewer_record(
+        DEFAULT_AUTHOR,
+        display_name=DEFAULT_PROVIDER_NAME,
+        review_trigger=DEFAULT_REVIEW_TRIGGER_MENTION,
+        source="default_unconfirmed",
+    )
+    return reviewer_selection_state(record, source="default_unconfirmed")
 
 
 def update_run_tracking(pr: PullRequest, findings: list[tuple[str, str | None]]) -> None:
@@ -1614,7 +1884,7 @@ def render_receipt(
     ) or "none"
     header_suffix = f" — {status}" if status else ""
     parts = [
-        f"### gh-gemini-review-loop receipt{header_suffix}",
+        f"### gh-ai-review-loop receipt{header_suffix}",
         "",
         "| metric | value |",
         "|---|---|",
@@ -1891,14 +2161,16 @@ def render_markdown(
     threads: list[dict[str, Any]],
     author: str,
     *,
+    reviewer_name: str = DEFAULT_PROVIDER_NAME,
+    review_trigger_mention: str = DEFAULT_REVIEW_TRIGGER_MENTION,
     judge_results: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     reviews = filter_reviews(pr, author)
-    rereviews = rereview_requests(pr)
+    rereviews = rereview_requests(pr, review_trigger_mention=review_trigger_mention)
     outdated = outdated_unresolved_threads(pr, author)
     deferred = addressed_by_reply_threads(pr, author)
     lines = [
-        f"# Gemini Code Assist Threads for PR #{pr.get('number')}",
+        f"# {reviewer_name} Threads for PR #{pr.get('number')}",
         "",
         f"PR: {pr.get('url')}",
         f"Author filter: `{author}`",
@@ -1975,7 +2247,44 @@ def main() -> int:
     )
     parser.add_argument("--pr", help="PR URL or OWNER/REPO#NUMBER. Defaults to current branch PR.")
     parser.add_argument("--repo", default=None, help="OWNER/REPO for formatter-only commands.")
-    parser.add_argument("--author", default=DEFAULT_AUTHOR, help=f"Review author login. Default: {DEFAULT_AUTHOR}")
+    parser.add_argument("--author", default=None, help=f"Reviewer author login. Default: {DEFAULT_AUTHOR}")
+    parser.add_argument(
+        "--reviewer",
+        default=None,
+        help="Reviewer bot login to select and persist for this PR.",
+    )
+    parser.add_argument(
+        "--reviewer-source",
+        choices=["explicit", "confirmed"],
+        default="explicit",
+        help=(
+            "Selection source to persist with --reviewer. Use 'confirmed' for "
+            "the first-run prompt confirmation path."
+        ),
+    )
+    parser.add_argument(
+        "--reviewer-name",
+        default=None,
+        help=f"Human-readable reviewer name for output. Default: {DEFAULT_PROVIDER_NAME!r}.",
+    )
+    parser.add_argument(
+        "--review-trigger-mention",
+        default=None,
+        help=(
+            "Mention phrase that requests a re-review and counts toward the loop cap. "
+            f"Default: {DEFAULT_REVIEW_TRIGGER_MENTION!r}."
+        ),
+    )
+    parser.add_argument(
+        "--list-reviewers",
+        action="store_true",
+        help="Discover AI reviewer bot candidates on this PR and exit without mutating state.",
+    )
+    parser.add_argument(
+        "--reset-reviewer",
+        action="store_true",
+        help="Clear the persisted reviewer selection for this PR and exit.",
+    )
     parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     parser.add_argument(
         "--no-color",
@@ -2003,7 +2312,7 @@ def main() -> int:
     )
     parser.add_argument("--include-resolved", action="store_true")
     parser.add_argument("--include-outdated", action="store_true")
-    parser.add_argument("--wait", action="store_true", help="Poll until Gemini review activity appears and is stable.")
+    parser.add_argument("--wait", action="store_true", help="Poll until reviewer activity appears and is stable.")
     parser.add_argument("--timeout", type=int, default=900, help="Seconds to wait with --wait. Default: 900.")
     parser.add_argument("--interval", type=int, default=20, help="Polling interval in seconds with --wait. Default: 20.")
     parser.add_argument("--quiet-period", type=int, default=45, help="Stable activity period in seconds with --wait. Default: 45.")
@@ -2023,9 +2332,9 @@ def main() -> int:
         metavar="ISO8601",
         default=None,
         help=(
-            "With --wait, ignore Gemini activity submitted at or before this "
+            "With --wait, ignore reviewer activity submitted at or before this "
             "ISO-8601 timestamp. Pass the createdAt of the re-review request "
-            "comment so the waiter only returns once Gemini has genuinely "
+            "comment so the waiter only returns once the reviewer has genuinely "
             "responded to the new cycle's push, not to prior-cycle reviews."
         ),
     )
@@ -2034,20 +2343,20 @@ def main() -> int:
         dest="resolve_outdated",
         action="store_true",
         default=True,
-        help="Resolve unresolved outdated Gemini review threads before printing current feedback. Enabled by default.",
+        help="Resolve unresolved outdated reviewer threads before printing current feedback. Enabled by default.",
     )
     parser.add_argument(
         "--no-resolve-outdated",
         dest="resolve_outdated",
         action="store_false",
-        help="Do not resolve outdated Gemini review threads; use for read-only inspection.",
+        help="Do not resolve outdated reviewer threads; use for read-only inspection.",
     )
     parser.add_argument(
         "--max-rereview-requests",
         type=nonnegative_int,
         default=None,
         help=(
-            "Warn when prior Gemini re-review requests reach this limit. "
+            "Warn when prior reviewer re-review requests reach this limit. "
             "Overrides max_rereview_requests in ~/.config/gh-gemini-review-loop/preferences.json "
             f"(default: {DEFAULT_REREVIEW_LIMIT})."
         ),
@@ -2073,13 +2382,13 @@ def main() -> int:
         help=(
             "GitHub login of the agent posting re-review requests. If omitted, the script "
             "auto-detects via `gh api user`. Used to count only the agent's own re-reviews "
-            "toward the cap (humans pinging Gemini do not consume cycles)."
+            "toward the cap (humans pinging the reviewer do not consume cycles)."
         ),
     )
     parser.add_argument(
         "--no-agent-filter",
         action="store_true",
-        help="Disable agent-login filtering; count ANY '@gemini-code-assist ... review' comment.",
+        help="Disable agent-login filtering; count ANY configured reviewer re-review comment.",
     )
     parser.add_argument(
         "--post-receipt",
@@ -2134,8 +2443,8 @@ def main() -> int:
         choices=["critical", "high", "medium", "low"],
         default=None,
         help=(
-            "Drop actionable threads below this Gemini-assigned severity. "
-            "Threads without a Gemini severity marker ('unknown') are kept regardless "
+            "Drop actionable threads below this reviewer-assigned severity. "
+            "Threads without a recognized severity marker ('unknown') are kept regardless "
             "(use --drop-unknown-severity to remove them too)."
         ),
     )
@@ -2345,7 +2654,7 @@ def main() -> int:
         if not isinstance(snapshot, dict) or not snapshot:
             print(
                 color_loop_block(
-                    "[loop] no Gemini wait in progress for this PR.",
+                    "[loop] no reviewer wait in progress for this PR.",
                     enabled=color_enabled,
                 )
             )
@@ -2362,7 +2671,7 @@ def main() -> int:
                         "quiet_period_remaining_seconds"
                     ),
                 )
-                or "[loop] no Gemini wait in progress for this PR.",
+                or "[loop] no reviewer wait in progress for this PR.",
                 enabled=color_enabled,
             )
         )
@@ -2428,6 +2737,57 @@ def main() -> int:
             args.max_rereview_requests, prefs
         )
         pr = resolve_pr(args.pr)
+        if args.reset_reviewer:
+            cleared = clear_reviewer_selection(pr)
+            status = "cleared" if cleared else "not_set"
+            if args.format == "json":
+                print(json.dumps({"reviewerSelection": {"status": status}}, indent=2, sort_keys=True))
+            else:
+                message = (
+                    "[loop] Reviewer selection cleared for this PR."
+                    if cleared
+                    else "[loop] Reviewer selection was not set for this PR."
+                )
+                print(color_loop_block(message, enabled=color_enabled))
+            return 0
+        if args.list_reviewers:
+            discovery = fetch_reviewer_discovery(pr)
+            pull_request_for_discovery = discovery["pull_request"]
+            self_login = None if args.no_agent_filter else (args.agent_login or gh_authenticated_login())
+            candidates = reviewer_resolver.discover_candidates(
+                pull_request_for_discovery,
+                self_login=self_login,
+            )
+            partial = bool(discovery.get("partial"))
+            warnings = list(discovery.get("warnings") or [])
+            if args.format == "json":
+                print(
+                    json.dumps(
+                        {
+                            "reviewers": [candidate.to_dict() for candidate in candidates],
+                            "partial": partial,
+                            "warnings": warnings,
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            else:
+                for warning in warnings:
+                    print(f"warning: {warning}", file=sys.stderr)
+                if candidates:
+                    for candidate in candidates:
+                        trigger = candidate.review_trigger or "(no safe trigger known)"
+                        print(f"- {candidate.display_name} `{candidate.login}` trigger={trigger}")
+                elif partial:
+                    print("[loop] Reviewer discovery incomplete; retry or select a reviewer manually.")
+                else:
+                    print("[loop] No AI reviewer threads found on this PR.")
+            return 0
+        reviewer_selection = resolve_reviewer_selection(args, pr)
+        args.author = reviewer_selection["login"]
+        args.reviewer_name = reviewer_selection["display_name"]
+        args.review_trigger_mention = reviewer_selection.get("review_trigger")
         if args.fixed_finding or args.fixed_path:
             try:
                 accumulate_fixed_markers(
@@ -2505,7 +2865,11 @@ def main() -> int:
                     "falling back to counting all re-review pings.",
                     file=sys.stderr,
                 )
-        rereviews = rereview_requests(pull_request, agent_login)
+        rereviews = rereview_requests(
+            pull_request,
+            agent_login,
+            review_trigger_mention=args.review_trigger_mention,
+        )
         _limit_reached = len(rereviews) >= args.max_rereview_requests
         if args.resolve_outdated:
             resolved_outdated = resolve_outdated_threads(
@@ -2679,10 +3043,14 @@ def main() -> int:
             except OSError as exc:
                 print(f"warning: could not persist judge results: {exc}", file=sys.stderr)
 
-        rereviews = rereview_requests(pull_request, agent_login)
+        rereviews = rereview_requests(
+            pull_request,
+            agent_login,
+            review_trigger_mention=args.review_trigger_mention,
+        )
         if len(rereviews) >= args.max_rereview_requests:
             print(
-                f"warning: {len(rereviews)} Gemini re-review request(s) already exist; "
+                f"warning: {len(rereviews)} reviewer re-review request(s) already exist; "
                 f"the configured loop cap is {args.max_rereview_requests}.",
                 file=sys.stderr,
             )
@@ -2907,6 +3275,7 @@ def main() -> int:
                 {
                     "pullRequest": pull_request,
                     "threads": threads,
+                    "reviewerSelection": reviewer_selection,
                     "loopStatus": {
                         "reReviewRequests": len(rereviews),
                         "reReviewLimit": args.max_rereview_requests,
@@ -2932,7 +3301,12 @@ def main() -> int:
     else:
         print(
             render_markdown(
-                pull_request, threads, args.author, judge_results=judge_results
+                pull_request,
+                threads,
+                args.author,
+                reviewer_name=args.reviewer_name,
+                review_trigger_mention=args.review_trigger_mention,
+                judge_results=judge_results,
             ),
             end="",
         )

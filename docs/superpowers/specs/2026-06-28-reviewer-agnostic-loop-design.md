@@ -34,9 +34,8 @@ hardcoded identity.
   `__typename: "Bot"`. That is why `DEFAULT_AUTHOR` has no `[bot]` suffix.
   Discovery must classify on `__typename`, not on a `[bot]` string suffix.
 - The README is already rebranded (`gh-ai-review-loop`, "configured AI
-  reviewer", Gemini as default adapter); some flags it mentions
-  (`--reviewer-name`, `--review-trigger-mention`) are ahead of the code. Today
-  only `--author` is wired into argparse.
+  reviewer", Gemini as default adapter). This design completes the script wiring
+  for the reviewer-agnostic flags and first-run reviewer selection.
 
 ## Design
 
@@ -45,10 +44,14 @@ hardcoded identity.
 Keeps the 3015-line core from growing. Pure functions plus small helpers:
 
 - `discover_candidates(pull_request, *, self_login) -> list[Candidate]`
-  Returns one entry per distinct author of a **review thread** whose
-  `__typename == "Bot"`, excluding `self_login` (the agent) and any human
-  author. Fallback heuristic when `__typename` is absent (older fixtures /
-  REST-shaped data): `login.endswith("[bot]")`. Deterministic order:
+  Returns one entry per distinct author of a **review-thread comment** whose
+  `author.__typename == "Bot"`, excluding `self_login` (the agent) and any
+  human author. `self_login` comes from the same source used for re-review cap
+  attribution: explicit `--agent-login` when provided, otherwise
+  `gh_authenticated_login()` (`gh api user --jq .login`), falling back to no
+  self-exclusion if the login cannot be resolved. Fallback heuristic when
+  `__typename` is absent (older fixtures / REST-shaped data):
+  `login.endswith("[bot]")`. Deterministic order:
   first-thread appearance, then login. `Candidate = {login, display_name,
   review_trigger}` where `review_trigger` is filled from the known registry when
   available, else `None`.
@@ -66,6 +69,13 @@ Keeps the 3015-line core from growing. Pure functions plus small helpers:
 Discovery requires adding `__typename` to the `author { login }` selections in
 the existing GraphQL queries (review-thread comment authors). This is additive
 and does not change existing parsing.
+
+`--list-reviewers` must not rely on the normal single-page fetch when deciding
+that a PR has no candidates. It uses a discovery fetch that paginates
+`reviewThreads` and nested thread comments until `hasNextPage == false`, or
+until an explicit implementation cap is reached. If the cap is reached, the
+command prints a warning and marks the result as partial in JSON; the agent must
+not turn a partial zero-candidate result into "No AI reviewer threads found."
 
 ### Persisted reviewer state
 
@@ -103,14 +113,58 @@ effective reviewer login:
 The resolved login feeds the existing `args.author`; the resolved trigger feeds
 the re-review path.
 
+### Reviewer selection state contract
+
+Reviewer resolution returns both the effective reviewer and a machine-readable
+selection state. In `--format json`, the script includes:
+
+```json
+"reviewerSelection": {
+  "login": "gemini-code-assist",
+  "display_name": "Gemini Code Assist",
+  "review_trigger": "@gemini-code-assist",
+  "source": "default_unconfirmed | explicit | persisted | confirmed",
+  "confirmation_required": true,
+  "candidates_partial": false
+}
+```
+
+- `default_unconfirmed` means the script applied `DEFAULT_AUTHOR` for
+  compatibility, but no reviewer has been persisted for this PR. The agent must
+  run the first-run reviewer prompt before edits or re-review requests.
+- `explicit`, `confirmed`, and `persisted` are prompt-free for the current run.
+- `candidates_partial` comes from `--list-reviewers`; if true, the agent must
+  not claim that no AI reviewer exists on the PR.
+
+Fresh PRs need special handling. If `--list-reviewers` returns 0 candidates and
+the PR has no reviewer state, the agent must not immediately stop in the normal
+post-PR workflow. It presents a three-way choice instead: use the bundled Gemini
+default and wait for its first review, enter a reviewer login manually, or stop
+with "No AI reviewer threads found on this PR." Direct standalone CLI behavior
+still falls back to Gemini so existing scripts and tests keep working.
+
 `--author` keeps `gemini-code-assist` shown as its default in `--help`, but
-internally uses a sentinel so "explicitly passed" is distinguishable from
-"defaulted". Existing direct-CLI behavior is unchanged.
+argparse stores `None` when the flag is omitted:
+
+```python
+parser.add_argument(
+    "--author",
+    default=None,
+    help="Reviewer author login. Default: gemini-code-assist",
+)
+```
+
+That gives the resolver a reliable "not explicit" signal without a custom
+string sentinel. Existing direct-CLI behavior is unchanged because the resolver
+still applies `DEFAULT_AUTHOR` after checking explicit and persisted choices.
 
 ### New CLI flags (on `fetch_gemini_threads.py`)
 
 - `--reviewer <login>` — select + persist this reviewer for the PR (the explicit
   switch). Sets `args.author`.
+- `--reviewer-source explicit|confirmed` — source marker to persist with
+  `--reviewer`; the agent uses `confirmed` after the first-run prompt, while
+  direct explicit switches default to `explicit`.
 - `--reviewer-name <name>` — persisted display name (defaults from registry or
   derived from login).
 - `--review-trigger-mention <@mention>` — persisted safe re-review mention.
@@ -127,13 +181,15 @@ reviewer:
 
 1. Agent runs `--list-reviewers`.
 2. Agent presents a short menu:
-   - **0 candidates:** stop message — "No AI reviewer threads found on this PR."
-     No selection persisted.
+   - **0 candidates:** if this is the normal post-PR workflow with no persisted
+     reviewer, offer **Use Gemini default and wait**, **Pick another**, or
+     **None**. Only the **None** path stops with "No AI reviewer threads found
+     on this PR." No selection is persisted on stop.
    - **1 candidate** (e.g. Gemini): one-time confirm — *"Use **Gemini Code
      Assist** as the reviewer for this PR? [Confirm · Pick another · None]"* —
-     then persist with `--reviewer`.
+     then persist with `--reviewer --reviewer-source confirmed`.
    - **2+ candidates:** pick-one menu listing each discovered bot; persist the
-     choice with `--reviewer`.
+     choice with `--reviewer --reviewer-source confirmed`.
 3. Returning runs read the persisted reviewer and are **prompt-free**. A new bot
    commenting later does **not** silently switch the source; the user must
    `--reviewer` (switch) or `--reset-reviewer` (rediscover).
@@ -152,6 +208,23 @@ If it resolves to `None` (unknown bot, no override), the loop **does not post a
 re-review** and emits a clear message: *"No safe re-review trigger known for
 `<login>`; pass --review-trigger-mention to enable re-review requests."* It
 never derives `@login` from the bot name and never posts a guessed mention.
+
+This stop is machine-readable. `request_rereview.py --json` exits `0` and prints
+only JSON to stdout:
+
+```json
+{
+  "status": "no_safe_trigger",
+  "posted": false,
+  "reviewer": "<login>",
+  "message": "No safe re-review trigger known for `<login>`; pass --review-trigger-mention to enable re-review requests."
+}
+```
+
+The non-JSON path prints the same message as a `[loop]` block and exits `0`.
+Network/API failures still exit non-zero. The agent treats `status:
+no_safe_trigger` as a controlled stop to relay exactly, not as a successful
+re-review request.
 
 ### Naming / copy
 
@@ -176,18 +249,28 @@ New `tests/test_reviewer_resolver.py`:
 - `__typename == "Bot"` classification; humans excluded; agent's own login
   excluded; `[bot]`-suffix fallback when typename absent.
 - known vs unknown trigger resolution.
+- discovery order is based on review-thread comment appearance, not a guessed
+  thread-level author.
 
 Additions to `tests/test_fetch_gemini_threads.py`:
 - persisted reviewer prevents silent switching when another bot appears later.
 - explicit `--reviewer` switch persists the new reviewer.
 - `--reset-reviewer` clears the saved reviewer and allows rediscovery.
-- `--list-reviewers` prints candidates without mutating state.
+- `--list-reviewers` prints candidates without mutating state, uses paginated
+  discovery data, and marks partial results instead of reporting a false zero.
+- JSON output includes `reviewerSelection.confirmation_required` and
+  `source: default_unconfirmed` when Gemini is only the compatibility fallback.
+- zero candidates on a fresh PR does not force-stop the agent workflow; the
+  prompt can choose Gemini-and-wait, manual reviewer, or None.
+- omitted `--author` parses as `None`, while `--help` still documents
+  `gemini-code-assist` as the effective default.
 - Gemini-only PR with no state: back-compat (Gemini selectable/auto-default).
 - no implicit Gemini fallback when Gemini did not author review threads.
 - unknown bot with review threads appears as a selectable candidate.
 
 Additions to `tests/test_request_rereview.py`:
-- missing safe re-review trigger → does not post, returns the stop message.
+- missing safe re-review trigger → does not post, exits 0, and returns the
+  parsable `status: no_safe_trigger` payload/message.
 
 Run the full existing suite; it must stay green (no reintroduced Gemini
 coupling, no breakage of current Gemini behavior).

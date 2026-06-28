@@ -167,6 +167,160 @@ def test_default_phrase_is_used_when_omitted(monkeypatch, capsys):
     assert captured["phrase"] == request_rereview.DEFAULT_PHRASE
 
 
+def test_reviewer_mention_builds_default_phrase(monkeypatch, capsys):
+    captured = {}
+
+    def fake_post(repo, pr, phrase):
+        captured["phrase"] = phrase
+        return {
+            "created_at": CREATED_AT,
+            "repo": repo,
+            "pr": pr,
+            "phrase": phrase,
+        }
+
+    monkeypatch.setattr(request_rereview, "post_rereview", fake_post)
+
+    rc = request_rereview.main([
+        "--repo",
+        "OrenAshkenazy/AegisLocal",
+        "--pr",
+        "11",
+        "--reviewer-mention",
+        "coderabbitai",
+    ])
+
+    capsys.readouterr()
+    assert rc == 0
+    assert captured["phrase"] == "@coderabbitai please review the latest changes."
+
+
+def test_review_trigger_mention_alias_builds_default_phrase(monkeypatch, capsys):
+    captured = {}
+
+    def fake_post(repo, pr, phrase):
+        captured["phrase"] = phrase
+        return {
+            "created_at": CREATED_AT,
+            "repo": repo,
+            "pr": pr,
+            "phrase": phrase,
+        }
+
+    monkeypatch.setattr(request_rereview, "post_rereview", fake_post)
+
+    rc = request_rereview.main([
+        "--repo",
+        "OrenAshkenazy/AegisLocal",
+        "--pr",
+        "11",
+        "--review-trigger-mention",
+        "@coderabbitai",
+    ])
+
+    capsys.readouterr()
+    assert rc == 0
+    assert captured["phrase"] == "@coderabbitai please review the latest changes."
+
+
+def test_missing_safe_trigger_returns_json_stop_without_posting(monkeypatch, capsys):
+    def fail_post(repo, pr, phrase):  # noqa: ARG001
+        raise AssertionError("post_rereview should not be called")
+
+    monkeypatch.setattr(request_rereview, "post_rereview", fail_post)
+
+    rc = request_rereview.main([
+        "--repo",
+        "OrenAshkenazy/AegisLocal",
+        "--pr",
+        "11",
+        "--reviewer-login",
+        "unknown-bot",
+        "--no-safe-trigger",
+        "--json",
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 0
+    assert captured.err == ""
+    assert payload == {
+        "status": "no_safe_trigger",
+        "posted": False,
+        "reviewer": "unknown-bot",
+        "message": (
+            "No safe re-review trigger known for `unknown-bot`; "
+            "pass --review-trigger-mention to enable re-review requests."
+        ),
+    }
+
+
+def test_unknown_reviewer_login_without_trigger_does_not_post(monkeypatch, capsys):
+    def fail_post(repo, pr, phrase):  # noqa: ARG001
+        raise AssertionError("post_rereview should not be called")
+
+    monkeypatch.setattr(request_rereview, "post_rereview", fail_post)
+
+    rc = request_rereview.main([
+        "--repo",
+        "OrenAshkenazy/AegisLocal",
+        "--pr",
+        "11",
+        "--reviewer-login",
+        "unknown-bot",
+        "--json",
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 0
+    assert payload["status"] == "no_safe_trigger"
+    assert payload["posted"] is False
+    assert payload["reviewer"] == "unknown-bot"
+
+
+def test_persisted_review_trigger_is_used_when_mention_is_omitted(
+    tmp_path, monkeypatch, capsys
+):
+    captured = {}
+    state = {
+        "OrenAshkenazy/AegisLocal#11": {
+            "reviewer": {
+                "login": "coderabbitai",
+                "display_name": "CodeRabbit",
+                "review_trigger": "@coderabbitai",
+                "source": "confirmed",
+                "selected_at": "2026-06-28T12:00:00Z",
+            }
+        }
+    }
+    (tmp_path / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+
+    def fake_post(repo, pr, phrase):
+        captured["phrase"] = phrase
+        return {
+            "created_at": CREATED_AT,
+            "repo": repo,
+            "pr": pr,
+            "phrase": phrase,
+        }
+
+    monkeypatch.setattr(request_rereview, "post_rereview", fake_post)
+
+    rc = request_rereview.main([
+        "--repo",
+        "OrenAshkenazy/AegisLocal",
+        "--pr",
+        "11",
+        "--json",
+    ])
+
+    capsys.readouterr()
+    assert rc == 0
+    assert captured["phrase"] == "@coderabbitai please review the latest changes."
+
+
 def test_custom_phrase_is_preserved_exactly(monkeypatch, capsys):
     captured = {}
     phrase = "@gemini-code-assist please review the latest changes. Extra context: keep JSON clean."
