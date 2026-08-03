@@ -98,6 +98,19 @@ def test_accepts_bot_suffix_when_typename_is_absent():
     assert candidates[0].review_trigger is None
 
 
+def test_accepts_bot_suffix_even_when_typename_is_user():
+    pull_request = _pr(
+        _thread(_comment("renovate[bot]", "User")),
+    )
+
+    candidates = reviewer_resolver.discover_candidates(
+        pull_request,
+        self_login=None,
+    )
+
+    assert [candidate.login for candidate in candidates] == ["renovate[bot]"]
+
+
 def test_make_reviewer_record_fills_known_defaults_and_timestamp():
     record = reviewer_resolver.make_reviewer_record(
         "gemini-code-assist",

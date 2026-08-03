@@ -515,6 +515,12 @@ class TestReviewerSelectionCli:
 class TestReviewerDiscoveryFetch:
     PR = PullRequest(owner="o", repo="r", number=5)
 
+    @pytest.mark.parametrize("mention", [None, 42, False, {"mention": "@bot"}])
+    def test_review_trigger_re_falls_back_for_non_string_mentions(self, mention):
+        trigger = fgt._review_trigger_re(mention)
+
+        assert trigger.search("@gemini-code-assist please review")
+
     def test_fetch_reviewer_discovery_paginates_review_threads(self, monkeypatch):
         calls = []
 
@@ -572,6 +578,26 @@ class TestReviewerDiscoveryFetch:
         assert result["partial"] is False
         assert [thread["id"] for thread in threads] == ["T1", "T2"]
         assert any("threadsAfter=CURSOR1" in arg for arg in calls[1])
+
+    def test_fetch_reviewer_discovery_surfaces_graphql_errors(self, monkeypatch):
+        monkeypatch.setattr(
+            fgt,
+            "run_gh",
+            lambda args: {"errors": [{"message": "Resource not accessible"}]},
+        )
+
+        with pytest.raises(RuntimeError, match="gh GraphQL errors.*Resource not accessible"):
+            fgt.fetch_reviewer_discovery(self.PR)
+
+    def test_fetch_reviewer_discovery_rejects_null_repository(self, monkeypatch):
+        monkeypatch.setattr(
+            fgt,
+            "run_gh",
+            lambda args: {"data": {"repository": None}},
+        )
+
+        with pytest.raises(RuntimeError, match="missing or invalid data"):
+            fgt.fetch_reviewer_discovery(self.PR)
 
     def test_fetch_reviewer_discovery_paginates_thread_comments(self, monkeypatch):
         calls = []

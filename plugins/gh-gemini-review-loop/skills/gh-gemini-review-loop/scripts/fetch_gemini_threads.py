@@ -35,7 +35,9 @@ DEFAULT_REVIEW_TRIGGER_MENTION = "@gemini-code-assist"
 DEFAULT_REREVIEW_LIMIT = 3
 
 
-def _review_trigger_re(mention: str) -> re.Pattern[str]:
+def _review_trigger_re(mention: Any) -> re.Pattern[str]:
+    if not isinstance(mention, str):
+        mention = DEFAULT_REVIEW_TRIGGER_MENTION
     mention = mention.strip() or DEFAULT_REVIEW_TRIGGER_MENTION
     if not mention.startswith("@"):
         mention = f"@{mention}"
@@ -359,11 +361,19 @@ def fetch_reviewer_discovery(pr: PullRequest, *, max_pages: int = 20) -> dict[st
         result = run_gh(gh_args)
         if not isinstance(result, dict):
             raise RuntimeError("Unexpected gh GraphQL response.")
+        if "errors" in result:
+            raise RuntimeError(f"gh GraphQL errors: {result['errors']}")
         try:
             pull_request = result["data"]["repository"]["pullRequest"]
-            review_threads = pull_request["reviewThreads"]
-        except KeyError as exc:
-            raise RuntimeError(f"Unexpected gh GraphQL shape: missing {exc}") from exc
+            if not isinstance(pull_request, dict):
+                raise TypeError("pullRequest is not a dictionary")
+            review_threads = pull_request.get("reviewThreads") or {}
+            if not isinstance(review_threads, dict):
+                raise TypeError("reviewThreads is not a dictionary")
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError(
+                f"Unexpected gh GraphQL shape: missing or invalid data ({exc})"
+            ) from exc
         nodes = review_threads.get("nodes") or []
         for thread in nodes:
             if not isinstance(thread, dict):
