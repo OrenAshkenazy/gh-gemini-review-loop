@@ -82,8 +82,8 @@ def _is_bot_author(author: dict[str, Any]) -> bool:
     login = author.get("login")
     if typename == "Bot":
         return True
-    if isinstance(login, str):
-        return login.endswith("[bot]")
+    if isinstance(login, str) and login.endswith("[bot]"):
+        return True
     return False
 
 
