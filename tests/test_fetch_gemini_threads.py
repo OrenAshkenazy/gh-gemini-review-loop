@@ -270,6 +270,24 @@ class TestRereviewRequests:
         assert len(result) == 1
         assert result[0]["author"]["login"] == "a"
 
+    def test_counts_configured_bot_suffix_trigger(self):
+        pr = self._pr([
+            {"author": {"login": "a"}, "body": "@renovate[bot] please review"},
+        ])
+
+        result = rereview_requests(pr, review_trigger_mention="@renovate[bot]")
+
+        assert len(result) == 1
+
+    def test_bot_suffix_trigger_does_not_match_a_longer_login(self):
+        pr = self._pr([
+            {"author": {"login": "a"}, "body": "@renovate[bot]extra please review"},
+        ])
+
+        result = rereview_requests(pr, review_trigger_mention="@renovate[bot]")
+
+        assert result == []
+
     def test_filter_by_agent_login(self):
         pr = self._pr([
             {"author": {"login": "agent"}, "body": "@gemini-code-assist please review"},

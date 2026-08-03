@@ -69,7 +69,7 @@ codex plugin marketplace add OrenAshkenazy/gh-gemini-review-loop
 Install the plugin:
 
 ```bash
-codex plugin add gh-ai-review-loop@gh-gemini-review-loop
+codex plugin add gh-gemini-review-loop@gh-gemini-review-loop
 ```
 
 ### Claude Code
@@ -87,7 +87,7 @@ In your Claude Code prompt:
 #### Step 2 — Install the plugin
 
 ```
-/plugin install gh-ai-review-loop@gh-gemini-review-loop
+/plugin install gh-gemini-review-loop@gh-gemini-review-loop
 ```
 
 That's it. The skill is now available to Claude Code.

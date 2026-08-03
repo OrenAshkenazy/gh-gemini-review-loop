@@ -42,7 +42,7 @@ def _review_trigger_re(mention: Any) -> re.Pattern[str]:
     if not mention.startswith("@"):
         mention = f"@{mention}"
     return re.compile(
-        rf"{re.escape(mention)}\b.*\breview\b",
+        rf"{re.escape(mention)}(?![\w-]).*\breview\b",
         re.IGNORECASE | re.DOTALL,
     )
 
