@@ -17,7 +17,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dev deps
-        run: python -m pip install --upgrade pip pytest ruff
+        # Ruff 0.16 enables new checks that require a dedicated repository-wide
+        # migration. Keep CI reproducible at the last known-green release.
+        run: python -m pip install --upgrade pip pytest ruff==0.15.20
       - name: Lint (ruff)
         run: ruff check plugins/ tests/
       - name: Compile scripts
