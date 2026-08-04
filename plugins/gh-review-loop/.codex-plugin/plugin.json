@@ -1,7 +1,7 @@
 {
   "name": "gh-review-loop",
   "version": "0.2.28",
-  "description": "Run the AI reviewer PR loop with Codex or Gemini Code Assist: wait, fetch actionable threads, fix, push, re-request review. Capped by preference, severity-aware, auditable.",
+  "description": "Clears AI reviewer feedback on your PR: reads real review-thread state, fixes findings by severity, sweeps whole patterns in one cycle, gates every push on your repo's own tests, then requests re-review — hard-capped so it can never spam the PR.",
   "author": {
     "name": "Oren Ashkenazy",
     "email": "oren.as@gmail.com",
@@ -11,18 +11,22 @@
   "repository": "https://github.com/OrenAshkenazy/gh-review-loop",
   "license": "MIT",
   "keywords": [
-    "codex",
-    "gemini-code-assist",
-    "pull-request",
     "code-review",
+    "ai-code-review",
+    "pull-request",
+    "review-automation",
+    "gemini-code-assist",
+    "codex",
+    "coderabbit",
+    "github",
     "gh-cli",
     "graphql"
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "gh-review-loop",
-    "shortDescription": "Turn AI reviewer PR comments into a capped fix loop.",
-    "longDescription": "Run an opinionated AI code-review PR loop from Codex: pick the reviewer for the PR (Codex or Gemini Code Assist), wait for its review, read real GitHub review-thread state, fix actionable comments in priority order, verify with repo-aware checks, push, request re-review, and stop at a configurable cap.",
+    "displayName": "GH Review Loop",
+    "shortDescription": "Turn AI reviewer PR comments into a verified, capped fix loop.",
+    "longDescription": "Clears AI reviewer feedback on a GitHub PR without leaving your coding agent. Waits for the configured reviewer (Codex, Gemini Code Assist, or any compatible bot), reads real review-thread state via GraphQL so resolved, outdated, and already-answered threads are skipped, then fixes what is actionable in severity order. Findings are clustered by kind, so a pattern flagged at two sites gets swept across the PR's changed files in one cycle instead of dripping back over three reviews. Every fix is gated on your repository's own tests and linters before it is pushed, and re-review requests are hard-capped so the loop can never spam the PR. Optional per-finding triage flags false positives before you spend a cycle on them, and each run leaves an audit trail plus local stats.",
     "developerName": "Oren Ashkenazy",
     "category": "Developer Tools",
     "capabilities": [
@@ -30,12 +34,13 @@
       "Write"
     ],
     "websiteURL": "https://github.com/OrenAshkenazy/gh-review-loop",
-    "privacyPolicyURL": "https://github.com/OrenAshkenazy/gh-review-loop",
-    "termsOfServiceURL": "https://github.com/OrenAshkenazy/gh-review-loop",
+    "privacyPolicyURL": "https://github.com/OrenAshkenazy/gh-review-loop/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/OrenAshkenazy/gh-review-loop/blob/main/LICENSE",
     "defaultPrompt": [
-      "Run the Codex review loop",
-      "Audit reviewer comments without editing",
-      "Show review loop stats"
+      "Run the AI reviewer loop",
+      "Only fix high-severity reviewer findings",
+      "Just audit reviewer comments, don't touch anything",
+      "Show review loop stats for this repo"
     ],
     "brandColor": "#1F6FEB",
     "screenshots": []
