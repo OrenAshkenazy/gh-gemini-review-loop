@@ -1,7 +1,7 @@
 {
   "name": "gh-review-loop",
   "interface": {
-    "displayName": "gh-review-loop"
+    "displayName": "GH Review Loop"
   },
   "plugins": [
     {

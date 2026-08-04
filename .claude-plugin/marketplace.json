@@ -1,34 +1,39 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "gh-review-loop",
-  "description": "AI code-review PR loop for solo builders and small teams using Claude Code. Works with Codex or Gemini Code Assist: thread-state-aware, severity-filtered, capped cycles.",
+  "description": "AI code-review PR loop for Claude Code and Codex. Reads real review-thread state, fixes findings by severity, verifies against your own tests, and stops at a hard cycle cap.",
   "owner": {
     "name": "Oren Ashkenazy"
   },
   "plugins": [
     {
       "name": "gh-review-loop",
+      "displayName": "GH Review Loop",
       "source": "./plugins/gh-review-loop",
-      "description": "Opinionated AI code-review PR loop for solo builders and small teams using Claude Code. Drives Codex or Gemini Code Assist: reads real review-thread state, normalizes each reviewer's priority scale, supports severity filtering, stops at a configurable cycle cap, auto-resolves stale and addressed-by-reply threads, and can post a live sticky-receipt comment for background visibility.",
+      "description": "Clears AI reviewer feedback on your PR: reads real review-thread state, fixes findings by severity, sweeps whole patterns in one cycle, gates every push on your repo's own tests, then requests re-review — hard-capped so it can never spam the PR. Works with Gemini Code Assist and Codex out of the box, or any compatible reviewer bot you configure.",
       "author": {
         "name": "Oren Ashkenazy",
         "email": "oren.as@gmail.com"
       },
       "category": "code-review",
-      "tags": ["codex", "gemini", "code-review", "pr", "github", "gh-cli", "sticky-receipt", "severity-aware"],
+      "tags": ["code-review", "ai-code-review", "pr", "github", "codex", "gemini", "pattern-sweep", "severity-aware"],
       "license": "MIT",
       "repository": "https://github.com/OrenAshkenazy/gh-review-loop",
       "homepage": "https://github.com/OrenAshkenazy/gh-review-loop",
       "keywords": [
-        "codex",
-        "gemini-code-assist",
+        "code-review",
+        "ai-code-review",
         "pull-request",
+        "review-automation",
+        "gemini-code-assist",
+        "codex",
+        "coderabbit",
         "review-bot",
-        "graphql",
-        "sticky-receipt",
+        "pattern-sweep",
         "severity-aware",
         "addressed-by-reply",
-        "auto-resolve",
+        "sticky-receipt",
+        "graphql",
         "dry-run"
       ]
     }
