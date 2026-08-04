@@ -49,7 +49,7 @@ from hook_runtime import (  # noqa: E402
 _GIT_PUSH_RE = re.compile(r"\bgit\s+push\b")
 
 BLOCK_TEMPLATE = (
-    "[gh-gemini-review-loop] A Gemini review loop is active for {repo} and the "
+    "[gh-review-loop] A Gemini review loop is active for {repo} and the "
     "per-cycle summary has not been emitted yet (update_seq={update_seq} > "
     "last_summary_seq={last_summary_seq}).\n\n"
     "{snapshot}"

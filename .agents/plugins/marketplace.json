@@ -1,14 +1,14 @@
 {
-  "name": "gh-gemini-review-loop",
+  "name": "gh-review-loop",
   "interface": {
-    "displayName": "gh-gemini-review-loop"
+    "displayName": "gh-review-loop"
   },
   "plugins": [
     {
-      "name": "gh-gemini-review-loop",
+      "name": "gh-review-loop",
       "source": {
         "source": "local",
-        "path": "./plugins/gh-gemini-review-loop"
+        "path": "./plugins/gh-review-loop"
       },
       "policy": {
         "installation": "AVAILABLE",

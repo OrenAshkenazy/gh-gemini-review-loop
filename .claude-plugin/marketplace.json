@@ -1,14 +1,14 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
-  "name": "gh-gemini-review-loop",
+  "name": "gh-review-loop",
   "description": "AI code-review PR loop for solo builders and small teams using Claude Code. Works with Codex or Gemini Code Assist: thread-state-aware, severity-filtered, capped cycles.",
   "owner": {
     "name": "Oren Ashkenazy"
   },
   "plugins": [
     {
-      "name": "gh-gemini-review-loop",
-      "source": "./plugins/gh-gemini-review-loop",
+      "name": "gh-review-loop",
+      "source": "./plugins/gh-review-loop",
       "description": "Opinionated AI code-review PR loop for solo builders and small teams using Claude Code. Drives Codex or Gemini Code Assist: reads real review-thread state, normalizes each reviewer's priority scale, supports severity filtering, stops at a configurable cycle cap, auto-resolves stale and addressed-by-reply threads, and can post a live sticky-receipt comment for background visibility.",
       "author": {
         "name": "Oren Ashkenazy",

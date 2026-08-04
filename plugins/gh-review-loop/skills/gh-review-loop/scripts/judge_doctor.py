@@ -305,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    print(_color("judge_doctor — gh-gemini-review-loop", BOLD))
+    print(_color("judge_doctor — gh-review-loop", BOLD))
 
     checks = [
         check_python(),

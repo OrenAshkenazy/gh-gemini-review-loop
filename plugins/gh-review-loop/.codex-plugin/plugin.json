@@ -1,5 +1,5 @@
 {
-  "name": "gh-gemini-review-loop",
+  "name": "gh-review-loop",
   "version": "0.2.27",
   "description": "Run the AI reviewer PR loop with Codex or Gemini Code Assist: wait, fetch actionable threads, fix, push, re-request review. Capped by preference, severity-aware, auditable.",
   "author": {
@@ -20,7 +20,7 @@
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "gh-gemini-review-loop",
+    "displayName": "gh-review-loop",
     "shortDescription": "Turn AI reviewer PR comments into a capped fix loop.",
     "longDescription": "Run an opinionated AI code-review PR loop from Codex: pick the reviewer for the PR (Codex or Gemini Code Assist), wait for its review, read real GitHub review-thread state, fix actionable comments in priority order, verify with repo-aware checks, push, request re-review, and stop at a configurable cap.",
     "developerName": "Oren Ashkenazy",

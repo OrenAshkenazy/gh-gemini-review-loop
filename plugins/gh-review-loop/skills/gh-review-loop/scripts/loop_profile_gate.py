@@ -48,7 +48,7 @@ def profile_required_for_repo(repo_full: str) -> bool:
 
 
 BLOCK_MESSAGE = (
-    "[gh-gemini-review-loop] A Gemini review loop is active for {repo} and no "
+    "[gh-review-loop] A Gemini review loop is active for {repo} and no "
     "verification profile is saved yet. Set up the profile BEFORE editing: run "
     "detect_profile.py, present the preset menu, and persist the choice with "
     "judge.save_profile(...). Choosing 'Skip' also satisfies this. See the "

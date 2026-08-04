@@ -1427,7 +1427,7 @@ class TestStickyReceiptRender:
             author=BOT, resolved_outdated=0, resolved_addressed_by_reply=0,
             rereview_count=0, rereview_limit=3, status="RUNNING",
         )
-        assert "### gh-ai-review-loop receipt — RUNNING" in body
+        assert "### gh-review-loop receipt — RUNNING" in body
 
     def test_sticky_embeds_marker(self):
         pr = PullRequest(owner="o", repo="r", number=1, url=None)
@@ -1458,7 +1458,7 @@ class TestStickyReceiptRender:
             rereview_count=0, rereview_limit=3, status=None,
         )
         # Header line ends after "receipt" with no " — " suffix
-        assert body.splitlines()[0] == "### gh-ai-review-loop receipt"
+        assert body.splitlines()[0] == "### gh-review-loop receipt"
 
 
 def _thread(path, body, line=1):

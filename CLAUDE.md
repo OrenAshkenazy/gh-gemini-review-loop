@@ -21,7 +21,7 @@ All scripts use `from __future__ import annotations`. This makes subscripted gen
 The installed plugin lives at:
 
 ```
-~/.claude/plugins/cache/gh-gemini-review-loop/gh-gemini-review-loop/<version>/
+~/.claude/plugins/cache/gh-review-loop/gh-review-loop/<version>/
 ```
 
 To test unreleased script changes without merging, copy the modified files directly into the cache. A future `/plugin` update will overwrite them.
@@ -29,11 +29,11 @@ To test unreleased script changes without merging, copy the modified files direc
 ## Scripts location
 
 ```
-plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/
+plugins/gh-review-loop/skills/gh-review-loop/scripts/
 ```
 
 When running scripts locally (not through the installed plugin), invoke from the repo root:
 
 ```bash
-python3 plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py
+python3 plugins/gh-review-loop/skills/gh-review-loop/scripts/fetch_gemini_threads.py
 ```

@@ -23,6 +23,7 @@ class TestHelpers:
         monkeypatch.delenv("GGRL_STATE_DIR", raising=False)
         result = metrics.runs_log_path()
         assert result.name == "runs.jsonl"
+        # Config dir keeps the pre-rename name so existing user data stays readable.
         assert "gh-gemini-review-loop" in str(result)
 
     def test_format_duration(self):
@@ -725,7 +726,7 @@ class TestFormatStats:
             "false_positives_avoided": 14, "top_provider": "gemini-code-assist",
             "top_area": "tests",
         }
-        out = metrics.format_stats("OrenAshkenazy/gh-gemini-review-loop", agg)
+        out = metrics.format_stats("OrenAshkenazy/gh-review-loop", agg)
         assert "Last 10 runs" in out
         assert "Average cycles used: 1.8" in out
         assert "Average elapsed time to terminal outcome: 9m" in out
