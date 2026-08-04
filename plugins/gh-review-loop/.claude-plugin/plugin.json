@@ -1,6 +1,7 @@
 {
   "name": "gh-review-loop",
-  "description": "Run the AI reviewer PR loop with Codex or Gemini Code Assist: wait, fetch actionable threads, fix, push, re-request review. Capped by preference, severity-aware, auditable.",
+  "displayName": "GH Review Loop",
+  "description": "Clears AI reviewer feedback on your PR: reads real review-thread state, fixes findings by severity, sweeps whole patterns in one cycle, gates every push on your repo's own tests, then requests re-review — hard-capped so it can never spam the PR.",
   "version": "0.2.28",
   "author": {
     "name": "Oren Ashkenazy",
@@ -10,10 +11,14 @@
   "repository": "https://github.com/OrenAshkenazy/gh-review-loop",
   "license": "MIT",
   "keywords": [
-    "codex",
-    "gemini-code-assist",
-    "pull-request",
     "code-review",
+    "ai-code-review",
+    "pull-request",
+    "review-automation",
+    "gemini-code-assist",
+    "codex",
+    "coderabbit",
+    "github",
     "gh-cli",
     "graphql"
   ]

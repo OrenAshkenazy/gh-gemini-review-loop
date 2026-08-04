@@ -34,10 +34,22 @@ jobs:
           claude = json.loads((root / ".claude-plugin/plugin.json").read_text())
           codex = json.loads((root / ".codex-plugin/plugin.json").read_text())
           marketplace = json.loads(Path(".agents/plugins/marketplace.json").read_text())
+          catalog = json.loads(Path(".claude-plugin/marketplace.json").read_text())
           hooks = json.loads((root / "hooks/hooks.json").read_text())
 
           assert claude["name"] == codex["name"] == "gh-review-loop"
           assert claude["version"] == codex["version"]
+
+          # Storefront metadata must not drift between the runtimes: these strings
+          # are what users see in the plugin picker and the marketplace listing.
+          display = "GH Review Loop"
+          assert claude["displayName"] == display
+          assert codex["interface"]["displayName"] == display
+          assert marketplace["interface"]["displayName"] == display
+          assert catalog["plugins"][0]["displayName"] == display
+          assert claude["description"] == codex["description"]
+          assert catalog["plugins"][0]["description"].startswith(claude["description"])
+          assert claude["keywords"] == codex["keywords"]
           assert codex["skills"] == "./skills/"
           assert (root / "skills/gh-review-loop/SKILL.md").exists()
           assert (root / "hooks/hooks.json").exists()
