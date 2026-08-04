@@ -69,5 +69,5 @@ First publishable release. Packaged as a Claude Code plugin marketplace.
 
 - Markdown renderer now displays the addressed-by-reply count alongside outdated and actionable counts.
 
-[Unreleased]: https://github.com/OrenAshkenazy/gh-gemini-review-loop/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/OrenAshkenazy/gh-gemini-review-loop/releases/tag/v0.1.0
+[Unreleased]: https://github.com/OrenAshkenazy/gh-review-loop/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/OrenAshkenazy/gh-review-loop/releases/tag/v0.1.0
