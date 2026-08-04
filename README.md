@@ -10,6 +10,21 @@ Built for solo builders and small teams who want review feedback handled while t
 
 [Gemini Code Assist](https://github.com/apps/gemini-code-assist) is the bundled default adapter. The same loop can target compatible reviewer bots such as CodeRabbit, GitHub Copilot, Qodo, or Sourcery by configuring the review author login and re-review mention. This plugin turns reviewer comments into an interactive fix loop inside your coding agent: no dashboard hopping, no manual comment triage, no heavy process to adopt.
 
+## What Makes It Stand Out
+
+Everything below ships in the plugin today. Each row links to the section with details.
+
+| Capability | What you get | Why naive loops can't |
+|---|---|---|
+| [Thread-state truth](#why-this-plugin) | Reads GitHub's `reviewThreads` GraphQL (`isResolved` / `isOutdated`) and honors maintainer *"wontfix"* replies (`ADDRESSED_BY_REPLY`) | Flat comment scrapers re-fix what's already handled, every cycle |
+| [Pattern sweep](#pattern-sweep--fix-the-class-not-the-instance) | Clusters findings by kind, fixes the *unflagged* sibling instances too, and tracks recurrence across cycles | Fixing only flagged sites invites the same finding back next review |
+| [Verification gate](#verification-profiles) | Your repo's own tests and linters must pass before any push — auto-detected, confirmed once | Most loops push unverified fixes and let CI find out |
+| [AI-judge triage](#optional-per-finding-openai-judge) | Optional second model labels each finding (`false_positive`, `needs_human`, …) before you spend a cycle on it | Without triage, one hallucinated finding burns a whole cycle |
+| [Any reviewer bot](#supported-reviewers) | Gemini and Codex fully wired in; CodeRabbit / Copilot / Qodo / Sourcery configurable; severities normalized to one scale | Alternatives hard-code a single bot and its comment format |
+| [Hard safety rails](#why-this-plugin) | Cycle cap counted only against the agent's own pings, `--dry-run` choke point for every write, sweeps report before touching unflagged code | Runaway PR spam is the classic failure mode of review loops |
+| [Audit trail + stats](#run-metrics--local-stats) | One live-edited status comment on the PR, per-run receipts, local per-repo stats (`--stats`) | Fire-and-forget loops leave no record of what was fixed or why |
+| [Zero infrastructure](#prerequisites) | Stdlib Python + `gh` CLI. No server, no webhook, no SDK installs; metrics never leave your machine | Bot platforms want a backend, an account, and your code |
+
 ### Verification Profiles — the loop that checks its own work
 
 The loop doesn't assume its fixes are correct; it verifies them, gating every change on your repository's own tests and linters before it pushes. Setup is a single menu pick; after that it runs silently.
@@ -18,7 +33,7 @@ The loop doesn't assume its fixes are correct; it verifies them, gating every ch
 ┌───────────────────────────────┬───────────────────────────────────────────────────────────────────────────────────────────┐
 │ Zero-touch setup              │ A single menu pick on the first run. No config files and no schema to learn.              │
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
-│ Repo-aware                    │ Auto-detects repo framework(Python, Node, Rust & Go) for cycle acceptance tests.          │
+│ Repo-aware                    │ Auto-detects repo framework (Python, Node, Rust & Go) for cycle acceptance tests.         │
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
 │ Regression-proof              │ Every fix is gated on your own tests and linters before it is pushed.                     │
 ├───────────────────────────────┼───────────────────────────────────────────────────────────────────────────────────────────┤
@@ -154,6 +169,28 @@ Run the full GitHub PR feedback loop with the AI reviewer you configure: wait fo
 - **Sticky receipt for background visibility.** `--sticky-receipt` posts one comment per PR that gets edited in place as the loop progresses, so PR watchers see live phase status (`RUNNING` → `DONE`) without comment spam.
 
 See [`SKILL.md`](plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/SKILL.md) for the full workflow definition, stop conditions, and all variation phrasings.
+
+### Pattern sweep — fix the class, not the instance
+
+LLM reviewers expand: fix the two flagged instances of a pattern and the next review flags three more in files it hadn't looked at yet. The loop collapses that whack-a-mole into one cycle:
+
+1. **Cluster.** Each cycle groups findings by a deterministic pattern signature, so the agent reasons about *kinds* of problems ("missing decode guard", "unwrapped OSError"), not a flat finding list. The cycle receipt shows a `Patterns (N):` section.
+2. **Sweep.** For any pattern flagged at 2+ sites, the agent greps the PR's **changed files** for sibling instances the reviewer hasn't flagged yet, prints a sweep report (which extra sites, why), then fixes the whole family at once. Changed files only — the blast radius never leaves the PR's own diff.
+3. **Converge.** Swept patterns are tracked across cycles. If one reappears after a sweep, the receipt calls it out (`⚠ RECURRED after sweep`) so you know the sweep missed a variant — an advisory signal, never a control-flow change.
+
+Net effect: patterns get fixed once instead of dripping in over three review cycles.
+
+### Supported reviewers
+
+Two reviewers ship with full vendor knowledge — re-review trigger, priority format, and review behavior:
+
+| Reviewer | Support | Re-review trigger | Severity format |
+|---|---|---|---|
+| Gemini Code Assist | Built-in default | `@gemini-code-assist please review…` (posted automatically) | `critical` / `high` / `medium` / `low` |
+| Codex (`chatgpt-codex-connector`) | Built-in | `@codex review` | `P0`–`P3`, normalized to the shared scale |
+| CodeRabbit, Copilot, Qodo, Sourcery, … | Configurable | Supplied via `--review-trigger-mention` | Parsed when present |
+
+`--list-reviewers` discovers which bots are active on your PR; `--reviewer` persists your choice per PR. Severity normalization means `--min-severity high` behaves identically no matter which bot wrote the comment. Codex findings that live in the review body (no inline thread) are surfaced too, and dropped automatically once a newer Codex review supersedes them.
 
 ---
 
