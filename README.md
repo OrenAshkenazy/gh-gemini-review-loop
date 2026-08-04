@@ -2,8 +2,8 @@
 
 **Move faster through AI reviewer PR feedback from Claude Code or Codex.**
 
-[![CI](https://github.com/OrenAshkenazy/gh-gemini-review-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/OrenAshkenazy/gh-gemini-review-loop/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/OrenAshkenazy/gh-gemini-review-loop?sort=semver)](https://github.com/OrenAshkenazy/gh-gemini-review-loop/releases)
+[![CI](https://github.com/OrenAshkenazy/gh-review-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/OrenAshkenazy/gh-review-loop/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/OrenAshkenazy/gh-review-loop?sort=semver)](https://github.com/OrenAshkenazy/gh-review-loop/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Built for solo builders and small teams who want review feedback handled while they stay in flow. Claude Code or Codex waits for your configured AI reviewer, reads real GitHub review-thread state, fixes actionable comments, verifies, pushes, and asks the reviewer to re-review. It stops at a configurable cap (default: 3 cycles) so it cannot spam your PR.
@@ -48,7 +48,7 @@ This repo publishes the same plugin for both Claude Code and Codex. Install it i
 If you want the shared skills install flow instead of the runtime-specific plugin commands, use `npx skills add` and target the agents you want.
 
 ```bash
-npx skills add OrenAshkenazy/gh-gemini-review-loop -a claude-code codex
+npx skills add OrenAshkenazy/gh-review-loop -a claude-code codex
 ```
 
 The `-a` flag selects the agents that your local skills installer knows about.
@@ -63,7 +63,7 @@ Omit the `-a` flags if you want the interactive picker to choose agents for you.
 Add the marketplace:
 
 ```bash
-codex plugin marketplace add OrenAshkenazy/gh-gemini-review-loop
+codex plugin marketplace add OrenAshkenazy/gh-review-loop
 ```
 
 Install the plugin:
@@ -81,7 +81,7 @@ Install from the Claude Code marketplace in **two slash-commands**.
 In your Claude Code prompt:
 
 ```
-/plugin marketplace add OrenAshkenazy/gh-gemini-review-loop
+/plugin marketplace add OrenAshkenazy/gh-review-loop
 ```
 
 #### Step 2 — Install the plugin
@@ -308,7 +308,7 @@ Time to clean PR: 12m
 **Aggregated stats** — *"Show Gemini loop stats for this repo"* / `--stats`:
 
 ```
-Gemini loop stats — OrenAshkenazy/gh-gemini-review-loop
+Gemini loop stats — OrenAshkenazy/gh-review-loop
 Last 10 runs
 
 Average cycles used: 1.8

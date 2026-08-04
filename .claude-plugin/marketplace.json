@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "gh-gemini-review-loop",
-  "description": "Gemini Code Assist PR review loop for solo builders and small teams using Claude Code. Thread-state-aware, severity-filtered, capped at 3 cycles.",
+  "description": "AI code-review PR loop for solo builders and small teams using Claude Code. Works with Codex or Gemini Code Assist: thread-state-aware, severity-filtered, capped cycles.",
   "owner": {
     "name": "Oren Ashkenazy"
   },
@@ -9,17 +9,18 @@
     {
       "name": "gh-gemini-review-loop",
       "source": "./plugins/gh-gemini-review-loop",
-      "description": "Opinionated Gemini Code Assist PR loop for solo builders and small teams using Claude Code. Reads real review-thread state, supports severity filtering, stops at a hard 3-cycle cap, auto-resolves stale and addressed-by-reply threads, and can post a live sticky-receipt comment for background visibility.",
+      "description": "Opinionated AI code-review PR loop for solo builders and small teams using Claude Code. Drives Codex or Gemini Code Assist: reads real review-thread state, normalizes each reviewer's priority scale, supports severity filtering, stops at a configurable cycle cap, auto-resolves stale and addressed-by-reply threads, and can post a live sticky-receipt comment for background visibility.",
       "author": {
         "name": "Oren Ashkenazy",
         "email": "oren.as@gmail.com"
       },
       "category": "code-review",
-      "tags": ["gemini", "code-review", "pr", "github", "gh-cli", "sticky-receipt", "severity-aware"],
+      "tags": ["codex", "gemini", "code-review", "pr", "github", "gh-cli", "sticky-receipt", "severity-aware"],
       "license": "MIT",
-      "repository": "https://github.com/OrenAshkenazy/gh-gemini-review-loop",
-      "homepage": "https://github.com/OrenAshkenazy/gh-gemini-review-loop",
+      "repository": "https://github.com/OrenAshkenazy/gh-review-loop",
+      "homepage": "https://github.com/OrenAshkenazy/gh-review-loop",
       "keywords": [
+        "codex",
         "gemini-code-assist",
         "pull-request",
         "review-bot",
