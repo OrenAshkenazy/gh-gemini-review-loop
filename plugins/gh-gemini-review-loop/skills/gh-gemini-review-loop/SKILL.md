@@ -32,6 +32,25 @@ Returning runs reuse the persisted reviewer silently. A new bot commenting later
 does not switch the source automatically; use `--reviewer` to switch or
 `--reset-reviewer` to rediscover.
 
+### Known reviewers
+
+Two reviewers ship with full vendor knowledge — display name, re-review
+trigger, and whether they review a PR on their own:
+
+| Reviewer | Login | Trigger posted | Priority format | Reviews unprompted |
+|---|---|---|---|---|
+| Gemini Code Assist | `gemini-code-assist` | `@gemini-code-assist please review the latest changes.` | `![high]` alt text | yes |
+| Codex | `chatgpt-codex-connector` | exactly `@codex review` | `![P0]`–`![P3]` badges | **no** |
+
+Codex priorities normalize to the shared scale (P0 → critical, P1 → high,
+P2 → medium, P3 → low), so `--min-severity` works unchanged. Codex also puts
+findings in the review body when no inline thread exists; the fetcher surfaces
+those as current feedback and drops them once a newer Codex review supersedes
+them.
+
+Any other discovered bot still works, but the loop only re-asks it when a safe
+mention is supplied with `--review-trigger-mention`.
+
 When `fetch_gemini_threads.py --format json` reports
 `reviewerSelection.confirmation_required: true`, stop before edits or
 re-review requests and run the prompt flow above. `source:
@@ -660,6 +679,7 @@ When the user phrases the request differently, dispatch to the right flag combin
 | **Fewer cycles once** | "one cycle only" / "don't loop, just fix once" | `--max-rereview-requests 1` |
 | **Persistent cap** | "always use 4 cycles" / "configure the cap max to 4" | Set `max_rereview_requests` in `~/.config/gh-gemini-review-loop/preferences.json` |
 | **Specific PR** | "handle PR https://github.com/..." | `--pr <URL>` |
+| **Select Codex** | "run the Codex loop" / "use Codex for this PR" | `--reviewer chatgpt-codex-connector --reviewer-source confirmed` (name and trigger are known) |
 | **Different reviewer bot** | "handle review comments from coderabbitai" | `--reviewer coderabbitai --review-trigger-mention @coderabbitai --reviewer-name CodeRabbit` |
 | **Post status without acting** | "leave a status comment without touching anything" | `--post-receipt --no-resolve-outdated --no-resolve-addressed-by-reply` |
 | **Live status comment** | "show me a live status comment on the PR" / "I want background visibility" | `--sticky-receipt --receipt-status running` per cycle; `--sticky-receipt --receipt-status done` at the final invocation |
@@ -681,7 +701,7 @@ Run metrics and `--stats` are local-only — stored under `~/.config/gh-gemini-r
 
 If the user explicitly opts out of any default behavior (e.g. "don't auto-resolve anything"), respect it for the rest of the session via `--no-resolve-outdated --no-resolve-addressed-by-reply`.
 
-This skill supports one configured reviewer bot per run. It does not aggregate several reviewers into one combined loop. Gemini Code Assist is the default adapter; for another compatible bot, pass `--reviewer`, `--review-trigger-mention`, and `--reviewer-name`. Severity parsing is generic for markdown image alt text (`![high]`, `![medium]`, etc.), so reviewers without that marker fall back to `unknown` severity.
+This skill supports one configured reviewer bot per run. It does not aggregate several reviewers into one combined loop. Gemini Code Assist is the default adapter; for another compatible bot, pass `--reviewer`, `--review-trigger-mention`, and `--reviewer-name`. Severity parsing reads markdown image alt text — both the shared scale (`![high]`, `![medium]`, …) and Codex's `![P0]`–`![P3]` badges — so reviewers without either marker fall back to `unknown` severity.
 
 ## Stopping Conditions
 
@@ -735,15 +755,16 @@ do **not** consume a new cycle.
 
 The skill is meant to auto-trigger after `gh pr create`. If the agent forgets — e.g., the workflow that created the PR ended the turn at the PR URL without chaining into this skill — the loop must be invoked retroactively at the next opportunity:
 
-- **Assume cycle 0 (Gemini's initial automatic review) already happened.** At
-  session start / skill load, check whether the PR has *any* Gemini review
-  activity.
-- If Gemini review activity exists → do **not** wait for an initial review (it
-  is already done); proceed straight to fetching threads and running the cycle.
-- If there is **no** Gemini review activity anywhere on the PR → trigger the
-  first review ourselves (cycle 1) and then wait.
-- This is a recovery clause only — skip entirely if `gemini-code-assist` is not
-  a configured reviewer on the repo.
+- **Assume cycle 0 (the reviewer's initial review) already happened.** At
+  session start / skill load, check whether the PR has *any* review activity
+  from the configured reviewer.
+- If that activity exists → do **not** wait for an initial review (it is
+  already done); proceed straight to fetching threads and running the cycle.
+- If there is **no** such activity anywhere on the PR → trigger the first
+  review ourselves (cycle 1) and then wait. For a reviewer with
+  `auto_reviews: false` this is the normal path, not a recovery path.
+- This is a recovery clause only — skip entirely if no reviewer is configured
+  for the repo.
 
 ## Follow-up Pushes After the Loop Stops
 
@@ -774,7 +795,15 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
    - Use the **Reviewer Selection** rules above to confirm, pick, or stop. Persist confirmed choices with `--reviewer --reviewer-source confirmed`.
 
 4. Wait for the configured reviewer to finish its first review.
-   - Run `scripts/fetch_gemini_threads.py --wait` from this skill.
+   - **First check whether the reviewer starts on its own.** `--format json`
+     reports `reviewerSelection.auto_reviews`. When it is `false` (Codex), no
+     review will ever arrive unpushed: post the trigger first with
+     `request_rereview.py --repo OWNER/REPO --pr N --json`, capture its
+     `created_at` as `REREVIEW_AT`, and wait with `--after "$REREVIEW_AT"`.
+     Skip that only when the PR already has review activity from that reviewer.
+     Waiting without pinging a non-self-starting reviewer burns the whole
+     timeout and reports a false "reviewer did not finish".
+   - Otherwise run `scripts/fetch_gemini_threads.py --wait` from this skill.
    - **Cycle 1 (no `--after`):** the script returns as soon as reviewer
      activity is present — it does NOT wait for a quiet/settle period. The
      settle only matters on cycle 2+, where a freshly pushed fix needs the
@@ -835,7 +864,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
       `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --cycle-summary --fixed-count <n-this-cycle> --verification <passed|failed|skipped>`
       then relay the printed `[loop] Cycle receipt` block verbatim. This is read-only — it does not write `runs.jsonl`.
     - Post the re-review request after a successful push only if this would not exceed the configured total re-review request cap.
-    - Request re-review through the script-owned helper and parse JSON stdout. Pass the persisted safe trigger as `--review-trigger-mention`; if no safe trigger is known, pass `--no-safe-trigger --reviewer-login <login>` and relay the returned `status: no_safe_trigger` message exactly.
+    - Request re-review through the script-owned helper and parse JSON stdout. Pass the persisted safe trigger as `--review-trigger-mention`; if no safe trigger is known, pass `--no-safe-trigger --reviewer-login <login>` and relay the returned `status: no_safe_trigger` message exactly. Known reviewers need neither flag — the helper reads the persisted selection and posts that vendor's exact phrase (`@codex review` for Codex); never hand-write the trigger comment.
       ```bash
       python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/request_rereview.py" \
         --repo OWNER/REPO \

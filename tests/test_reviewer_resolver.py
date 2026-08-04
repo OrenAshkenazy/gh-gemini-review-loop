@@ -122,6 +122,54 @@ def test_make_reviewer_record_fills_known_defaults_and_timestamp():
         "login": "gemini-code-assist",
         "display_name": "Gemini Code Assist",
         "review_trigger": "@gemini-code-assist",
+        "auto_reviews": True,
         "source": "confirmed",
         "selected_at": "2026-06-28T12:00:00Z",
     }
+
+
+def test_discovered_codex_gets_its_vendor_name_and_trigger():
+    pull_request = _pr(_thread(_comment("chatgpt-codex-connector")))
+
+    candidates = reviewer_resolver.discover_candidates(pull_request, self_login=None)
+
+    assert candidates[0].display_name == "Codex"
+    assert candidates[0].review_trigger == "@codex"
+
+
+def test_trigger_for_knows_codex():
+    assert reviewer_resolver.trigger_for("chatgpt-codex-connector") == "@codex"
+
+
+def test_phrase_for_returns_the_exact_vendor_phrase():
+    assert reviewer_resolver.phrase_for("chatgpt-codex-connector") == "@codex review"
+    assert (
+        reviewer_resolver.phrase_for("gemini-code-assist")
+        == "@gemini-code-assist please review the latest changes."
+    )
+
+
+def test_phrase_for_unknown_reviewer_is_none():
+    assert reviewer_resolver.phrase_for("coderabbitai") is None
+
+
+def test_make_reviewer_record_marks_codex_as_not_self_starting():
+    record = reviewer_resolver.make_reviewer_record(
+        "chatgpt-codex-connector",
+        source="confirmed",
+        selected_at="2026-08-04T12:00:00Z",
+    )
+
+    assert record["auto_reviews"] is False
+    assert record["display_name"] == "Codex"
+    assert record["review_trigger"] == "@codex"
+
+
+def test_unknown_reviewers_are_assumed_to_review_on_their_own():
+    record = reviewer_resolver.make_reviewer_record(
+        "coderabbitai",
+        source="confirmed",
+        selected_at="2026-08-04T12:00:00Z",
+    )
+
+    assert record["auto_reviews"] is True

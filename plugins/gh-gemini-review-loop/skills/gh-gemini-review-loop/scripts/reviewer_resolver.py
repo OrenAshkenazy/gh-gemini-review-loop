@@ -8,12 +8,15 @@ from dataclasses import dataclass
 from typing import Any
 
 
+import review_vendors
+
+
 KNOWN_TRIGGERS = {
-    "gemini-code-assist": "@gemini-code-assist",
+    login: vendor.mention for login, vendor in review_vendors.KNOWN_VENDORS.items()
 }
 
 KNOWN_DISPLAY_NAMES = {
-    "gemini-code-assist": "Gemini Code Assist",
+    login: vendor.display_name for login, vendor in review_vendors.KNOWN_VENDORS.items()
 }
 
 
@@ -38,15 +41,37 @@ def now_iso() -> str:
 
 
 def display_name_for(login: str) -> str:
-    known = KNOWN_DISPLAY_NAMES.get(login)
-    if known:
-        return known
+    vendor = review_vendors.vendor_for(login)
+    if vendor:
+        return vendor.display_name
     words = re.split(r"[-_\s]+", login.replace("[bot]", " bot"))
     return " ".join(word.capitalize() for word in words if word) or login
 
 
 def trigger_for(login: str) -> str | None:
-    return KNOWN_TRIGGERS.get(login)
+    vendor = review_vendors.vendor_for(login)
+    return vendor.mention if vendor else None
+
+
+def phrase_for(login: str) -> str | None:
+    """Return the exact re-review comment a known vendor accepts.
+
+    Vendors differ: Gemini reads any sentence that mentions it, Codex matches
+    ``@codex review`` exactly. Unknown reviewers have no phrase, so callers
+    fall back to the generic mention-plus-sentence form.
+    """
+    vendor = review_vendors.vendor_for(login)
+    return vendor.rereview_phrase if vendor else None
+
+
+def auto_reviews(login: str) -> bool:
+    """Whether the reviewer reviews a new PR without being pinged.
+
+    Unknown reviewers are assumed self-starting, which preserves the loop's
+    original wait-then-fetch behavior for bots we have no record of.
+    """
+    vendor = review_vendors.vendor_for(login)
+    return vendor.auto_reviews if vendor else True
 
 
 def make_reviewer_record(
@@ -61,6 +86,7 @@ def make_reviewer_record(
         "login": login,
         "display_name": display_name or display_name_for(login),
         "review_trigger": review_trigger if review_trigger is not None else trigger_for(login),
+        "auto_reviews": auto_reviews(login),
         "source": source,
         "selected_at": selected_at or now_iso(),
     }

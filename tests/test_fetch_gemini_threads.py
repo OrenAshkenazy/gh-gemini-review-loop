@@ -65,6 +65,7 @@ from fetch_gemini_threads import (
 
 
 BOT = "gemini-code-assist"
+CODEX = "chatgpt-codex-connector"
 
 
 def make_thread(*, resolved=False, outdated=False, comments):
@@ -217,6 +218,19 @@ class TestSeverity:
     def test_no_marker_returns_unknown(self):
         assert thread_severity(make_thread(comments=[bot_comment("plain comment")])) == "unknown"
 
+    @pytest.mark.parametrize("priority,expected", [
+        ("P0", "critical"), ("P1", "high"), ("P2", "medium"), ("P3", "low"),
+    ])
+    def test_normalizes_codex_priority_badges(self, priority, expected):
+        # Real Codex shape, captured from a live review comment.
+        body = (
+            f"**<sub><sub>![{priority} Badge]"
+            f"(https://img.shields.io/badge/{priority}-yellow?style=flat)</sub></sub>"
+            "  Add a timeout to direct HarvestAPI requests**\n\nIf HarvestAPI ..."
+        )
+        t = make_thread(comments=[{"author": {"login": CODEX}, "body": body}])
+        assert thread_severity(t) == expected
+
     def test_handles_post_filter_flat_shape(self):
         # filter_threads flattens comments to a plain list; severity must still work
         flat = {"comments": [{"author": {"login": BOT}, "body": "![low](x)"}]}
@@ -324,6 +338,72 @@ class TestRereviewLimit:
         assert effective_rereview_limit(None, {"max_rereview_requests": " 6 "}) == 6
 
 
+class TestReviewBodyFindings:
+    """Codex sometimes puts a priority-badged finding in the review body itself."""
+
+    @staticmethod
+    def _pr(*reviews):
+        return {"reviews": {"nodes": list(reviews)}}
+
+    @staticmethod
+    def _review(body, submitted_at="2026-08-04T09:57:39Z", review_id="R_1"):
+        return {
+            "id": review_id,
+            "author": {"login": CODEX},
+            "body": body,
+            "submittedAt": submitted_at,
+            "url": "https://github.com/o/r/pull/5#pullrequestreview-1",
+        }
+
+    BODY = (
+        "\n### 💡 Codex Review\n\nHere are some automated review suggestions.\n\n"
+        "**Reviewed commit:** `90a23ce28d`\n\n"
+        "https://github.com/o/r/blob/90a23ce28d/src/enrich.js#L42\n\n"
+        "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)"
+        "</sub></sub>  Guard the quota refusal path**\n\nIf the provider refuses ...\n\n"
+        "https://github.com/o/r/blob/90a23ce28d/src/map.js#L7\n\n"
+        "**<sub><sub>![P3 Badge](https://img.shields.io/badge/P3-blue?style=flat)"
+        "</sub></sub>  Rename the mapping helper**\n\nMinor readability nit ...\n"
+    )
+
+    def test_surfaces_each_badged_body_finding_with_its_file_anchor(self):
+        findings = fgt.review_body_findings(self._pr(self._review(self.BODY)), CODEX)
+
+        assert [(f["path"], f["line"]) for f in findings] == [
+            ("src/enrich.js", 42),
+            ("src/map.js", 7),
+        ]
+        assert [thread_severity(f) for f in findings] == ["high", "low"]
+        assert all(f["isResolved"] is False for f in findings)
+
+    def test_body_findings_have_stable_distinct_ids(self):
+        findings = fgt.review_body_findings(self._pr(self._review(self.BODY)), CODEX)
+        again = fgt.review_body_findings(self._pr(self._review(self.BODY)), CODEX)
+
+        ids = [f["id"] for f in findings]
+        assert len(set(ids)) == 2
+        assert ids == [f["id"] for f in again]
+
+    def test_review_body_without_badges_yields_nothing(self):
+        body = "\n### 💡 Codex Review\n\nNo major issues found.\n"
+        assert fgt.review_body_findings(self._pr(self._review(body)), CODEX) == []
+
+    def test_only_the_latest_review_body_is_active(self):
+        stale = self._review(self.BODY, submitted_at="2026-08-04T09:57:39Z", review_id="R_1")
+        latest = self._review(
+            "\n### 💡 Codex Review\n\nNo major issues found.\n",
+            submitted_at="2026-08-04T11:37:37Z",
+            review_id="R_2",
+        )
+
+        assert fgt.review_body_findings(self._pr(stale, latest), CODEX) == []
+
+    def test_other_authors_review_bodies_are_ignored(self):
+        review = dict(self._review(self.BODY), author={"login": "sourcery-ai"})
+
+        assert fgt.review_body_findings(self._pr(review), CODEX) == []
+
+
 class TestReviewerSelectionCli:
     PR = PullRequest(owner="o", repo="r", number=5)
 
@@ -427,6 +507,139 @@ class TestReviewerSelectionCli:
         assert payload["reviewerSelection"]["confirmation_required"] is False
         assert payload["reviewerSelection"]["login"] == "coderabbitai"
         assert [thread["id"] for thread in payload["threads"]] == ["T_code_rabbit"]
+
+    def test_codex_selection_reports_its_trigger_and_that_it_needs_a_ping(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._patch_common(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr",
+                "https://github.com/o/r/pull/5",
+                "--reviewer",
+                "chatgpt-codex-connector",
+                "--format",
+                "json",
+                "--no-resolve-outdated",
+                "--no-resolve-addressed-by-reply",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        selection = json.loads(capsys.readouterr().out)["reviewerSelection"]
+        assert selection["display_name"] == "Codex"
+        assert selection["review_trigger"] == "@codex"
+        assert selection["auto_reviews"] is False
+
+    def test_legacy_codex_record_without_a_trigger_is_healed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """State written before Codex was known persisted review_trigger: null."""
+        self._patch_common(monkeypatch, tmp_path)
+        fgt.save_reviewer_selection(
+            self.PR,
+            {
+                "login": "chatgpt-codex-connector",
+                "display_name": "Chatgpt Codex Connector",
+                "review_trigger": None,
+                "source": "confirmed",
+                "selected_at": "2026-08-04T11:24:51Z",
+            },
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr",
+                "https://github.com/o/r/pull/5",
+                "--format",
+                "json",
+                "--no-resolve-outdated",
+                "--no-resolve-addressed-by-reply",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        selection = json.loads(capsys.readouterr().out)["reviewerSelection"]
+        assert selection["review_trigger"] == "@codex"
+        assert selection["display_name"] == "Codex"
+        assert selection["auto_reviews"] is False
+
+    def test_unknown_reviewer_is_assumed_to_review_on_its_own(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._patch_common(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr",
+                "https://github.com/o/r/pull/5",
+                "--reviewer",
+                "coderabbitai",
+                "--format",
+                "json",
+                "--no-resolve-outdated",
+                "--no-resolve-addressed-by-reply",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        selection = json.loads(capsys.readouterr().out)["reviewerSelection"]
+        assert selection["auto_reviews"] is True
+
+    def test_codex_body_findings_reach_the_fetched_thread_list(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        pull_request = self._pull_request()
+        pull_request["reviewThreads"]["nodes"] = []
+        pull_request["reviews"]["nodes"] = [
+            {
+                "id": "R_1",
+                "author": {"login": "chatgpt-codex-connector"},
+                "submittedAt": "2026-08-04T09:57:39Z",
+                "url": "https://github.com/o/r/pull/5#pullrequestreview-1",
+                "body": (
+                    "### 💡 Codex Review\n\n"
+                    "https://github.com/o/r/blob/90a23ce28d/src/enrich.js#L42\n\n"
+                    "**![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)"
+                    "  Guard the quota refusal path**\n\nIf the provider refuses ...\n"
+                ),
+            }
+        ]
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(fgt, "resolve_pr", lambda arg: self.PR)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: pull_request)
+        monkeypatch.setattr(fgt, "gh_authenticated_login", lambda: "codex-agent")
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr",
+                "https://github.com/o/r/pull/5",
+                "--reviewer",
+                "chatgpt-codex-connector",
+                "--format",
+                "json",
+                "--no-resolve-outdated",
+                "--no-resolve-addressed-by-reply",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        threads = json.loads(capsys.readouterr().out)["threads"]
+        assert [t["path"] for t in threads] == ["src/enrich.js"]
+        assert threads[0]["isReviewBodyFinding"] is True
 
     def test_explicit_reviewer_persists_selection(self, tmp_path, monkeypatch, capsys):
         self._patch_common(monkeypatch, tmp_path)

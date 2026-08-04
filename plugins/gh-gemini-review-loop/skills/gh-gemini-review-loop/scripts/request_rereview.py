@@ -248,7 +248,13 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     print(f"[loop] {payload['message']}")
                 return 0
-            phrase = build_default_phrase(trigger)
+            # Known vendors accept an exact phrase (Codex matches "@codex
+            # review" literally); everything else gets the generic sentence.
+            phrase = (
+                reviewer_resolver.phrase_for(reviewer_login)
+                or reviewer_resolver.phrase_for(trigger)
+                or build_default_phrase(trigger)
+            )
         payload = post_rereview(args.repo, args.pr, phrase)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

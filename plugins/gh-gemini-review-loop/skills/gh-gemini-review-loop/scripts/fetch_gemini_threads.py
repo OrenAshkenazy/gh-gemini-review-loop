@@ -52,6 +52,16 @@ REREVIEW_TRIGGER_RE = _review_trigger_re(DEFAULT_REVIEW_TRIGGER_MENTION)
 # Gemini prefixes inline review comments with a priority image whose alt text
 # is the severity. Example: ![high](https://www.gstatic.com/codereviewagent/high-priority.svg)
 SEVERITY_RE = re.compile(r"!\[(critical|high|medium|low)\]", re.IGNORECASE)
+
+# Codex marks findings with a shields.io priority badge whose alt text is the
+# priority. Example: ![P2 Badge](https://img.shields.io/badge/P2-yellow...)
+CODEX_PRIORITY_RE = re.compile(r"!\[(P[0-3])(?:\s+Badge)?\]", re.IGNORECASE)
+CODEX_PRIORITY_TO_SEVERITY = {
+    "p0": "critical",
+    "p1": "high",
+    "p2": "medium",
+    "p3": "low",
+}
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "unknown": 4}
 
 # Page sizes embedded in QUERY below. Used by the pagination guard to detect
@@ -542,12 +552,19 @@ def _iter_comments(thread: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def thread_severity(thread: dict[str, Any]) -> str:
-    """Return Gemini-assigned severity (critical/high/medium/low) or 'unknown'."""
+    """Return reviewer-assigned severity (critical/high/medium/low) or 'unknown'.
+
+    Gemini marks severity with a priority image; Codex uses a P0-P3 badge.
+    Both are unambiguous, so both are read regardless of selected reviewer.
+    """
     for comment in _iter_comments(thread):
         body = comment.get("body") or ""
         match = SEVERITY_RE.search(body)
         if match:
             return match.group(1).lower()
+        codex_match = CODEX_PRIORITY_RE.search(body)
+        if codex_match:
+            return CODEX_PRIORITY_TO_SEVERITY[codex_match.group(1).lower()]
     return "unknown"
 
 
@@ -720,6 +737,65 @@ def filter_reviews(pull_request: dict[str, Any], author: str) -> list[dict[str, 
         for review in pull_request.get("reviews", {}).get("nodes", [])
         if (review.get("author") or {}).get("login") == author
     ]
+
+
+BLOB_ANCHOR_RE = re.compile(
+    r"https://github\.com/[^/\s]+/[^/\s]+/blob/[0-9a-f]+/(\S+?)#L(\d+)",
+    re.IGNORECASE,
+)
+
+
+def review_body_findings(
+    pull_request: dict[str, Any], author: str
+) -> list[dict[str, Any]]:
+    """Surface priority-badged findings that live in the review body.
+
+    Codex usually publishes inline review comments, but it can put a finding
+    directly in the review body, where no thread exists to fetch. Only the
+    newest review counts: a later re-review supersedes older body findings, so
+    these synthetic entries go stale the same way threads do.
+    """
+    reviews = filter_reviews(pull_request, author)
+    if not reviews:
+        return []
+    latest = max(reviews, key=lambda review: review.get("submittedAt") or "")
+    body = latest.get("body") or ""
+    badges = list(CODEX_PRIORITY_RE.finditer(body))
+    if not badges:
+        return []
+
+    review_id = latest.get("id") or hashlib.sha1(body.encode()).hexdigest()[:16]
+    findings = []
+    for index, badge in enumerate(badges):
+        start = badges[index - 1].end() if index else 0
+        end = badges[index + 1].start() if index + 1 < len(badges) else len(body)
+        # The file anchor Codex prints just above a badge locates the finding.
+        anchors = list(BLOB_ANCHOR_RE.finditer(body, start, badge.start()))
+        anchor = anchors[-1] if anchors else None
+        path = anchor.group(1) if anchor else "(review body)"
+        line = int(anchor.group(2)) if anchor else None
+        findings.append({
+            "id": f"review-body:{review_id}:{index + 1}",
+            "isResolved": False,
+            "isOutdated": False,
+            "isReviewBodyFinding": True,
+            "path": path,
+            "line": line,
+            "originalLine": line,
+            "comments": [{
+                "id": f"{review_id}:{index + 1}",
+                "author": {"login": author},
+                "body": body[badge.start():end].strip(),
+                "createdAt": latest.get("submittedAt"),
+                "updatedAt": latest.get("submittedAt"),
+                "url": latest.get("url"),
+                "path": path,
+                "line": line,
+                "originalLine": line,
+                "diffHunk": "",
+            }],
+        })
+    return findings
 
 
 def rereview_requests(
@@ -967,10 +1043,23 @@ def clear_reviewer_selection(pr: PullRequest) -> bool:
 
 
 def reviewer_selection_state(record: dict[str, Any], *, source: str) -> dict[str, Any]:
+    """Project a persisted reviewer record into the loop's selection state.
+
+    Vendor facts are re-derived from the login rather than trusted from the
+    record, so selections persisted before a vendor was known (Codex records
+    written with ``review_trigger: null``) heal instead of permanently
+    disabling re-review requests for that PR.
+    """
+    login = record["login"]
+    known_display_name = reviewer_resolver.display_name_for(login)
+    display_name = record.get("display_name") or known_display_name
+    if reviewer_resolver.trigger_for(login):
+        display_name = known_display_name
     return {
-        "login": record["login"],
-        "display_name": record.get("display_name") or reviewer_resolver.display_name_for(record["login"]),
-        "review_trigger": record.get("review_trigger"),
+        "login": login,
+        "display_name": display_name,
+        "review_trigger": record.get("review_trigger") or reviewer_resolver.trigger_for(login),
+        "auto_reviews": reviewer_resolver.auto_reviews(login),
         "source": source,
         "confirmation_required": source == "default_unconfirmed",
         "candidates_partial": False,
@@ -2910,6 +2999,9 @@ def main() -> int:
             include_outdated=args.include_outdated,
             include_addressed_by_reply=args.include_addressed_by_reply,
         )
+        # Findings the reviewer wrote into the review body have no thread to
+        # fetch, so they are appended as synthetic current feedback.
+        threads.extend(review_body_findings(pull_request, args.author))
         threads = sort_by_severity(threads)
         if not args.record_run and not args.stats:
             try:
