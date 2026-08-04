@@ -882,7 +882,12 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
       ```
       Statuses: `waiting` (no response yet), `settling` (the reviewer responded,
       quiet period running), `ready` (proceed — the same call returns the
-      fetched threads), `timed_out` (total `--timeout` budget exhausted).
+      fetched threads), `timed_out` (total `--timeout` budget exhausted),
+      `refused` (the reviewer declined outright — quota exhausted, service
+      withdrawn). On `refused`, stop immediately: relay the printed
+      `[loop] STOP` block and record with `--outcome human --outcome-reason
+      'reviewer refused the review' --gemini-unconfirmed`. Never keep waiting
+      or re-ping — the reviewer already answered, and a retry burns a cycle.
       After each `waiting`/`settling` chunk: relay the printed `[loop]`
       heartbeat verbatim (markdown mode) or run `--wait-heartbeat` and relay
       its output (JSON mode), then immediately run the next chunk passing the

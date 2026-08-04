@@ -739,6 +739,79 @@ def filter_reviews(pull_request: dict[str, Any], author: str) -> list[dict[str, 
     ]
 
 
+# A reviewer can decline outright — quota exhausted, service withdrawn. That is
+# a top-level PR comment, not a review, so the activity fingerprint never sees
+# it and the wait would otherwise burn its whole timeout on a reviewer that
+# already answered. Patterns are deliberately narrow so a review that merely
+# discusses rate limiting is not mistaken for a refusal.
+REVIEWER_REFUSAL_RES = (
+    re.compile(r"reached your\b.{0,60}\blimits?\b", re.IGNORECASE | re.DOTALL),
+    re.compile(r"usage limits?\b.{0,40}\bcode review", re.IGNORECASE | re.DOTALL),
+    re.compile(r"\bhas been sunset\b", re.IGNORECASE),
+    re.compile(r"review\w*\b.{0,40}\bno longer (available|supported)\b", re.IGNORECASE | re.DOTALL),
+)
+
+
+def print_reviewer_refusal(
+    refusal: dict[str, Any],
+    *,
+    author: str,
+    json_output: bool,
+    color_enabled: bool,
+) -> None:
+    """Emit the terminal stop block for a reviewer that declined to review."""
+    if json_output:
+        fields = {k: v for k, v in refusal.items() if k != "pull_request" and v is not None}
+        print(json.dumps({"wait": fields}, indent=2, sort_keys=True))
+        return
+    lines = [
+        f"[loop] STOP — {author} refused the review: {refusal.get('reason', '')}",
+        "Waiting cannot help; the reviewer already answered.",
+    ]
+    if refusal.get("url"):
+        lines.append(f"Comment: {refusal['url']}")
+    lines.append(
+        "Record the run with: --record-run --outcome human "
+        "--outcome-reason 'reviewer refused the review' --gemini-unconfirmed"
+    )
+    print(color_loop_block("\n".join(lines), enabled=color_enabled))
+
+
+class ReviewerRefused(Exception):
+    """The reviewer declined to review; waiting any longer cannot help."""
+
+    def __init__(self, refusal: dict[str, Any]) -> None:
+        super().__init__(refusal.get("reason", "reviewer refused"))
+        self.refusal = refusal
+
+
+def reviewer_refusal(
+    pull_request: dict[str, Any],
+    author: str,
+    after_iso: str | None = None,
+) -> dict[str, Any] | None:
+    """Return the reviewer's refusal to review, if it posted one.
+
+    Only the reviewer's own top-level comments count, and only those newer than
+    ``after_iso`` — a refusal from a previous cycle must not end this wait.
+    """
+    for comment in (pull_request.get("comments") or {}).get("nodes") or []:
+        if (comment.get("author") or {}).get("login") != author:
+            continue
+        created_at = comment.get("createdAt") or ""
+        if after_iso and created_at <= after_iso:
+            continue
+        body = comment.get("body") or ""
+        if not any(pattern.search(body) for pattern in REVIEWER_REFUSAL_RES):
+            continue
+        return {
+            "reason": " ".join(body.replace(">", " ").split())[:200],
+            "created_at": created_at,
+            "url": comment.get("url"),
+        }
+    return None
+
+
 BLOB_ANCHOR_RE = re.compile(
     r"https://github\.com/[^/\s]+/[^/\s]+/blob/[0-9a-f]+/(\S+?)#L(\d+)",
     re.IGNORECASE,
@@ -1304,6 +1377,10 @@ def run_wait_chunk(
 
     while True:
         pull_request = fetch_threads(pr)
+        refusal = reviewer_refusal(pull_request, author, after_iso=after_iso)
+        if refusal is not None:
+            clear_wait_state(pr)
+            return {"status": "refused", "author": author, "pull_request": None, **refusal}
         fingerprint = review_activity_fingerprint(pull_request, author, after_iso=after_iso)
         now_dt = _dt.datetime.now(_dt.timezone.utc)
         elapsed = wait_elapsed_seconds(wait, after_iso, now=now_dt)
@@ -2124,6 +2201,9 @@ def wait_for_stable_review(
 
     while True:
         pull_request = fetch_threads(pr)
+        refusal = reviewer_refusal(pull_request, author, after_iso=after_iso)
+        if refusal is not None:
+            raise ReviewerRefused(refusal)
         fingerprint = review_activity_fingerprint(pull_request, author, after_iso=after_iso)
         now = time.monotonic()
 
@@ -2919,6 +2999,14 @@ def main() -> int:
                     for k, v in chunk.items()
                     if k not in ("pull_request", "author") and v is not None
                 }
+                if chunk["status"] == "refused":
+                    print_reviewer_refusal(
+                        chunk,
+                        author=args.author,
+                        json_output=args.format == "json",
+                        color_enabled=color_enabled,
+                    )
+                    return 0
                 if args.format == "json":
                     print(json.dumps({"wait": wait_fields}, indent=2, sort_keys=True))
                 else:
@@ -2940,14 +3028,23 @@ def main() -> int:
                 return 0
             pull_request = chunk["pull_request"]
         elif args.wait:
-            pull_request = wait_for_stable_review(
-                pr,
-                author=args.author,
-                timeout_seconds=args.timeout,
-                interval_seconds=args.interval,
-                quiet_seconds=args.quiet_period,
-                after_iso=args.after,
-            )
+            try:
+                pull_request = wait_for_stable_review(
+                    pr,
+                    author=args.author,
+                    timeout_seconds=args.timeout,
+                    interval_seconds=args.interval,
+                    quiet_seconds=args.quiet_period,
+                    after_iso=args.after,
+                )
+            except ReviewerRefused as refused:
+                print_reviewer_refusal(
+                    {"status": "refused", **refused.refusal},
+                    author=args.author,
+                    json_output=args.format == "json",
+                    color_enabled=color_enabled,
+                )
+                return 0
         else:
             pull_request = fetch_threads(pr)
         resolved_outdated = 0

@@ -338,6 +338,79 @@ class TestRereviewLimit:
         assert effective_rereview_limit(None, {"max_rereview_requests": " 6 "}) == 6
 
 
+class TestReviewerRefusal:
+    """A reviewer that declines outright must end the wait, not run out the clock."""
+
+    AFTER = "2026-08-04T12:45:54Z"
+
+    @staticmethod
+    def _pr(*comments):
+        return {"comments": {"nodes": list(comments)}}
+
+    @staticmethod
+    def _comment(login, body, created_at="2026-08-04T12:46:06Z"):
+        return {
+            "author": {"login": login},
+            "body": body,
+            "createdAt": created_at,
+            "url": "https://github.com/o/r/pull/5#issuecomment-9",
+        }
+
+    # Verbatim from a live Codex reply.
+    CODEX_LIMIT = (
+        "You have reached your Codex usage limits for code reviews. "
+        "Your limits reset at 3:00 PM."
+    )
+    # Verbatim shape of Gemini's shutdown notice.
+    GEMINI_SUNSET = (
+        "> [!CAUTION]\n> The consumer version of Gemini Code Assist on GitHub "
+        "has been sunset. All code review activity has officially ended."
+    )
+
+    def test_detects_a_usage_limit_refusal(self):
+        refusal = fgt.reviewer_refusal(
+            self._pr(self._comment(CODEX, self.CODEX_LIMIT)), CODEX, after_iso=self.AFTER
+        )
+
+        assert refusal is not None
+        assert refusal["reason"].startswith("You have reached your Codex usage limits")
+        assert refusal["created_at"] == "2026-08-04T12:46:06Z"
+        assert refusal["url"].endswith("#issuecomment-9")
+
+    def test_detects_a_service_sunset_notice(self):
+        refusal = fgt.reviewer_refusal(
+            self._pr(self._comment(BOT, self.GEMINI_SUNSET)), BOT, after_iso=self.AFTER
+        )
+
+        assert refusal is not None
+        assert "sunset" in refusal["reason"]
+
+    def test_ignores_a_refusal_posted_before_the_anchor(self):
+        stale = self._comment(CODEX, self.CODEX_LIMIT, created_at="2026-08-04T12:00:00Z")
+
+        assert fgt.reviewer_refusal(self._pr(stale), CODEX, after_iso=self.AFTER) is None
+
+    def test_ignores_refusal_wording_from_someone_else(self):
+        human = self._comment("alice", self.CODEX_LIMIT)
+
+        assert fgt.reviewer_refusal(self._pr(human), CODEX, after_iso=self.AFTER) is None
+
+    def test_ordinary_reviewer_comments_are_not_refusals(self):
+        chatter = self._comment(CODEX, "Reviewing now — one moment.")
+
+        assert fgt.reviewer_refusal(self._pr(chatter), CODEX, after_iso=self.AFTER) is None
+
+    def test_discussing_rate_limits_in_prose_is_not_a_refusal(self):
+        # The reviewer talking *about* rate limiting must not end the wait.
+        prose = self._comment(
+            CODEX,
+            "The new client retries on HTTP 429; consider whether the rate limit "
+            "backoff should be exponential rather than fixed.",
+        )
+
+        assert fgt.reviewer_refusal(self._pr(prose), CODEX, after_iso=self.AFTER) is None
+
+
 class TestReviewBodyFindings:
     """Codex sometimes puts a priority-badged finding in the review body itself."""
 
@@ -2761,6 +2834,100 @@ class TestRunWaitChunk:
         snapshot = fgt.read_wait_state(self.PR)["last_snapshot"]
         assert snapshot["status"] == result["status"] == "waiting"
         assert snapshot["author"] == "gemini-code-assist"
+
+
+class TestWaitStopsOnRefusal:
+    AFTER = "2026-08-04T12:45:54Z"
+    PR = PullRequest(owner="o", repo="r", number=5)
+
+    def _refusing_pr(self):
+        return {
+            "comments": {
+                "nodes": [
+                    {
+                        "author": {"login": CODEX},
+                        "body": "You have reached your Codex usage limits for code reviews.",
+                        "createdAt": "2026-08-04T12:46:06Z",
+                        "url": "https://github.com/o/r/pull/5#issuecomment-9",
+                    }
+                ]
+            },
+            "reviews": {"nodes": []},
+            "reviewThreads": {"nodes": []},
+        }
+
+    def test_chunked_wait_reports_refused_instead_of_waiting(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: self._refusing_pr())
+        monkeypatch.setattr("fetch_gemini_threads.time.sleep", lambda _s: None)
+
+        chunk = fgt.run_wait_chunk(
+            self.PR,
+            CODEX,
+            timeout_seconds=900,
+            interval_seconds=1,
+            quiet_seconds=45,
+            after_iso=self.AFTER,
+            chunk_seconds=60,
+        )
+
+        assert chunk["status"] == "refused"
+        assert "usage limits" in chunk["reason"]
+        assert chunk["url"].endswith("#issuecomment-9")
+
+    def test_blocking_wait_raises_instead_of_burning_the_timeout(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: self._refusing_pr())
+        monkeypatch.setattr("fetch_gemini_threads.time.sleep", lambda _s: None)
+
+        with pytest.raises(fgt.ReviewerRefused) as excinfo:
+            fgt.wait_for_stable_review(
+                self.PR,
+                author=CODEX,
+                timeout_seconds=900,
+                interval_seconds=1,
+                quiet_seconds=45,
+                after_iso=self.AFTER,
+            )
+
+        assert "usage limits" in excinfo.value.refusal["reason"]
+
+    def test_cli_prints_a_stop_line_naming_the_refusal(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(fgt, "resolve_pr", lambda arg: self.PR)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: self._refusing_pr())
+        monkeypatch.setattr("fetch_gemini_threads.time.sleep", lambda _s: None)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["fetch_gemini_threads.py", "--pr", "https://github.com/o/r/pull/5",
+             "--reviewer", CODEX, "--wait", "--after", self.AFTER,
+             "--wait-chunk-seconds", "60"],
+        )
+
+        assert fgt.main() == 0
+
+        out = capsys.readouterr().out
+        assert "[loop] STOP" in out
+        assert "refused" in out
+        assert "usage limits" in out
+
+    def test_cli_json_reports_refused_status(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(fgt, "resolve_pr", lambda arg: self.PR)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: self._refusing_pr())
+        monkeypatch.setattr("fetch_gemini_threads.time.sleep", lambda _s: None)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["fetch_gemini_threads.py", "--pr", "https://github.com/o/r/pull/5",
+             "--reviewer", CODEX, "--wait", "--after", self.AFTER,
+             "--wait-chunk-seconds", "60", "--format", "json"],
+        )
+
+        assert fgt.main() == 0
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["wait"]["status"] == "refused"
+        assert "usage limits" in payload["wait"]["reason"]
 
 
 class TestWaitChunkCli:
