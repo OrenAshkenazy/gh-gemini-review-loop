@@ -4,7 +4,7 @@
 
 ## Summary
 
-`gh-gemini-review-loop` is a Claude Code plugin that runs locally on your machine.
+`gh-review-loop` is a Claude Code plugin that runs locally on your machine.
 
 The plugin author does not operate a backend service, does not receive your PR data, and does not collect telemetry, analytics, crash reports, prompts, repository names, usernames, or usage data.
 
@@ -143,7 +143,7 @@ To disable or uninstall the plugin, use Claude Code's plugin manager:
 /plugin
 ```
 
-Then use the Installed tab to disable or uninstall `gh-gemini-review-loop`.
+Then use the Installed tab to disable or uninstall `gh-review-loop`.
 
 ## Contact
 

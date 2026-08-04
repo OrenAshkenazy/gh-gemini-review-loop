@@ -26,8 +26,8 @@ jobs:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     env:
-      CLAUDE_MANIFEST: plugins/gh-gemini-review-loop/.claude-plugin/plugin.json
-      CODEX_MANIFEST: plugins/gh-gemini-review-loop/.codex-plugin/plugin.json
+      CLAUDE_MANIFEST: plugins/gh-review-loop/.claude-plugin/plugin.json
+      CODEX_MANIFEST: plugins/gh-review-loop/.codex-plugin/plugin.json
     steps:
       - uses: actions/checkout@v4
         with:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic verification-stack detection for gh-gemini-review-loop.
+"""Deterministic verification-stack detection for gh-review-loop.
 
 Pure function of the filesystem: inspects marker files in a repo root and
 emits a transient JSON candidate profile. Does NOT read or write preferences;

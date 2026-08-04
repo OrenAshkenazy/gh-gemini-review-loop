@@ -4,7 +4,7 @@ Thanks for opening a PR.
 
 ## Release labels (required-ish)
 
-Every PR merge to `main` triggers `.github/workflows/release.yml`, which bumps the version in `plugins/gh-gemini-review-loop/.claude-plugin/plugin.json`, tags the commit, and publishes a GitHub Release whose body is the PR description.
+Every PR merge to `main` triggers `.github/workflows/release.yml`, which bumps the version in `plugins/gh-review-loop/.claude-plugin/plugin.json`, tags the commit, and publishes a GitHub Release whose body is the PR description.
 
 The **bump level** is controlled by a label on the PR:
 

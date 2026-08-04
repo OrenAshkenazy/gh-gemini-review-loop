@@ -1,5 +1,5 @@
 {
-  "name": "gh-gemini-review-loop",
+  "name": "gh-review-loop",
   "description": "Run the AI reviewer PR loop with Codex or Gemini Code Assist: wait, fetch actionable threads, fix, push, re-request review. Capped by preference, severity-aware, auditable.",
   "version": "0.2.27",
   "author": {

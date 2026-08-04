@@ -59,13 +59,13 @@ Each fixture is two files: the raw findings and the human labels keyed by `comme
 
 ## Adding a new fixture
 
-When you've processed another PR with the gh-gemini-review-loop skill, capture its findings:
+When you've processed another PR with the gh-review-loop skill, capture its findings:
 
 ```bash
 N=42  # PR number
 SCRIPT=$(find ~/.claude/plugins/cache -name fetch_gemini_threads.py | head -1)
 python3 "$SCRIPT" \
-    --pr "https://github.com/OrenAshkenazy/gh-gemini-review-loop/pull/$N" \
+    --pr "https://github.com/OrenAshkenazy/gh-review-loop/pull/$N" \
     --format json \
     --no-resolve-outdated --no-resolve-addressed-by-reply \
     --include-resolved --include-outdated --include-addressed-by-reply \

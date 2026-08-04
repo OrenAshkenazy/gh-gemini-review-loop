@@ -18,3 +18,9 @@ demo/production-readiness/**/pr_readiness_report.html
 demo/production-readiness/**/production_context_pack.json
 demo/production-readiness/**/readiness.json
 demo/production-readiness/**/readiness.md
+
+# Local agent/tool state
+.agents/skills/
+.serena/
+.claude/
+ralph/

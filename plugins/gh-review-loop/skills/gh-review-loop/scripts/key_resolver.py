@@ -5,10 +5,10 @@ Resolution order (first hit wins):
 1. ``~/.config/gh-gemini-review-loop/.env`` — a chmod-600 dotfile with
    ``OPENAI_API_KEY=sk-...``. Gitignored, survives shell reloads, easy to
    inspect, and the canonical store for interactive local use.
-2. macOS Keychain (``security find-generic-password -s gh-gemini-review-loop
+2. macOS Keychain (``security find-generic-password -s gh-review-loop
    -a openai -w``) — system-protected, prompts Touch ID / password for access
    on first read per process.
-3. Linux Secret Service (``secret-tool lookup service gh-gemini-review-loop
+3. Linux Secret Service (``secret-tool lookup service gh-review-loop
    key openai``) — D-Bus secret backend used by GNOME Keyring, KWallet,
    etc. Skipped when ``secret-tool`` is absent.
 4. ``OPENAI_API_KEY`` environment variable — last-resort fallback for CI/CD
@@ -44,7 +44,7 @@ import sys
 import typing as t
 from pathlib import Path
 
-KEYCHAIN_SERVICE = "gh-gemini-review-loop"
+KEYCHAIN_SERVICE = "gh-review-loop"
 KEYCHAIN_ACCOUNT = "openai"
 SECRET_TOOL_SCHEMA = ("service", KEYCHAIN_SERVICE, "key", KEYCHAIN_ACCOUNT)
 
@@ -218,7 +218,7 @@ def _store_linux_secret_service(key: str) -> str:
     # return "sk-...\n" and a downstream comparison or Bearer header
     # would silently break.
     subprocess.run(
-        ["secret-tool", "store", "--label", "gh-gemini-review-loop OpenAI key",
+        ["secret-tool", "store", "--label", "gh-review-loop OpenAI key",
          *SOURCE_LABELS_SECRET_TOOL_ARGS()],
         input=key,
         check=True,
@@ -296,7 +296,7 @@ def _redact(key: str) -> str:
 
 def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Tiered OpenAI API-key resolver for the gh-gemini-review-loop judge."
+        description="Tiered OpenAI API-key resolver for the gh-review-loop judge."
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--print-source", action="store_true",

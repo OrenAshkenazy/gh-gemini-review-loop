@@ -1,5 +1,5 @@
 ---
-name: gh-ai-review-loop
+name: gh-review-loop
 description: Use after a GitHub PR is opened, or when the user asks to handle AI reviewer feedback from Gemini Code Assist or another configured reviewer bot, run the review loop, fix reviewer comments, or request re-review. Waits, fixes, pushes, re-asks. Capped by user preference, default 3 cycles.
 ---
 
@@ -145,7 +145,7 @@ Requires an OpenAI API key resolved by `key_resolver.py` (env var → dotfile �
 
 If the user asks how to set their key permanently, recommend the OS-keystore path:
 ```bash
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/key_resolver.py" --set
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/key_resolver.py" --set
 ```
 This stores in macOS Keychain (Touch ID / password-protected), Linux Secret Service, or a chmod-600 dotfile fallback. No rc-file edits, no `ps` leakage, no shell-restart dance. For diagnostics, suggest `key_resolver.py --print-source` and `judge_doctor.py`.
 
@@ -239,7 +239,7 @@ python3 - <<'PY'
 import json
 from pathlib import Path
 
-path = Path.home() / ".config" / "gh-gemini-review-loop" / "preferences.json"
+path = Path.home() / ".config" / "gh-review-loop" / "preferences.json"
 prefs = json.loads(path.read_text()) if path.exists() else {}
 prefs["schema_version"] = 2
 prefs["max_rereview_requests"] = 4
@@ -312,7 +312,7 @@ A profile (including a `skipped` one) exists → **no prompt**. If `source` is
 intro block:
 
 ```bash
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
   --profile-intro \
   --repo OWNER/REPO
 ```
@@ -345,7 +345,7 @@ Before running checks, render and relay the deterministic planned-verification
 block:
 
 ```bash
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
   --planned-verification \
   --repo OWNER/REPO
 ```
@@ -372,7 +372,7 @@ The run's start timestamp and per-finding accumulation reuse the same per-PR key
 Call exactly once after the loop reaches a terminal state:
 
 ```bash
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
     --record-run \
     --fixed-count <n> \
     --verification <passed|failed|skipped>
@@ -395,7 +395,7 @@ The script fetches the current thread state, derives counts, appends the record,
 `--record-run` is terminal: it writes a record **and clears** the run accumulator, so it must be called exactly once at loop end. To show a mid-loop receipt **during** the loop — at the end of each cycle — use `--cycle-summary` instead:
 
 ```bash
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
     --cycle-summary \
     --fixed-count <n-this-cycle> \
     --verification <passed|failed|skipped>
@@ -462,7 +462,7 @@ behavior in ways that passing tests may not fully cover, especially:
 Example:
 
 ```bash
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
     --cycle-summary \
     --fixed-count <n-this-cycle> \
     --verification passed \
@@ -490,7 +490,7 @@ unless the user explicitly asked to see machine output.
 Print aggregated stats for the current repo from `runs.jsonl` and exit. Never touches GitHub.
 
 ```bash
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --stats
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --stats
 ```
 
 Options: `--stats-window N` (default 10 most-recent runs), `--stats-all-repos`, `--format json`.
@@ -625,13 +625,13 @@ formatter. Do not hand-write the options unless the script fails.
 
 Always run verification through `run_profile.py` when a profile is confirmed for the repo:
 ```bash
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
   --planned-verification \
   --repo owner/repo
 ```
 
 ```bash
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/run_profile.py" owner/repo /path/to/repo
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/run_profile.py" owner/repo /path/to/repo
 ```
 
 Relay the planned-verification block before running checks. Feed the runner's
@@ -791,7 +791,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
 3. Select the reviewer for this PR.
    - If a reviewer is already persisted, continue silently.
    - Otherwise run:
-     `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --list-reviewers --format json`
+     `python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --list-reviewers --format json`
    - Use the **Reviewer Selection** rules above to confirm, pick, or stop. Persist confirmed choices with `--reviewer --reviewer-source confirmed`.
 
 4. Wait for the configured reviewer to finish its first review.
@@ -828,7 +828,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
    - If there are no actionable unresolved threads, say so and stop after reporting the clean result.
    - **GATE — verification profile before any edit.** On the first run for this repo with no saved profile, set up the verification profile NOW (detect → preset menu → save) — *before* applying a single fix, so the verify strategy is fixed before edits. See the **Verification Profile** section. This is enforced mechanically: a bundled `PreToolUse` hook (`scripts/loop_profile_gate.py`) blocks `Edit`/`Write`/`MultiEdit` while a loop is active for the repo and no profile is saved. Saving any profile — including a deliberate **Skip** — clears the gate. If an edit is blocked, that is the signal you skipped this step: make the profile decision, then proceed.
    - After prefs/profile state is known, render and relay the profile intro:
-     `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --profile-intro --repo OWNER/REPO`
+     `python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --profile-intro --repo OWNER/REPO`
 
 8. Classify comments.
    - Group by file and behavioral area.
@@ -846,7 +846,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
 
 10. Verify.
    - Before running checks, render and relay the planned verification block:
-     `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --planned-verification --repo OWNER/REPO`
+     `python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --planned-verification --repo OWNER/REPO`
    - If a `confirmed`/`customized` profile exists for this repo, run
      `run_profile.py <owner/repo> <repo_root>` — it prints `to_details()` JSON
      and exits non-zero if a required check failed; feed its `verification` into
@@ -861,12 +861,12 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
     - For this skill's full loop, commit fixes to the PR branch. Push only after the required cycle receipt has been relayed for non-terminal cycles.
     - Use a clear commit message such as `fix: address Gemini Code Assist review`.
     - Before pushing a non-terminal cycle, emit the per-cycle receipt:
-      `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --cycle-summary --fixed-count <n-this-cycle> --verification <passed|failed|skipped>`
+      `python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --cycle-summary --fixed-count <n-this-cycle> --verification <passed|failed|skipped>`
       then relay the printed `[loop] Cycle receipt` block verbatim. This is read-only — it does not write `runs.jsonl`.
     - Post the re-review request after a successful push only if this would not exceed the configured total re-review request cap.
     - Request re-review through the script-owned helper and parse JSON stdout. Pass the persisted safe trigger as `--review-trigger-mention`; if no safe trigger is known, pass `--no-safe-trigger --reviewer-login <login>` and relay the returned `status: no_safe_trigger` message exactly. Known reviewers need neither flag — the helper reads the persisted selection and posts that vendor's exact phrase (`@codex review` for Codex); never hand-write the trigger comment.
       ```bash
-      python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/request_rereview.py" \
+      python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/request_rereview.py" \
         --repo OWNER/REPO \
         --pr PR_NUMBER \
         --review-trigger-mention "$REVIEW_TRIGGER_MENTION" \
@@ -875,7 +875,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
       Capture `created_at` from the JSON payload as `REREVIEW_AT`. If the payload has `status: no_safe_trigger`, stop without waiting and report the message.
     - Wait for the configured reviewer using chunked foreground waits — never a background wait:
       ```bash
-      python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+      python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
         --wait \
         --after "$REREVIEW_AT" \
         --wait-chunk-seconds 60
@@ -897,7 +897,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
       guess `clean`, do not blindly mark `capped`, and allow
       `fixed_pending_confirmation`.
     - After the final wait has established confirmed/unconfirmed state, record the run exactly once:
-      `python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --record-run --fixed-count <n> --verification <passed|failed|skipped> [--outcome <state>] [--gemini-confirmed|--gemini-unconfirmed]`
+      `python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --record-run --fixed-count <n> --verification <passed|failed|skipped> [--outcome <state>] [--gemini-confirmed|--gemini-unconfirmed]`
       then relay the printed `[loop] Summary` block verbatim.
 
 ## Script Usage
@@ -905,7 +905,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
 **`$GGRL_PLUGIN_ROOT` is the runtime-neutral plugin root.** Before running any
 script command, resolve it once. Claude Code usually provides
 `$CLAUDE_PLUGIN_ROOT`; Codex installs are discoverable from the Codex plugin
-cache. Local development checkouts use the repo's `plugins/gh-gemini-review-loop`
+cache. Local development checkouts use the repo's `plugins/gh-review-loop`
 folder.
 
 ```bash
@@ -913,14 +913,14 @@ GGRL_PLUGIN_ROOT="${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}"
 if [ -z "$GGRL_PLUGIN_ROOT" ]; then
   GGRL_PLUGIN_ROOT=$(
     find ~/.codex/plugins ~/.codex/plugins/cache ~/.claude/plugins/cache \
-      -type d -path "*/skills/gh-gemini-review-loop" 2>/dev/null \
+      -type d -path "*/skills/gh-review-loop" 2>/dev/null \
       | sort -rV \
       | head -1 \
-      | sed 's|/skills/gh-gemini-review-loop$||'
+      | sed 's|/skills/gh-review-loop$||'
   )
 fi
-if [ -z "$GGRL_PLUGIN_ROOT" ] && [ -d "$(git rev-parse --show-toplevel 2>/dev/null)/plugins/gh-gemini-review-loop" ]; then
-  GGRL_PLUGIN_ROOT="$(git rev-parse --show-toplevel)/plugins/gh-gemini-review-loop"
+if [ -z "$GGRL_PLUGIN_ROOT" ] && [ -d "$(git rev-parse --show-toplevel 2>/dev/null)/plugins/gh-review-loop" ]; then
+  GGRL_PLUGIN_ROOT="$(git rev-parse --show-toplevel)/plugins/gh-review-loop"
 fi
 export GGRL_PLUGIN_ROOT
 ```
@@ -930,7 +930,7 @@ This must be run as a Bash tool call first — do not inline it into the `python
 From any repository with a GitHub PR:
 
 ```bash
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py"
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py"
 ```
 
 By default this resolves unresolved outdated Gemini threads AND addressed-by-reply
@@ -945,65 +945,65 @@ Useful options:
 # No --after → returns as soon as activity is present; it does NOT wait for a
 # quiet/settle period. At the initial review there either are comments or there
 # aren't, so settling buys nothing — the wait only blocks until the reviewer has shown up.
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --wait
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --wait
 
 # Wait for a NEW reviewer response after a re-review request (cycle 2+).
 # Pass the re-review comment timestamp so prior-cycle activity is ignored.
 # WITH --after the wait settles (waits for the new review to stabilize) before
 # returning, so a fast-forward fetch doesn't catch a half-posted re-review.
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
     --wait --after "$REREVIEW_AT"
 
 # Chunked wait (preferred): return within 60s with a deterministic status
 # instead of blocking. Relay the printed heartbeat verbatim, then run the next
 # chunk with the suggested --wait-chunk-seconds. Never run the wait in the
 # background.
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
     --wait --after "$REREVIEW_AT" --wait-chunk-seconds 60
 
 # After a --format json chunk, render the human heartbeat for relay:
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
     --wait-heartbeat
 
 # Request reviewer re-review via the script-owned helper.
 # Parse JSON stdout and capture `created_at` as REREVIEW_AT.
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/request_rereview.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/request_rereview.py" \
     --repo OWNER/REPO \
     --pr PR_NUMBER \
     --review-trigger-mention "$REVIEW_TRIGGER_MENTION" \
     --json
 
 # Render deterministic human-readable formatter blocks for relay.
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
     --profile-intro --repo OWNER/REPO
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
     --planned-verification --repo OWNER/REPO
 
 # Read-only fetch (no GraphQL mutations)
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
     --no-resolve-outdated --no-resolve-addressed-by-reply
 
 # Dry-run all resolutions (logs intended writes to stderr without calling GraphQL)
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --dry-run
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --dry-run
 
 # Specific PR URL
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --pr https://github.com/OWNER/REPO/pull/123
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --pr https://github.com/OWNER/REPO/pull/123
 
 # JSON for automation
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --format json
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --format json
 
 # Include outdated, resolved, or addressed-by-reply threads while investigating history
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
     --no-resolve-outdated --include-outdated --include-resolved --include-addressed-by-reply
 
 # Discover and persist a reviewer bot
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
     --list-reviewers --format json
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" \
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
     --reviewer coderabbitai --reviewer-source confirmed --reviewer-name CodeRabbit --review-trigger-mention @coderabbitai
 
 # Reset reviewer selection for this PR
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-gemini-review-loop/scripts/fetch_gemini_threads.py" --reset-reviewer
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --reset-reviewer
 ```
 
 The script emits `warning: ... hit page limit ...` to stderr if any GraphQL page maxes out (review threads, reviews, PR comments, or comments within a thread), indicating older items may be silently missing.

@@ -977,7 +977,7 @@ def load_preferences_with_fallback() -> dict[str, Any]:
     except ImportError:
         print(
             "warning: optional 'judge' module not importable; reading "
-            "preferences.json directly. Reinstall gh-gemini-review-loop "
+            "preferences.json directly. Reinstall gh-review-loop "
             "to restore full judge-eval support.",
             file=sys.stderr,
         )
@@ -1042,7 +1042,7 @@ def post_pr_comment(pr: PullRequest, body: str, *, dry_run: bool = False) -> Non
 
 # Marker embedded in the rendered body so a sticky receipt can be identified
 # even if the local state file is wiped. Used as a fallback discovery key.
-STICKY_RECEIPT_MARKER = "<!-- gh-gemini-review-loop:sticky-receipt -->"
+STICKY_RECEIPT_MARKER = "<!-- gh-review-loop:sticky-receipt -->"
 
 
 def sticky_state_path() -> Path:
@@ -2060,7 +2060,7 @@ def render_receipt(
     ) or "none"
     header_suffix = f" — {status}" if status else ""
     parts = [
-        f"### gh-ai-review-loop receipt{header_suffix}",
+        f"### gh-review-loop receipt{header_suffix}",
         "",
         "| metric | value |",
         "|---|---|",

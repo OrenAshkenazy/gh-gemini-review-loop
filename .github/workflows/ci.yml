@@ -23,29 +23,29 @@ jobs:
       - name: Lint (ruff)
         run: ruff check plugins/ tests/
       - name: Compile scripts
-        run: python -m py_compile plugins/gh-gemini-review-loop/skills/gh-gemini-review-loop/scripts/*.py
+        run: python -m py_compile plugins/gh-review-loop/skills/gh-review-loop/scripts/*.py
       - name: Validate plugin packaging
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
 
-          root = Path("plugins/gh-gemini-review-loop")
+          root = Path("plugins/gh-review-loop")
           claude = json.loads((root / ".claude-plugin/plugin.json").read_text())
           codex = json.loads((root / ".codex-plugin/plugin.json").read_text())
           marketplace = json.loads(Path(".agents/plugins/marketplace.json").read_text())
           hooks = json.loads((root / "hooks/hooks.json").read_text())
 
-          assert claude["name"] == codex["name"] == "gh-gemini-review-loop"
+          assert claude["name"] == codex["name"] == "gh-review-loop"
           assert claude["version"] == codex["version"]
           assert codex["skills"] == "./skills/"
-          assert (root / "skills/gh-gemini-review-loop/SKILL.md").exists()
+          assert (root / "skills/gh-review-loop/SKILL.md").exists()
           assert (root / "hooks/hooks.json").exists()
           assert "hooks" in hooks and "PreToolUse" in hooks["hooks"] and "Stop" in hooks["hooks"]
-          assert marketplace["plugins"][0]["name"] == "gh-gemini-review-loop"
+          assert marketplace["plugins"][0]["name"] == "gh-review-loop"
           assert marketplace["plugins"][0]["source"] == {
               "source": "local",
-              "path": "./plugins/gh-gemini-review-loop",
+              "path": "./plugins/gh-review-loop",
           }
           PY
       - name: Pytest
