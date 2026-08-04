@@ -1,0 +1,207 @@
+{
+  "_source": "Field shapes and Codex markup recorded from a live Codex review on a GitHub PR (2026-08-04). Repo, paths, and prose are replaced with generic stand-ins; the structure, author logins, badge markup, and review-body scaffolding are verbatim.",
+  "initial": {
+    "number": 159,
+    "url": "https://github.com/acme/widget/pull/159",
+    "title": "feat(enrichment): add standalone provider",
+    "comments": {
+      "nodes": [
+        {
+          "id": "IC_1",
+          "author": { "login": "loop-agent" },
+          "body": "@codex review",
+          "createdAt": "2026-08-04T09:52:57Z",
+          "url": "https://github.com/acme/widget/pull/159#issuecomment-1"
+        }
+      ]
+    },
+    "reviews": {
+      "nodes": [
+        {
+          "id": "PRR_1",
+          "author": { "login": "chatgpt-codex-connector", "__typename": "Bot" },
+          "state": "COMMENTED",
+          "submittedAt": "2026-08-04T09:57:39Z",
+          "url": "https://github.com/acme/widget/pull/159#pullrequestreview-1",
+          "body": "\n### 💡 Codex Review\n\nHere are some automated review suggestions for this pull request.\n\n**Reviewed commit:** `90a23ce28d`\n    \n\n<details> <summary>ℹ️ About Codex in GitHub</summary>\n<br/>\n\nYour team has set up Codex to review pull requests in this repo.\n</details>\n"
+        }
+      ]
+    },
+    "reviewThreads": {
+      "nodes": [
+        {
+          "id": "PRRT_1",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "src/mapping.js",
+          "line": 60,
+          "originalLine": 60,
+          "diffSide": "RIGHT",
+          "comments": {
+            "nodes": [
+              {
+                "id": "PRRC_1",
+                "author": { "login": "chatgpt-codex-connector", "__typename": "Bot" },
+                "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Invalidate the cache after changing the mapping**\n\nWhen the mapping changes, previously cached entries keep the old shape.\n\nUseful? React with 👍 / 👎.",
+                "createdAt": "2026-08-04T09:57:40Z",
+                "updatedAt": "2026-08-04T09:57:40Z",
+                "url": "https://github.com/acme/widget/pull/159#discussion_r1",
+                "path": "src/mapping.js",
+                "line": 60,
+                "originalLine": 60,
+                "diffHunk": "@@ -0,0 +1,8 @@\n+export function mapProfile(raw) {\n+  return { id: raw.id };\n+}"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_2",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "src/provider.js",
+          "line": 118,
+          "originalLine": 118,
+          "diffSide": "RIGHT",
+          "comments": {
+            "nodes": [
+              {
+                "id": "PRRC_2",
+                "author": { "login": "chatgpt-codex-connector", "__typename": "Bot" },
+                "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Add a timeout to direct requests**\n\nIf the upstream never responds, the request hangs forever.\n\nUseful? React with 👍 / 👎.",
+                "createdAt": "2026-08-04T09:57:41Z",
+                "updatedAt": "2026-08-04T09:57:41Z",
+                "url": "https://github.com/acme/widget/pull/159#discussion_r2",
+                "path": "src/provider.js",
+                "line": 118,
+                "originalLine": 118,
+                "diffHunk": "@@ -0,0 +1,6 @@\n+export async function fetchProfile(url) {\n+  return fetch(url);\n+}"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "after_rereview": {
+    "number": 159,
+    "url": "https://github.com/acme/widget/pull/159",
+    "title": "feat(enrichment): add standalone provider",
+    "comments": {
+      "nodes": [
+        {
+          "id": "IC_1",
+          "author": { "login": "loop-agent" },
+          "body": "@codex review",
+          "createdAt": "2026-08-04T09:52:57Z",
+          "url": "https://github.com/acme/widget/pull/159#issuecomment-1"
+        },
+        {
+          "id": "IC_2",
+          "author": { "login": "loop-agent" },
+          "body": "@codex review",
+          "createdAt": "2026-08-04T11:30:00Z",
+          "url": "https://github.com/acme/widget/pull/159#issuecomment-2"
+        }
+      ]
+    },
+    "reviews": {
+      "nodes": [
+        {
+          "id": "PRR_1",
+          "author": { "login": "chatgpt-codex-connector", "__typename": "Bot" },
+          "state": "COMMENTED",
+          "submittedAt": "2026-08-04T09:57:39Z",
+          "url": "https://github.com/acme/widget/pull/159#pullrequestreview-1",
+          "body": "\n### 💡 Codex Review\n\nHere are some automated review suggestions for this pull request.\n\n**Reviewed commit:** `90a23ce28d`\n"
+        },
+        {
+          "id": "PRR_2",
+          "author": { "login": "chatgpt-codex-connector", "__typename": "Bot" },
+          "state": "COMMENTED",
+          "submittedAt": "2026-08-04T11:37:37Z",
+          "url": "https://github.com/acme/widget/pull/159#pullrequestreview-2",
+          "body": "\n### 💡 Codex Review\n\nHere are some automated review suggestions for this pull request.\n\n**Reviewed commit:** `44b149b434`\n\nhttps://github.com/acme/widget/blob/44b149b434/src/provider.js#L131\n\n**<sub><sub>![P3 Badge](https://img.shields.io/badge/P3-blue?style=flat)</sub></sub>  Log the timeout value once at startup**\n\nMinor: the effective timeout is hard to confirm at runtime.\n"
+        }
+      ]
+    },
+    "reviewThreads": {
+      "nodes": [
+        {
+          "id": "PRRT_1",
+          "isResolved": true,
+          "isOutdated": true,
+          "path": "src/mapping.js",
+          "line": 60,
+          "originalLine": 60,
+          "diffSide": "RIGHT",
+          "comments": {
+            "nodes": [
+              {
+                "id": "PRRC_1",
+                "author": { "login": "chatgpt-codex-connector", "__typename": "Bot" },
+                "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Invalidate the cache after changing the mapping**\n\nWhen the mapping changes, previously cached entries keep the old shape.",
+                "createdAt": "2026-08-04T09:57:40Z",
+                "updatedAt": "2026-08-04T09:57:40Z",
+                "url": "https://github.com/acme/widget/pull/159#discussion_r1",
+                "path": "src/mapping.js",
+                "line": 60,
+                "originalLine": 60,
+                "diffHunk": "@@ -0,0 +1,8 @@\n+export function mapProfile(raw) {\n+  return { id: raw.id };\n+}"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_2",
+          "isResolved": true,
+          "isOutdated": true,
+          "path": "src/provider.js",
+          "line": 118,
+          "originalLine": 118,
+          "diffSide": "RIGHT",
+          "comments": {
+            "nodes": [
+              {
+                "id": "PRRC_2",
+                "author": { "login": "chatgpt-codex-connector", "__typename": "Bot" },
+                "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Add a timeout to direct requests**\n\nIf the upstream never responds, the request hangs forever.",
+                "createdAt": "2026-08-04T09:57:41Z",
+                "updatedAt": "2026-08-04T09:57:41Z",
+                "url": "https://github.com/acme/widget/pull/159#discussion_r2",
+                "path": "src/provider.js",
+                "line": 118,
+                "originalLine": 118,
+                "diffHunk": "@@ -0,0 +1,6 @@\n+export async function fetchProfile(url) {\n+  return fetch(url);\n+}"
+              }
+            ]
+          }
+        },
+        {
+          "id": "PRRT_3",
+          "isResolved": false,
+          "isOutdated": false,
+          "path": "src/provider.js",
+          "line": 131,
+          "originalLine": 131,
+          "diffSide": "RIGHT",
+          "comments": {
+            "nodes": [
+              {
+                "id": "PRRC_3",
+                "author": { "login": "chatgpt-codex-connector", "__typename": "Bot" },
+                "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Clear the timer on the error path**\n\nThe abort timer stays armed when the request throws.",
+                "createdAt": "2026-08-04T11:37:38Z",
+                "updatedAt": "2026-08-04T11:37:38Z",
+                "url": "https://github.com/acme/widget/pull/159#discussion_r3",
+                "path": "src/provider.js",
+                "line": 131,
+                "originalLine": 131,
+                "diffHunk": "@@ -0,0 +1,9 @@\n+const timer = setTimeout(() => controller.abort(), timeoutMs);\n+const response = await fetch(url, { signal: controller.signal });"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

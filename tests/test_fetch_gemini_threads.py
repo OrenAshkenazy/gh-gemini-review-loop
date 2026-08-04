@@ -65,6 +65,7 @@ from fetch_gemini_threads import (
 
 
 BOT = "gemini-code-assist"
+CODEX = "chatgpt-codex-connector"
 
 
 def make_thread(*, resolved=False, outdated=False, comments):
@@ -217,6 +218,19 @@ class TestSeverity:
     def test_no_marker_returns_unknown(self):
         assert thread_severity(make_thread(comments=[bot_comment("plain comment")])) == "unknown"
 
+    @pytest.mark.parametrize("priority,expected", [
+        ("P0", "critical"), ("P1", "high"), ("P2", "medium"), ("P3", "low"),
+    ])
+    def test_normalizes_codex_priority_badges(self, priority, expected):
+        # Real Codex shape, captured from a live review comment.
+        body = (
+            f"**<sub><sub>![{priority} Badge]"
+            f"(https://img.shields.io/badge/{priority}-yellow?style=flat)</sub></sub>"
+            "  Add a timeout to direct HarvestAPI requests**\n\nIf HarvestAPI ..."
+        )
+        t = make_thread(comments=[{"author": {"login": CODEX}, "body": body}])
+        assert thread_severity(t) == expected
+
     def test_handles_post_filter_flat_shape(self):
         # filter_threads flattens comments to a plain list; severity must still work
         flat = {"comments": [{"author": {"login": BOT}, "body": "![low](x)"}]}
@@ -261,6 +275,33 @@ class TestRereviewRequests:
         ])
         assert len(rereview_requests(pr)) == 1
 
+    def test_counts_configured_reviewer_trigger(self):
+        pr = self._pr([
+            {"author": {"login": "a"}, "body": "@coderabbitai please review"},
+            {"author": {"login": "b"}, "body": "@gemini-code-assist please review"},
+        ])
+        result = rereview_requests(pr, review_trigger_mention="@coderabbitai")
+        assert len(result) == 1
+        assert result[0]["author"]["login"] == "a"
+
+    def test_counts_configured_bot_suffix_trigger(self):
+        pr = self._pr([
+            {"author": {"login": "a"}, "body": "@renovate[bot] please review"},
+        ])
+
+        result = rereview_requests(pr, review_trigger_mention="@renovate[bot]")
+
+        assert len(result) == 1
+
+    def test_bot_suffix_trigger_does_not_match_a_longer_login(self):
+        pr = self._pr([
+            {"author": {"login": "a"}, "body": "@renovate[bot]extra please review"},
+        ])
+
+        result = rereview_requests(pr, review_trigger_mention="@renovate[bot]")
+
+        assert result == []
+
     def test_filter_by_agent_login(self):
         pr = self._pr([
             {"author": {"login": "agent"}, "body": "@gemini-code-assist please review"},
@@ -295,6 +336,701 @@ class TestRereviewLimit:
     def test_string_preference_is_coerced(self):
         assert effective_rereview_limit(None, {"max_rereview_requests": "5"}) == 5
         assert effective_rereview_limit(None, {"max_rereview_requests": " 6 "}) == 6
+
+
+class TestReviewerRefusal:
+    """A reviewer that declines outright must end the wait, not run out the clock."""
+
+    AFTER = "2026-08-04T12:45:54Z"
+
+    @staticmethod
+    def _pr(*comments):
+        return {"comments": {"nodes": list(comments)}}
+
+    @staticmethod
+    def _comment(login, body, created_at="2026-08-04T12:46:06Z"):
+        return {
+            "author": {"login": login},
+            "body": body,
+            "createdAt": created_at,
+            "url": "https://github.com/o/r/pull/5#issuecomment-9",
+        }
+
+    # Verbatim from a live Codex reply.
+    CODEX_LIMIT = (
+        "You have reached your Codex usage limits for code reviews. "
+        "Your limits reset at 3:00 PM."
+    )
+    # Verbatim shape of Gemini's shutdown notice.
+    GEMINI_SUNSET = (
+        "> [!CAUTION]\n> The consumer version of Gemini Code Assist on GitHub "
+        "has been sunset. All code review activity has officially ended."
+    )
+
+    def test_detects_a_usage_limit_refusal(self):
+        refusal = fgt.reviewer_refusal(
+            self._pr(self._comment(CODEX, self.CODEX_LIMIT)), CODEX, after_iso=self.AFTER
+        )
+
+        assert refusal is not None
+        assert refusal["reason"].startswith("You have reached your Codex usage limits")
+        assert refusal["created_at"] == "2026-08-04T12:46:06Z"
+        assert refusal["url"].endswith("#issuecomment-9")
+
+    def test_detects_a_service_sunset_notice(self):
+        refusal = fgt.reviewer_refusal(
+            self._pr(self._comment(BOT, self.GEMINI_SUNSET)), BOT, after_iso=self.AFTER
+        )
+
+        assert refusal is not None
+        assert "sunset" in refusal["reason"]
+
+    def test_ignores_a_refusal_posted_before_the_anchor(self):
+        stale = self._comment(CODEX, self.CODEX_LIMIT, created_at="2026-08-04T12:00:00Z")
+
+        assert fgt.reviewer_refusal(self._pr(stale), CODEX, after_iso=self.AFTER) is None
+
+    def test_ignores_refusal_wording_from_someone_else(self):
+        human = self._comment("alice", self.CODEX_LIMIT)
+
+        assert fgt.reviewer_refusal(self._pr(human), CODEX, after_iso=self.AFTER) is None
+
+    def test_ordinary_reviewer_comments_are_not_refusals(self):
+        chatter = self._comment(CODEX, "Reviewing now — one moment.")
+
+        assert fgt.reviewer_refusal(self._pr(chatter), CODEX, after_iso=self.AFTER) is None
+
+    def test_discussing_rate_limits_in_prose_is_not_a_refusal(self):
+        # The reviewer talking *about* rate limiting must not end the wait.
+        prose = self._comment(
+            CODEX,
+            "The new client retries on HTTP 429; consider whether the rate limit "
+            "backoff should be exponential rather than fixed.",
+        )
+
+        assert fgt.reviewer_refusal(self._pr(prose), CODEX, after_iso=self.AFTER) is None
+
+
+class TestReviewBodyFindings:
+    """Codex sometimes puts a priority-badged finding in the review body itself."""
+
+    @staticmethod
+    def _pr(*reviews):
+        return {"reviews": {"nodes": list(reviews)}}
+
+    @staticmethod
+    def _review(body, submitted_at="2026-08-04T09:57:39Z", review_id="R_1"):
+        return {
+            "id": review_id,
+            "author": {"login": CODEX},
+            "body": body,
+            "submittedAt": submitted_at,
+            "url": "https://github.com/o/r/pull/5#pullrequestreview-1",
+        }
+
+    BODY = (
+        "\n### 💡 Codex Review\n\nHere are some automated review suggestions.\n\n"
+        "**Reviewed commit:** `90a23ce28d`\n\n"
+        "https://github.com/o/r/blob/90a23ce28d/src/enrich.js#L42\n\n"
+        "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)"
+        "</sub></sub>  Guard the quota refusal path**\n\nIf the provider refuses ...\n\n"
+        "https://github.com/o/r/blob/90a23ce28d/src/map.js#L7\n\n"
+        "**<sub><sub>![P3 Badge](https://img.shields.io/badge/P3-blue?style=flat)"
+        "</sub></sub>  Rename the mapping helper**\n\nMinor readability nit ...\n"
+    )
+
+    def test_surfaces_each_badged_body_finding_with_its_file_anchor(self):
+        findings = fgt.review_body_findings(self._pr(self._review(self.BODY)), CODEX)
+
+        assert [(f["path"], f["line"]) for f in findings] == [
+            ("src/enrich.js", 42),
+            ("src/map.js", 7),
+        ]
+        assert [thread_severity(f) for f in findings] == ["high", "low"]
+        assert all(f["isResolved"] is False for f in findings)
+
+    def test_body_findings_have_stable_distinct_ids(self):
+        findings = fgt.review_body_findings(self._pr(self._review(self.BODY)), CODEX)
+        again = fgt.review_body_findings(self._pr(self._review(self.BODY)), CODEX)
+
+        ids = [f["id"] for f in findings]
+        assert len(set(ids)) == 2
+        assert ids == [f["id"] for f in again]
+
+    def test_review_body_without_badges_yields_nothing(self):
+        body = "\n### 💡 Codex Review\n\nNo major issues found.\n"
+        assert fgt.review_body_findings(self._pr(self._review(body)), CODEX) == []
+
+    def test_only_the_latest_review_body_is_active(self):
+        stale = self._review(self.BODY, submitted_at="2026-08-04T09:57:39Z", review_id="R_1")
+        latest = self._review(
+            "\n### 💡 Codex Review\n\nNo major issues found.\n",
+            submitted_at="2026-08-04T11:37:37Z",
+            review_id="R_2",
+        )
+
+        assert fgt.review_body_findings(self._pr(stale, latest), CODEX) == []
+
+    def test_other_authors_review_bodies_are_ignored(self):
+        review = dict(self._review(self.BODY), author={"login": "sourcery-ai"})
+
+        assert fgt.review_body_findings(self._pr(review), CODEX) == []
+
+
+class TestReviewerSelectionCli:
+    PR = PullRequest(owner="o", repo="r", number=5)
+
+    @staticmethod
+    def _thread(login, thread_id):
+        return {
+            "id": thread_id,
+            "isResolved": False,
+            "isOutdated": False,
+            "path": "src/x.py",
+            "line": 10,
+            "comments": {
+                "nodes": [
+                    {
+                        "author": {"login": login, "__typename": "Bot"},
+                        "body": "review note",
+                        "createdAt": "2026-06-28T12:00:00Z",
+                    }
+                ]
+            },
+        }
+
+    def _pull_request(self):
+        return {
+            "number": 5,
+            "url": "https://github.com/o/r/pull/5",
+            "comments": {"nodes": []},
+            "reviews": {"nodes": []},
+            "reviewThreads": {
+                "nodes": [
+                    self._thread("gemini-code-assist", "T_gemini"),
+                    self._thread("coderabbitai", "T_code_rabbit"),
+                ]
+            },
+        }
+
+    def _patch_common(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(fgt, "resolve_pr", lambda arg: self.PR)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: self._pull_request())
+        monkeypatch.setattr(fgt, "gh_authenticated_login", lambda: "codex-agent")
+
+    def test_default_author_is_marked_unconfirmed_in_json(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._patch_common(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr",
+                "https://github.com/o/r/pull/5",
+                "--format",
+                "json",
+                "--no-resolve-outdated",
+                "--no-resolve-addressed-by-reply",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["reviewerSelection"]["source"] == "default_unconfirmed"
+        assert payload["reviewerSelection"]["confirmation_required"] is True
+        assert payload["reviewerSelection"]["login"] == "gemini-code-assist"
+        assert [thread["id"] for thread in payload["threads"]] == ["T_gemini"]
+
+    def test_persisted_reviewer_is_reused_without_prompt(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._patch_common(monkeypatch, tmp_path)
+        fgt.save_reviewer_selection(
+            self.PR,
+            {
+                "login": "coderabbitai",
+                "display_name": "CodeRabbit",
+                "review_trigger": "@coderabbitai",
+                "source": "confirmed",
+                "selected_at": "2026-06-28T12:00:00Z",
+            },
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr",
+                "https://github.com/o/r/pull/5",
+                "--format",
+                "json",
+                "--no-resolve-outdated",
+                "--no-resolve-addressed-by-reply",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["reviewerSelection"]["source"] == "persisted"
+        assert payload["reviewerSelection"]["confirmation_required"] is False
+        assert payload["reviewerSelection"]["login"] == "coderabbitai"
+        assert [thread["id"] for thread in payload["threads"]] == ["T_code_rabbit"]
+
+    def test_codex_selection_reports_its_trigger_and_that_it_needs_a_ping(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._patch_common(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr",
+                "https://github.com/o/r/pull/5",
+                "--reviewer",
+                "chatgpt-codex-connector",
+                "--format",
+                "json",
+                "--no-resolve-outdated",
+                "--no-resolve-addressed-by-reply",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        selection = json.loads(capsys.readouterr().out)["reviewerSelection"]
+        assert selection["display_name"] == "Codex"
+        assert selection["review_trigger"] == "@codex"
+        assert selection["auto_reviews"] is False
+
+    def test_legacy_codex_record_without_a_trigger_is_healed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """State written before Codex was known persisted review_trigger: null."""
+        self._patch_common(monkeypatch, tmp_path)
+        fgt.save_reviewer_selection(
+            self.PR,
+            {
+                "login": "chatgpt-codex-connector",
+                "display_name": "Chatgpt Codex Connector",
+                "review_trigger": None,
+                "source": "confirmed",
+                "selected_at": "2026-08-04T11:24:51Z",
+            },
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr",
+                "https://github.com/o/r/pull/5",
+                "--format",
+                "json",
+                "--no-resolve-outdated",
+                "--no-resolve-addressed-by-reply",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        selection = json.loads(capsys.readouterr().out)["reviewerSelection"]
+        assert selection["review_trigger"] == "@codex"
+        assert selection["display_name"] == "Codex"
+        assert selection["auto_reviews"] is False
+
+    def test_unknown_reviewer_is_assumed_to_review_on_its_own(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._patch_common(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr",
+                "https://github.com/o/r/pull/5",
+                "--reviewer",
+                "coderabbitai",
+                "--format",
+                "json",
+                "--no-resolve-outdated",
+                "--no-resolve-addressed-by-reply",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        selection = json.loads(capsys.readouterr().out)["reviewerSelection"]
+        assert selection["auto_reviews"] is True
+
+    def test_codex_body_findings_reach_the_fetched_thread_list(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        pull_request = self._pull_request()
+        pull_request["reviewThreads"]["nodes"] = []
+        pull_request["reviews"]["nodes"] = [
+            {
+                "id": "R_1",
+                "author": {"login": "chatgpt-codex-connector"},
+                "submittedAt": "2026-08-04T09:57:39Z",
+                "url": "https://github.com/o/r/pull/5#pullrequestreview-1",
+                "body": (
+                    "### 💡 Codex Review\n\n"
+                    "https://github.com/o/r/blob/90a23ce28d/src/enrich.js#L42\n\n"
+                    "**![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)"
+                    "  Guard the quota refusal path**\n\nIf the provider refuses ...\n"
+                ),
+            }
+        ]
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(fgt, "resolve_pr", lambda arg: self.PR)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: pull_request)
+        monkeypatch.setattr(fgt, "gh_authenticated_login", lambda: "codex-agent")
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr",
+                "https://github.com/o/r/pull/5",
+                "--reviewer",
+                "chatgpt-codex-connector",
+                "--format",
+                "json",
+                "--no-resolve-outdated",
+                "--no-resolve-addressed-by-reply",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        threads = json.loads(capsys.readouterr().out)["threads"]
+        assert [t["path"] for t in threads] == ["src/enrich.js"]
+        assert threads[0]["isReviewBodyFinding"] is True
+
+    def test_explicit_reviewer_persists_selection(self, tmp_path, monkeypatch, capsys):
+        self._patch_common(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr",
+                "https://github.com/o/r/pull/5",
+                "--reviewer",
+                "coderabbitai",
+                "--reviewer-name",
+                "CodeRabbit",
+                "--review-trigger-mention",
+                "@coderabbitai",
+                "--format",
+                "json",
+                "--no-resolve-outdated",
+                "--no-resolve-addressed-by-reply",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        capsys.readouterr()
+        record = fgt.read_reviewer_selection(self.PR)
+        assert record["source"] == "explicit"
+        assert record["login"] == "coderabbitai"
+        assert record["display_name"] == "CodeRabbit"
+        assert record["review_trigger"] == "@coderabbitai"
+
+    def test_confirmed_reviewer_source_persists_selection(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._patch_common(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr",
+                "https://github.com/o/r/pull/5",
+                "--reviewer",
+                "coderabbitai",
+                "--reviewer-source",
+                "confirmed",
+                "--reviewer-name",
+                "CodeRabbit",
+                "--review-trigger-mention",
+                "@coderabbitai",
+                "--format",
+                "json",
+                "--no-resolve-outdated",
+                "--no-resolve-addressed-by-reply",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        payload = json.loads(capsys.readouterr().out)
+        record = fgt.read_reviewer_selection(self.PR)
+        assert record["source"] == "confirmed"
+        assert payload["reviewerSelection"]["source"] == "confirmed"
+        assert payload["reviewerSelection"]["confirmation_required"] is False
+
+    def test_list_reviewers_prints_candidates_without_mutating_state(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._patch_common(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            fgt,
+            "fetch_reviewer_discovery",
+            lambda pr: {
+                "pull_request": self._pull_request(),
+                "partial": True,
+                "warnings": ["reviewer discovery hit page cap"],
+            },
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr",
+                "https://github.com/o/r/pull/5",
+                "--list-reviewers",
+                "--format",
+                "json",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["partial"] is True
+        assert [candidate["login"] for candidate in payload["reviewers"]] == [
+            "gemini-code-assist",
+            "coderabbitai",
+        ]
+        assert fgt.read_reviewer_selection(self.PR) is None
+
+
+class TestReviewerDiscoveryFetch:
+    PR = PullRequest(owner="o", repo="r", number=5)
+
+    @pytest.mark.parametrize("mention", [None, 42, False, {"mention": "@bot"}])
+    def test_review_trigger_re_falls_back_for_non_string_mentions(self, mention):
+        trigger = fgt._review_trigger_re(mention)
+
+        assert trigger.search("@gemini-code-assist please review")
+
+    def test_fetch_reviewer_discovery_paginates_review_threads(self, monkeypatch):
+        calls = []
+
+        def page(thread_id, login, *, has_next, end_cursor=None):
+            return {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "number": 5,
+                            "url": "https://github.com/o/r/pull/5",
+                            "reviewThreads": {
+                                "pageInfo": {
+                                    "hasNextPage": has_next,
+                                    "endCursor": end_cursor,
+                                },
+                                "nodes": [
+                                    {
+                                        "id": thread_id,
+                                        "comments": {
+                                            "pageInfo": {
+                                                "hasNextPage": False,
+                                                "endCursor": None,
+                                            },
+                                            "nodes": [
+                                                {
+                                                    "author": {
+                                                        "login": login,
+                                                        "__typename": "Bot",
+                                                    }
+                                                }
+                                            ],
+                                        },
+                                    }
+                                ],
+                            },
+                        }
+                    }
+                }
+            }
+
+        responses = iter([
+            page("T1", "gemini-code-assist", has_next=True, end_cursor="CURSOR1"),
+            page("T2", "coderabbitai", has_next=False),
+        ])
+
+        def fake_run_gh(args):
+            calls.append(args)
+            return next(responses)
+
+        monkeypatch.setattr(fgt, "run_gh", fake_run_gh)
+
+        result = fgt.fetch_reviewer_discovery(self.PR)
+
+        threads = result["pull_request"]["reviewThreads"]["nodes"]
+        assert result["partial"] is False
+        assert [thread["id"] for thread in threads] == ["T1", "T2"]
+        assert any("threadsAfter=CURSOR1" in arg for arg in calls[1])
+
+    def test_fetch_reviewer_discovery_surfaces_graphql_errors(self, monkeypatch):
+        monkeypatch.setattr(
+            fgt,
+            "run_gh",
+            lambda args: {"errors": [{"message": "Resource not accessible"}]},
+        )
+
+        with pytest.raises(RuntimeError, match="gh GraphQL errors.*Resource not accessible"):
+            fgt.fetch_reviewer_discovery(self.PR)
+
+    def test_fetch_reviewer_discovery_rejects_null_repository(self, monkeypatch):
+        monkeypatch.setattr(
+            fgt,
+            "run_gh",
+            lambda args: {"data": {"repository": None}},
+        )
+
+        with pytest.raises(RuntimeError, match="missing or invalid data"):
+            fgt.fetch_reviewer_discovery(self.PR)
+
+    def test_fetch_reviewer_discovery_paginates_thread_comments(self, monkeypatch):
+        calls = []
+
+        def fake_run_gh(args):
+            calls.append(args)
+            if any("threadId=T1" in arg for arg in args):
+                return {
+                    "data": {
+                        "node": {
+                            "comments": {
+                                "pageInfo": {
+                                    "hasNextPage": False,
+                                    "endCursor": None,
+                                },
+                                "nodes": [
+                                    {
+                                        "author": {
+                                            "login": "coderabbitai",
+                                            "__typename": "Bot",
+                                        }
+                                    }
+                                ],
+                            }
+                        }
+                    }
+                }
+            return {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "number": 5,
+                            "url": "https://github.com/o/r/pull/5",
+                            "reviewThreads": {
+                                "pageInfo": {
+                                    "hasNextPage": False,
+                                    "endCursor": None,
+                                },
+                                "nodes": [
+                                    {
+                                        "id": "T1",
+                                        "comments": {
+                                            "pageInfo": {
+                                                "hasNextPage": True,
+                                                "endCursor": "COMMENT_CURSOR",
+                                            },
+                                            "nodes": [
+                                                {
+                                                    "author": {
+                                                        "login": "gemini-code-assist",
+                                                        "__typename": "Bot",
+                                                    }
+                                                }
+                                            ],
+                                        },
+                                    }
+                                ],
+                            },
+                        }
+                    }
+                }
+            }
+
+        monkeypatch.setattr(fgt, "run_gh", fake_run_gh)
+
+        result = fgt.fetch_reviewer_discovery(self.PR)
+
+        comments = result["pull_request"]["reviewThreads"]["nodes"][0]["comments"]["nodes"]
+        assert result["partial"] is False
+        assert result["warnings"] == []
+        assert [comment["author"]["login"] for comment in comments] == [
+            "gemini-code-assist",
+            "coderabbitai",
+        ]
+        assert any("commentsAfter=COMMENT_CURSOR" in arg for arg in calls[1])
+
+    def test_fetch_reviewer_discovery_marks_partial_when_comment_page_cap_is_reached(
+        self, monkeypatch
+    ):
+        def fake_run_gh(args):
+            if any("threadId=T1" in arg for arg in args):
+                return {
+                    "data": {
+                        "node": {
+                            "comments": {
+                                "pageInfo": {
+                                    "hasNextPage": True,
+                                    "endCursor": "COMMENT_CURSOR_2",
+                                },
+                                "nodes": [],
+                            }
+                        }
+                    }
+                }
+            return {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "number": 5,
+                            "url": "https://github.com/o/r/pull/5",
+                            "reviewThreads": {
+                                "pageInfo": {
+                                    "hasNextPage": False,
+                                    "endCursor": None,
+                                },
+                                "nodes": [
+                                    {
+                                        "id": "T1",
+                                        "comments": {
+                                            "pageInfo": {
+                                                "hasNextPage": True,
+                                                "endCursor": "COMMENT_CURSOR",
+                                            },
+                                            "nodes": [],
+                                        },
+                                    }
+                                ],
+                            },
+                        }
+                    }
+                }
+            }
+
+        monkeypatch.setattr(fgt, "run_gh", fake_run_gh)
+
+        result = fgt.fetch_reviewer_discovery(self.PR, max_pages=1)
+
+        assert result["partial"] is True
+        assert result["warnings"] == ["thread T1 comments hit discovery page cap"]
 
 
 class TestPreferencesFallback:
@@ -691,7 +1427,7 @@ class TestStickyReceiptRender:
             author=BOT, resolved_outdated=0, resolved_addressed_by_reply=0,
             rereview_count=0, rereview_limit=3, status="RUNNING",
         )
-        assert "### gh-gemini-review-loop receipt — RUNNING" in body
+        assert "### gh-ai-review-loop receipt — RUNNING" in body
 
     def test_sticky_embeds_marker(self):
         pr = PullRequest(owner="o", repo="r", number=1, url=None)
@@ -722,7 +1458,7 @@ class TestStickyReceiptRender:
             rereview_count=0, rereview_limit=3, status=None,
         )
         # Header line ends after "receipt" with no " — " suffix
-        assert body.splitlines()[0] == "### gh-gemini-review-loop receipt"
+        assert body.splitlines()[0] == "### gh-ai-review-loop receipt"
 
 
 def _thread(path, body, line=1):
@@ -2100,6 +2836,100 @@ class TestRunWaitChunk:
         assert snapshot["author"] == "gemini-code-assist"
 
 
+class TestWaitStopsOnRefusal:
+    AFTER = "2026-08-04T12:45:54Z"
+    PR = PullRequest(owner="o", repo="r", number=5)
+
+    def _refusing_pr(self):
+        return {
+            "comments": {
+                "nodes": [
+                    {
+                        "author": {"login": CODEX},
+                        "body": "You have reached your Codex usage limits for code reviews.",
+                        "createdAt": "2026-08-04T12:46:06Z",
+                        "url": "https://github.com/o/r/pull/5#issuecomment-9",
+                    }
+                ]
+            },
+            "reviews": {"nodes": []},
+            "reviewThreads": {"nodes": []},
+        }
+
+    def test_chunked_wait_reports_refused_instead_of_waiting(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: self._refusing_pr())
+        monkeypatch.setattr("fetch_gemini_threads.time.sleep", lambda _s: None)
+
+        chunk = fgt.run_wait_chunk(
+            self.PR,
+            CODEX,
+            timeout_seconds=900,
+            interval_seconds=1,
+            quiet_seconds=45,
+            after_iso=self.AFTER,
+            chunk_seconds=60,
+        )
+
+        assert chunk["status"] == "refused"
+        assert "usage limits" in chunk["reason"]
+        assert chunk["url"].endswith("#issuecomment-9")
+
+    def test_blocking_wait_raises_instead_of_burning_the_timeout(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: self._refusing_pr())
+        monkeypatch.setattr("fetch_gemini_threads.time.sleep", lambda _s: None)
+
+        with pytest.raises(fgt.ReviewerRefused) as excinfo:
+            fgt.wait_for_stable_review(
+                self.PR,
+                author=CODEX,
+                timeout_seconds=900,
+                interval_seconds=1,
+                quiet_seconds=45,
+                after_iso=self.AFTER,
+            )
+
+        assert "usage limits" in excinfo.value.refusal["reason"]
+
+    def test_cli_prints_a_stop_line_naming_the_refusal(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(fgt, "resolve_pr", lambda arg: self.PR)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: self._refusing_pr())
+        monkeypatch.setattr("fetch_gemini_threads.time.sleep", lambda _s: None)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["fetch_gemini_threads.py", "--pr", "https://github.com/o/r/pull/5",
+             "--reviewer", CODEX, "--wait", "--after", self.AFTER,
+             "--wait-chunk-seconds", "60"],
+        )
+
+        assert fgt.main() == 0
+
+        out = capsys.readouterr().out
+        assert "[loop] STOP" in out
+        assert "refused" in out
+        assert "usage limits" in out
+
+    def test_cli_json_reports_refused_status(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(fgt, "resolve_pr", lambda arg: self.PR)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: self._refusing_pr())
+        monkeypatch.setattr("fetch_gemini_threads.time.sleep", lambda _s: None)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["fetch_gemini_threads.py", "--pr", "https://github.com/o/r/pull/5",
+             "--reviewer", CODEX, "--wait", "--after", self.AFTER,
+             "--wait-chunk-seconds", "60", "--format", "json"],
+        )
+
+        assert fgt.main() == 0
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["wait"]["status"] == "refused"
+        assert "usage limits" in payload["wait"]["reason"]
+
+
 class TestWaitChunkCli:
     AFTER = "2026-06-11T12:00:00Z"
 
@@ -2209,7 +3039,7 @@ class TestWaitHeartbeatCommand:
              "--pr", "https://github.com/o/r/pull/5"],
         )
         assert fgt.main() == 0
-        assert "no Gemini wait in progress" in capsys.readouterr().out
+        assert "no reviewer wait in progress" in capsys.readouterr().out
 
 
 def test_track_pattern_signatures_snapshots_prior(tmp_path, monkeypatch):
