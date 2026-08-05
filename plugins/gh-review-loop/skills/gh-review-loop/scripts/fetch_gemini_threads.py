@@ -30,12 +30,19 @@ import review_vendors  # noqa: E402 — sibling module, pure/stdlib-only
 from loop_color import color_loop, colors_enabled  # noqa: E402 — sibling module
 
 
-# The default reviewer must be one that is still alive and that the loop can
-# trigger itself. Codex only reviews when pinged, so an unconfigured PR gets a
-# real cycle 0 instead of a silent wait on a bot that may never speak.
-DEFAULT_PROVIDER_NAME = review_vendors.DEFAULT_VENDOR.display_name
-DEFAULT_AUTHOR = review_vendors.DEFAULT_VENDOR.login
-DEFAULT_REVIEW_TRIGGER_MENTION = review_vendors.DEFAULT_VENDOR.mention
+# There is no default reviewer. An unconfigured PR resolves to "none configured"
+# and the loop asks; see resolve_reviewer_selection(). These name the reviewer
+# the loop may *offer*, which is a ping-first vendor so that accepting the offer
+# starts a real cycle instead of a wait.
+SUGGESTED_PROVIDER_NAME = review_vendors.SUGGESTED_VENDOR.display_name
+SUGGESTED_AUTHOR = review_vendors.SUGGESTED_VENDOR.login
+SUGGESTED_REVIEW_TRIGGER_MENTION = review_vendors.SUGGESTED_VENDOR.mention
+
+# Back-compat aliases: --author's argparse default and the re-review trigger
+# regex still need a concrete value to fall back on.
+DEFAULT_PROVIDER_NAME = SUGGESTED_PROVIDER_NAME
+DEFAULT_AUTHOR = SUGGESTED_AUTHOR
+DEFAULT_REVIEW_TRIGGER_MENTION = SUGGESTED_REVIEW_TRIGGER_MENTION
 DEFAULT_REREVIEW_LIMIT = 3
 
 
@@ -1167,7 +1174,10 @@ def reviewer_selection_state(record: dict[str, Any], *, source: str) -> dict[str
         "review_trigger": record.get("review_trigger") or reviewer_resolver.trigger_for(login),
         "auto_reviews": reviewer_resolver.auto_reviews(login),
         "source": source,
-        "confirmation_required": source == "default_unconfirmed",
+        "confirmation_required": source in {"default_unconfirmed", "none_configured"},
+        # True whenever an actual choice backs the selection. A suggestion the
+        # user has not accepted is not a configuration.
+        "configured": source not in {"default_unconfirmed", "none_configured"},
         "candidates_partial": False,
     }
 
@@ -1189,16 +1199,36 @@ def resolve_reviewer_selection(args: argparse.Namespace, pr: PullRequest) -> dic
     if persisted:
         return reviewer_selection_state(persisted, source="persisted")
 
+    # Nothing discovered, nothing persisted. Do not guess a vendor. Any default
+    # is wrong for someone: assuming a bot that reviews on its own turns "no
+    # reviewer here" into a full-timeout wait, and assuming a ping-first bot
+    # posts a mention on the user's PR for a reviewer they never chose. Report
+    # the state and let the caller ask.
+    #
+    # SUGGESTED_* is what the caller may *offer*, not what it may assume. It is
+    # a ping-first vendor precisely so that accepting the offer produces a real
+    # cycle 0 instead of a wait.
     record = reviewer_resolver.make_reviewer_record(
-        DEFAULT_AUTHOR,
-        display_name=DEFAULT_PROVIDER_NAME,
-        review_trigger=DEFAULT_REVIEW_TRIGGER_MENTION,
-        source="default_unconfirmed",
+        SUGGESTED_AUTHOR,
+        display_name=SUGGESTED_PROVIDER_NAME,
+        review_trigger=SUGGESTED_REVIEW_TRIGGER_MENTION,
+        source="none_configured",
     )
-    state = reviewer_selection_state(record, source="default_unconfirmed")
-    # Nothing was discovered and nothing was persisted. Say so, so the caller
-    # can offer a choice instead of waiting on an assumed reviewer.
+    state = reviewer_selection_state(record, source="none_configured")
+    state["configured"] = False
     state["unconfirmed"] = True
+    state["suggestion"] = {
+        "login": SUGGESTED_AUTHOR,
+        "display_name": SUGGESTED_PROVIDER_NAME,
+        "review_trigger": SUGGESTED_REVIEW_TRIGGER_MENTION,
+        "auto_reviews": reviewer_resolver.auto_reviews(SUGGESTED_AUTHOR),
+    }
+    state["message"] = (
+        "No reviewer bot has commented on this PR and none is configured. "
+        "Ask the user to pick one, or to ping "
+        f"{SUGGESTED_REVIEW_TRIGGER_MENTION} to start a review. Do not wait on "
+        "an unconfirmed reviewer."
+    )
     return state
 
 

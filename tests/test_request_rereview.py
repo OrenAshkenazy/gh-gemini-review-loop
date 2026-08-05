@@ -463,10 +463,26 @@ def test_dry_run_still_validates_its_arguments():
         request_rereview.post_rereview("acme/widget", 0, "@codex review", dry_run=True)
 
 
-def test_default_reviewer_is_not_a_sunset_vendor():
-    """A default that no longer reviews turns 'no reviewer' into a silent wait."""
-    assert not review_vendors.is_sunset(request_rereview.DEFAULT_REVIEWER_LOGIN)
-    assert review_vendors.is_sunset("gemini-code-assist")
+def test_default_reviewer_is_installable_on_every_tier():
+    """The default applies to every user, so it cannot need a paid tier.
+
+    Gemini still reviews normally for enterprise tenants; it is disqualified as
+    a default only because a consumer-tier user can no longer install the app.
+    """
+    assert not review_vendors.is_consumer_tier_retired(
+        request_rereview.DEFAULT_REVIEWER_LOGIN
+    )
+    assert review_vendors.is_consumer_tier_retired("gemini-code-assist")
+
+
+def test_a_tier_restricted_vendor_is_still_fully_supported():
+    gemini = review_vendors.vendor_for("gemini-code-assist")
+    assert gemini is not None
+    assert gemini.mention == "@gemini-code-assist"
+    assert gemini.rereview_phrase
+    assert gemini.auto_reviews is True
+    assert "enterprise" in review_vendors.tier_note_for("gemini-code-assist")
+    assert review_vendors.tier_note_for("@codex") == ""
 
 
 class TestCapEnforcement:
@@ -558,3 +574,115 @@ class TestCapEnforcement:
         monkeypatch.setattr(request_rereview.judge, "load_preferences",
                             lambda: (_ for _ in ()).throw(OSError("unreadable")))
         assert request_rereview.effective_cap(None) == 3
+
+
+class TestPaginatedParsing:
+    """`gh api --paginate` emits one JSON document per page, concatenated.
+
+    Parsing only the first document made count_agent_pings return None on any
+    PR past one page, which silently skipped the cap on long PRs — exactly the
+    ones the cap exists for.
+    """
+
+    def test_a_single_page_parses(self):
+        assert request_rereview.parse_paginated_json('[{"a": 1}]') == [{"a": 1}]
+
+    def test_concatenated_pages_are_flattened_in_order(self):
+        stdout = '[{"n": 1}, {"n": 2}][{"n": 3}]\n[{"n": 4}]'
+        assert request_rereview.parse_paginated_json(stdout) == [
+            {"n": 1}, {"n": 2}, {"n": 3}, {"n": 4}
+        ]
+
+    def test_empty_output_is_zero_results_not_a_failure(self):
+        assert request_rereview.parse_paginated_json("") == []
+        assert request_rereview.parse_paginated_json("   ") == []
+
+    def test_malformed_output_is_unparseable_not_empty(self):
+        assert request_rereview.parse_paginated_json("[{") is None
+        assert request_rereview.parse_paginated_json("{}") is None
+        assert request_rereview.parse_paginated_json('[{"a":1}] garbage') is None
+
+    def test_the_cap_survives_a_multi_page_pr(self):
+        page = json.dumps([{"user": {"login": "agent"}, "body": "@codex review"}])
+
+        def runner(cmd, **kwargs):
+            if cmd[:3] == ["gh", "api", "user"]:
+                return subprocess.CompletedProcess(cmd, 0, "agent\n", "")
+            return subprocess.CompletedProcess(cmd, 0, page + page + page, "")
+
+        used = request_rereview.count_agent_pings(
+            "acme/widget", 159, "@codex", "agent", runner=runner
+        )
+        assert used == 3, "concatenated pages must all be counted"
+
+
+class TestMentionExtraction:
+    """The cap counts pings to a reviewer, so it matches the mention.
+
+    Counting the full sentence would miss an earlier cycle that worded the
+    request differently, and under-count the cap.
+    """
+
+    @pytest.mark.parametrize("phrase,expected", [
+        ("@codex review", "@codex"),
+        ("@gemini-code-assist please review the latest changes.", "@gemini-code-assist"),
+        ("Hey @coderabbitai, take another look", "@coderabbitai"),
+        ("please review the latest changes", None),
+        ("", None),
+    ])
+    def test_finds_the_mention(self, phrase, expected):
+        assert request_rereview.mention_in(phrase) == expected
+
+    def test_two_differently_worded_pings_both_count(self):
+        comments = json.dumps([
+            {"user": {"login": "agent"}, "body": "@codex review"},
+            {"user": {"login": "agent"}, "body": "@codex please take another look"},
+        ])
+
+        def runner(cmd, **kwargs):
+            if cmd[:3] == ["gh", "api", "user"]:
+                return subprocess.CompletedProcess(cmd, 0, "agent\n", "")
+            return subprocess.CompletedProcess(cmd, 0, comments, "")
+
+        assert request_rereview.count_agent_pings(
+            "acme/widget", 159, "@codex", "agent", runner=runner
+        ) == 2
+
+    def test_a_phrase_with_no_mention_refuses_rather_than_posting_uncapped(
+        self, monkeypatch, capsys
+    ):
+        posted = []
+        monkeypatch.setattr(request_rereview, "post_rereview",
+                            lambda *a, **k: posted.append(a))
+
+        rc = request_rereview.main([
+            "--repo", "acme/widget", "--pr", "159",
+            "--phrase", "please review the latest changes", "--json",
+        ])
+
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert posted == [], "an uncountable write is an uncapped write"
+        assert payload["status"] == "uncountable_trigger"
+
+    def test_an_explicit_mention_makes_a_custom_phrase_countable(
+        self, monkeypatch, capsys
+    ):
+        posted = []
+
+        def fake_post(repo, pr, phrase, **kwargs):
+            posted.append(phrase)
+            return {"created_at": CREATED_AT, "repo": repo, "pr": pr, "phrase": phrase}
+
+        monkeypatch.setattr(request_rereview, "post_rereview", fake_post)
+        monkeypatch.setattr(request_rereview, "gh_login", lambda *a, **k: "agent")
+        monkeypatch.setattr(request_rereview, "count_agent_pings", lambda *a, **k: 0)
+
+        rc = request_rereview.main([
+            "--repo", "acme/widget", "--pr", "159",
+            "--phrase", "please review the latest changes",
+            "--reviewer-mention", "@codex",
+        ])
+        capsys.readouterr()
+        assert rc == 0
+        assert posted == ["please review the latest changes"]

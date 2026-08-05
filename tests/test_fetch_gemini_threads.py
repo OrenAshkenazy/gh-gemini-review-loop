@@ -555,10 +555,16 @@ class TestReviewerSelectionCli:
         assert fgt.main() == 0
 
         payload = json.loads(capsys.readouterr().out)
-        assert payload["reviewerSelection"]["source"] == "default_unconfirmed"
-        assert payload["reviewerSelection"]["confirmation_required"] is True
-        assert payload["reviewerSelection"]["login"] == "chatgpt-codex-connector"
-        assert payload["reviewerSelection"]["unconfirmed"] is True
+        selection = payload["reviewerSelection"]
+        # No reviewer is assumed. The loop reports the gap and offers one.
+        assert selection["source"] == "none_configured"
+        assert selection["configured"] is False
+        assert selection["confirmation_required"] is True
+        assert selection["unconfirmed"] is True
+        assert selection["suggestion"]["login"] == "chatgpt-codex-connector"
+        # The offer must be a ping-first vendor, or accepting it starts a wait.
+        assert selection["suggestion"]["auto_reviews"] is False
+        assert "Do not wait on an unconfirmed reviewer" in selection["message"]
         assert [thread["id"] for thread in payload["threads"]] == ["T_default"]
 
     def test_persisted_reviewer_is_reused_without_prompt(

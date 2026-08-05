@@ -43,3 +43,24 @@ def test_unknown_reviewer_login_has_no_vendor_record():
 def test_codex_does_not_review_until_it_is_pinged():
     assert review_vendors.CODEX.auto_reviews is False
     assert review_vendors.GEMINI.auto_reviews is True
+
+
+def test_there_is_no_assumed_default_only_a_suggestion():
+    """Any assumed vendor is wrong for someone, so the loop asks instead."""
+    assert review_vendors.SUGGESTED_VENDOR.auto_reviews is False, (
+        "an auto-reviewing suggestion turns 'accept the offer' into a wait"
+    )
+    assert not review_vendors.is_consumer_tier_retired(
+        review_vendors.SUGGESTED_VENDOR.login
+    ), "the offered reviewer must be installable on every tier"
+
+
+def test_gemini_remains_a_fully_supported_reviewer():
+    """Only the consumer app was shut down; enterprise tenants are unaffected."""
+    gemini = review_vendors.vendor_for("gemini-code-assist")
+    assert gemini is not None
+    assert gemini.login in review_vendors.KNOWN_VENDORS
+    assert gemini.mention == "@gemini-code-assist"
+    assert gemini.rereview_phrase
+    assert gemini.auto_reviews is True
+    assert review_vendors.vendor_for("@gemini-code-assist") is gemini
