@@ -377,6 +377,14 @@ class TestReviewerRefusal:
         assert refusal["created_at"] == "2026-08-04T12:46:06Z"
         assert refusal["url"].endswith("#issuecomment-9")
 
+    def test_a_usage_limit_is_flagged_as_recoverable_quota(self):
+        # Recoverable: the user can lift the cap, so the loop must ask them.
+        refusal = fgt.reviewer_refusal(
+            self._pr(self._comment(CODEX, self.CODEX_LIMIT)), CODEX, after_iso=self.AFTER
+        )
+
+        assert refusal["kind"] == fgt.REFUSAL_QUOTA
+
     def test_detects_a_service_sunset_notice(self):
         refusal = fgt.reviewer_refusal(
             self._pr(self._comment(BOT, self.GEMINI_SUNSET)), BOT, after_iso=self.AFTER
@@ -384,6 +392,13 @@ class TestReviewerRefusal:
 
         assert refusal is not None
         assert "sunset" in refusal["reason"]
+
+    def test_a_sunset_notice_is_not_recoverable(self):
+        refusal = fgt.reviewer_refusal(
+            self._pr(self._comment(BOT, self.GEMINI_SUNSET)), BOT, after_iso=self.AFTER
+        )
+
+        assert refusal["kind"] == fgt.REFUSAL_WITHDRAWN
 
     def test_ignores_a_refusal_posted_before_the_anchor(self):
         stale = self._comment(CODEX, self.CODEX_LIMIT, created_at="2026-08-04T12:00:00Z")
@@ -2928,6 +2943,40 @@ class TestWaitStopsOnRefusal:
         payload = json.loads(capsys.readouterr().out)
         assert payload["wait"]["status"] == "refused"
         assert "usage limits" in payload["wait"]["reason"]
+        assert payload["wait"]["kind"] == fgt.REFUSAL_QUOTA
+
+    def test_quota_stop_block_tells_the_operator_to_ask_the_user(self, capsys):
+        fgt.print_reviewer_refusal(
+            {
+                "kind": fgt.REFUSAL_QUOTA,
+                "reason": "You have reached your Codex usage limits for code reviews.",
+                "url": "https://github.com/o/r/pull/5#issuecomment-9",
+            },
+            author=CODEX,
+            json_output=False,
+            color_enabled=False,
+        )
+
+        out = capsys.readouterr().out
+        assert "ask the user NOW" in out
+        assert "Stop the loop" in out
+        assert "add credits" in out
+        assert "Do not wait" in out
+
+    def test_withdrawn_stop_block_offers_no_retry(self, capsys):
+        fgt.print_reviewer_refusal(
+            {
+                "kind": fgt.REFUSAL_WITHDRAWN,
+                "reason": "The consumer version has been sunset.",
+            },
+            author=BOT,
+            json_output=False,
+            color_enabled=False,
+        )
+
+        out = capsys.readouterr().out
+        assert "add credits" not in out
+        assert "--outcome-reason 'reviewer refused the review'" in out
 
 
 class TestWaitChunkCli:

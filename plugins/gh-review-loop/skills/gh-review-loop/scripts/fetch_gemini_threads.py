@@ -744,11 +744,22 @@ def filter_reviews(pull_request: dict[str, Any], author: str) -> list[dict[str, 
 # it and the wait would otherwise burn its whole timeout on a reviewer that
 # already answered. Patterns are deliberately narrow so a review that merely
 # discusses rate limiting is not mistaken for a refusal.
+#
+# The two kinds differ in what the user can do about it: a quota cap is
+# recoverable (upgrade the account or add credits, then retry the same wait),
+# a withdrawn service is not. Only the recoverable kind is worth interrupting
+# the user for.
+REFUSAL_QUOTA = "quota_exhausted"
+REFUSAL_WITHDRAWN = "withdrawn"
+
 REVIEWER_REFUSAL_RES = (
-    re.compile(r"reached your\b.{0,60}\blimits?\b", re.IGNORECASE | re.DOTALL),
-    re.compile(r"usage limits?\b.{0,40}\bcode review", re.IGNORECASE | re.DOTALL),
-    re.compile(r"\bhas been sunset\b", re.IGNORECASE),
-    re.compile(r"review\w*\b.{0,40}\bno longer (available|supported)\b", re.IGNORECASE | re.DOTALL),
+    (REFUSAL_QUOTA, re.compile(r"reached your\b.{0,60}\blimits?\b", re.IGNORECASE | re.DOTALL)),
+    (REFUSAL_QUOTA, re.compile(r"usage limits?\b.{0,40}\bcode review", re.IGNORECASE | re.DOTALL)),
+    (REFUSAL_WITHDRAWN, re.compile(r"\bhas been sunset\b", re.IGNORECASE)),
+    (
+        REFUSAL_WITHDRAWN,
+        re.compile(r"review\w*\b.{0,40}\bno longer (available|supported)\b", re.IGNORECASE | re.DOTALL),
+    ),
 )
 
 
@@ -764,16 +775,32 @@ def print_reviewer_refusal(
         fields = {k: v for k, v in refusal.items() if k != "pull_request" and v is not None}
         print(json.dumps({"wait": fields}, indent=2, sort_keys=True))
         return
+    quota = refusal.get("kind") == REFUSAL_QUOTA
     lines = [
         f"[loop] STOP — {author} refused the review: {refusal.get('reason', '')}",
         "Waiting cannot help; the reviewer already answered.",
     ]
     if refusal.get("url"):
         lines.append(f"Comment: {refusal['url']}")
-    lines.append(
-        "Record the run with: --record-run --outcome human "
-        "--outcome-reason 'reviewer refused the review' --gemini-unconfirmed"
-    )
+    if quota:
+        # Recoverable: the cap lifts the moment the user pays for it, so the
+        # decision is theirs and it has to be asked now — not after a timeout.
+        lines.extend(
+            [
+                "The cap is a billing limit, not a verdict — ask the user NOW how to proceed:",
+                "  1. Stop the loop — record with: --record-run --outcome human "
+                "--outcome-reason 'reviewer quota exhausted' --gemini-unconfirmed",
+                f"  2. Upgrade the {reviewer_resolver.display_name_for(author) or author} "
+                "account or add credits, then retry — "
+                "once the user confirms, re-run this same wait command.",
+                "Do not wait, do not re-ping, and do not burn a cycle re-requesting the review.",
+            ]
+        )
+    else:
+        lines.append(
+            "Record the run with: --record-run --outcome human "
+            "--outcome-reason 'reviewer refused the review' --gemini-unconfirmed"
+        )
     print(color_loop_block("\n".join(lines), enabled=color_enabled))
 
 
@@ -802,9 +829,11 @@ def reviewer_refusal(
         if after_iso and created_at <= after_iso:
             continue
         body = comment.get("body") or ""
-        if not any(pattern.search(body) for pattern in REVIEWER_REFUSAL_RES):
+        kind = next((label for label, pattern in REVIEWER_REFUSAL_RES if pattern.search(body)), None)
+        if kind is None:
             continue
         return {
+            "kind": kind,
             "reason": " ".join(body.replace(">", " ").split())[:200],
             "created_at": created_at,
             "url": comment.get("url"),
