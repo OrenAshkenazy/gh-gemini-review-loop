@@ -1,6 +1,6 @@
 {
   "name": "gh-review-loop",
-  "version": "0.2.31",
+  "version": "0.2.32",
   "description": "Clears AI reviewer feedback on your PR: reads real review-thread state, sweeps the sibling instances the reviewer missed, gates every push on your repo's own tests, then requests re-review \u2014 hard-capped so it can never spam the PR. Works with Codex out of the box, or any reviewer bot you configure.",
   "author": {
     "name": "Oren Ashkenazy",
