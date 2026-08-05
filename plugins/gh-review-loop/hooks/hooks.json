@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "python3 \"${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/skills/gh-review-loop/scripts/loop_profile_gate.py\"",
-            "statusMessage": "Checking Gemini loop verification profile",
+            "statusMessage": "Checking review loop verification profile",
             "timeout": 15
           }
         ]
@@ -18,7 +18,7 @@
           {
             "type": "command",
             "command": "python3 \"${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/skills/gh-review-loop/scripts/loop_summary_gate.py\"",
-            "statusMessage": "Checking Gemini loop summary gate",
+            "statusMessage": "Checking review loop summary gate",
             "timeout": 15
           }
         ]
@@ -30,7 +30,7 @@
           {
             "type": "command",
             "command": "python3 \"${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/skills/gh-review-loop/scripts/loop_summary_hook.py\"",
-            "statusMessage": "Checking Gemini loop summary",
+            "statusMessage": "Checking review loop summary",
             "timeout": 130
           }
         ]

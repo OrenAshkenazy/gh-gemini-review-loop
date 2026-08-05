@@ -6,16 +6,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
+import judge
+import review_vendors
 import reviewer_resolver
 
 
-DEFAULT_REVIEWER_MENTION = "@gemini-code-assist"
-DEFAULT_REVIEWER_LOGIN = "gemini-code-assist"
+DEFAULT_REVIEWER_MENTION = review_vendors.DEFAULT_VENDOR.mention
+DEFAULT_REVIEWER_LOGIN = review_vendors.DEFAULT_VENDOR.login
 
 
 def build_default_phrase(reviewer_mention: str = DEFAULT_REVIEWER_MENTION) -> str:
@@ -25,7 +28,7 @@ def build_default_phrase(reviewer_mention: str = DEFAULT_REVIEWER_MENTION) -> st
     return f"{reviewer_mention} please review the latest changes."
 
 
-DEFAULT_PHRASE = build_default_phrase()
+DEFAULT_PHRASE = review_vendors.DEFAULT_VENDOR.rereview_phrase
 
 
 def no_safe_trigger_payload(reviewer_login: str) -> dict[str, Any]:
@@ -95,6 +98,104 @@ def resolve_review_trigger(
     return DEFAULT_REVIEWER_MENTION, DEFAULT_REVIEWER_LOGIN
 
 
+DEFAULT_REREVIEW_LIMIT = 3
+
+
+def _trigger_re(mention: str) -> re.Pattern[str]:
+    """Match the reviewer mention as a whole word, case-insensitively."""
+    return re.compile(rf"(?<![\w/-]){re.escape(mention.strip())}(?![\w-])", re.IGNORECASE)
+
+
+def effective_cap(cli_value: int | None) -> int:
+    """Resolve the re-review cap: --max-rereview-requests, else saved prefs."""
+    if cli_value is not None:
+        return cli_value
+    try:
+        prefs = judge.load_preferences()
+    except Exception:  # noqa: BLE001 — a bad prefs file must not lift the cap
+        return DEFAULT_REREVIEW_LIMIT
+    value = prefs.get("max_rereview_requests", DEFAULT_REREVIEW_LIMIT)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return DEFAULT_REREVIEW_LIMIT
+    return value
+
+
+def gh_login(runner: Any = subprocess.run) -> str | None:
+    """Return the gh-authenticated login, or None if it cannot be resolved."""
+    try:
+        result = runner(
+            ["gh", "api", "user", "--jq", ".login"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    login = (result.stdout or "").strip()
+    return login or None
+
+
+def count_agent_pings(
+    repo: str,
+    pr: int,
+    trigger: str,
+    agent_login: str | None,
+    runner: Any = subprocess.run,
+) -> int | None:
+    """Count existing re-review pings on the PR authored by ``agent_login``.
+
+    Returns None when the count cannot be established. A ping posted by a human
+    never counts: the cap bounds what the agent does, not what you do.
+    """
+    if not trigger or not agent_login:
+        return None
+    owner, repo_name = parse_repo(repo)
+    try:
+        result = runner(
+            ["gh", "api", "--paginate",
+             f"repos/{owner}/{repo_name}/issues/{pr}/comments"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        comments = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(comments, list):
+        return None
+    pattern = _trigger_re(trigger)
+    count = 0
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+        if (comment.get("user") or {}).get("login") != agent_login:
+            continue
+        if pattern.search(comment.get("body") or ""):
+            count += 1
+    return count
+
+
+def capped_payload(repo: str, pr: int, used: int, cap: int) -> dict[str, Any]:
+    return {
+        "status": "capped",
+        "posted": False,
+        "repo": repo,
+        "pr": pr,
+        "rereviews_used": used,
+        "rereview_limit": cap,
+        "message": (
+            f"Re-review cap reached: {used} of {cap} requests already posted by "
+            "this agent on this PR. Raise max_rereview_requests or pass "
+            "--max-rereview-requests to continue."
+        ),
+    }
+
+
 def parse_repo(value: str) -> tuple[str, str]:
     """Validate and split an ``OWNER/REPO`` value."""
     if not isinstance(value, str):
@@ -122,11 +223,28 @@ def post_rereview(
     pr: int,
     phrase: str,
     runner: Any = subprocess.run,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Post the top-level PR comment and return the normalized result payload."""
+    """Post the top-level PR comment and return the normalized result payload.
+
+    With ``dry_run`` set, validate the arguments and report the exact comment
+    body that would be posted without calling ``gh``. This is the only write
+    the loop makes to someone else's PR, so it needs a preview like every
+    other write in the skill.
+    """
     owner, repo_name = parse_repo(repo)
     if not isinstance(pr, int) or pr <= 0:
         raise ValueError("--pr must be a positive integer")
+
+    if dry_run:
+        return {
+            "created_at": None,
+            "repo": repo,
+            "pr": pr,
+            "phrase": phrase,
+            "dry_run": True,
+            "posted": False,
+        }
 
     cmd = [
         "gh",
@@ -193,6 +311,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reviewer login used in controlled stop messages.",
     )
     parser.add_argument(
+        "--max-rereview-requests",
+        type=int,
+        default=None,
+        help=(
+            "Cap on re-review requests this agent may post on one PR. "
+            "Defaults to max_rereview_requests from preferences, else 3."
+        ),
+    )
+    parser.add_argument(
+        "--no-cap-check",
+        action="store_true",
+        help="Skip the cap check. Only for callers that enforce the cap themselves.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the comment that would be posted without posting it.",
+    )
+    parser.add_argument(
         "--no-safe-trigger",
         action="store_true",
         help="Do not post; emit a controlled no_safe_trigger result instead.",
@@ -232,8 +369,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
+        trigger = None
         if args.phrase is not None:
             phrase = args.phrase
+            trigger = args.reviewer_mention
         else:
             trigger, reviewer_login = resolve_review_trigger(
                 repo=args.repo,
@@ -255,7 +394,21 @@ def main(argv: list[str] | None = None) -> int:
                 or reviewer_resolver.phrase_for(trigger)
                 or build_default_phrase(trigger)
             )
-        payload = post_rereview(args.repo, args.pr, phrase)
+        # The cap is the loop's only guarantee that it cannot spam a PR, so it
+        # is enforced here at the write itself rather than trusted to a caller.
+        if not args.no_cap_check:
+            cap = effective_cap(args.max_rereview_requests)
+            used = count_agent_pings(
+                args.repo, args.pr, trigger or phrase, gh_login()
+            )
+            if used is not None and used >= cap:
+                payload = capped_payload(args.repo, args.pr, used, cap)
+                if args.json_output:
+                    print(json.dumps(payload, indent=2, sort_keys=True))
+                else:
+                    print(f"[loop] {payload['message']}")
+                return 0
+        payload = post_rereview(args.repo, args.pr, phrase, dry_run=args.dry_run)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -265,6 +418,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json_output:
         print(json.dumps(payload, indent=2, sort_keys=True))
+    elif payload.get("dry_run"):
+        print(f"[loop] dry run — would post to {payload['repo']}#{payload['pr']}: {payload['phrase']}")
     else:
         print(f"[loop] Re-review requested at {payload['created_at']}")
     return 0

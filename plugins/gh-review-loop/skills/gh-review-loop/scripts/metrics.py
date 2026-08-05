@@ -1,4 +1,4 @@
-"""Local, identity-free run metrics for the Gemini review loop.
+"""Local, identity-free run metrics for the AI reviewer loop.
 
 Pure module: no network, no imports from fetch_gemini_threads. Owns the
 runs.jsonl schema, append/load, run-summary formatting, and aggregation.
@@ -189,7 +189,7 @@ def classify_finding_state(signals: dict[str, Any]) -> str:
     - ``cap_reached``        : the re-review cap was reached.
 
     No single signal decides ``fixed_pending_confirmation``; it requires the
-    *combination* fixed_locally + file_changed at cap with no Gemini
+    *combination* fixed_locally + file_changed at cap with no reviewer
     confirmation.
 
     Precedence (first matching rule wins, highest-confidence first):
@@ -402,13 +402,13 @@ def format_wait_heartbeat(
         )
     if status == "settling":
         return (
-            "[loop] Gemini responded — waiting for review threads to settle, "
+            "[loop] Reviewer responded — waiting for review threads to settle, "
             f"{_count(quiet_period_remaining_seconds)}s quiet period remaining"
         )
     if status == "timed_out":
         return (
             f"[loop] wait timed out after {format_duration(elapsed)} — "
-            "Gemini did not confirm; record with --gemini-unconfirmed"
+            "The reviewer did not confirm; record with --gemini-unconfirmed"
         )
     return ""
 
@@ -425,7 +425,7 @@ def format_next_options(outcome: str, cap_reached: bool, needs_human: int) -> st
         ]
     elif outcome == "capped":
         options = [
-            'Bump cap and continue: "run the Gemini loop with cap 6"',
+            'Bump cap and continue: "run the review loop with cap 6"',
             "Manually inspect and resolve the remaining GitHub thread",
             "Leave it for a follow-up PR",
         ]
@@ -437,7 +437,7 @@ def format_next_options(outcome: str, cap_reached: bool, needs_human: int) -> st
         ]
     elif cap_reached:
         options = [
-            'Bump cap and continue: "run the Gemini loop with cap 6"',
+            'Bump cap and continue: "run the review loop with cap 6"',
             "Manually inspect and resolve the remaining GitHub thread",
             "Leave it for a follow-up PR",
         ]
@@ -634,7 +634,7 @@ def format_convergence_line(stats: dict[str, Any], *, swept_count: int) -> str:
         names = ", ".join(recurred)
         return (
             f"Convergence: ⚠ pattern(s) {names} RECURRED after sweep. "
-            "Sweep missed a variant or Gemini keeps re-flagging."
+            "Sweep missed a variant or the reviewer keeps re-flagging."
         )
     return (
         f"Convergence: {distinct} distinct patterns this cycle, "
@@ -767,13 +767,13 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
 def format_stats(repo: str, stats: dict[str, Any], skipped: int = 0) -> str:
     if stats.get("count", 0) == 0:
         msg = (
-            "No Gemini loop runs recorded yet for this repo. "
+            "No review loop runs recorded yet for this repo. "
             "Run the loop once and stats will appear here."
         )
         if skipped:
             msg += f"\n\n({skipped} unreadable record{'s' if skipped != 1 else ''} skipped)"
         return msg
-    lines = [f"Gemini loop stats — {repo}", f"Last {stats['count']} runs", ""]
+    lines = [f"Review loop stats — {repo}", f"Last {stats['count']} runs", ""]
     lines.append(f"Average cycles used: {stats['avg_cycles']:.1f}")
 
     def _elapsed_line(label: str, key: str) -> None:

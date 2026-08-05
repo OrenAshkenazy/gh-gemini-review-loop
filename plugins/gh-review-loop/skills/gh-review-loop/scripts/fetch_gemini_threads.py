@@ -26,12 +26,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metrics  # noqa: E402 — sibling module, pure/stdlib-only
 import cluster_findings  # noqa: E402 — sibling module, pure/stdlib-only
 import reviewer_resolver  # noqa: E402 — sibling module, pure/stdlib-only
+import review_vendors  # noqa: E402 — sibling module, pure/stdlib-only
 from loop_color import color_loop, colors_enabled  # noqa: E402 — sibling module
 
 
-DEFAULT_PROVIDER_NAME = "Gemini Code Assist"
-DEFAULT_AUTHOR = "gemini-code-assist"
-DEFAULT_REVIEW_TRIGGER_MENTION = "@gemini-code-assist"
+# The default reviewer must be one that is still alive and that the loop can
+# trigger itself. Codex only reviews when pinged, so an unconfigured PR gets a
+# real cycle 0 instead of a silent wait on a bot that may never speak.
+DEFAULT_PROVIDER_NAME = review_vendors.DEFAULT_VENDOR.display_name
+DEFAULT_AUTHOR = review_vendors.DEFAULT_VENDOR.login
+DEFAULT_REVIEW_TRIGGER_MENTION = review_vendors.DEFAULT_VENDOR.mention
 DEFAULT_REREVIEW_LIMIT = 3
 
 
@@ -1191,7 +1195,11 @@ def resolve_reviewer_selection(args: argparse.Namespace, pr: PullRequest) -> dic
         review_trigger=DEFAULT_REVIEW_TRIGGER_MENTION,
         source="default_unconfirmed",
     )
-    return reviewer_selection_state(record, source="default_unconfirmed")
+    state = reviewer_selection_state(record, source="default_unconfirmed")
+    # Nothing was discovered and nothing was persisted. Say so, so the caller
+    # can offer a choice instead of waiting on an assumed reviewer.
+    state["unconfirmed"] = True
+    return state
 
 
 def update_run_tracking(pr: PullRequest, findings: list[tuple[str, str | None]]) -> None:

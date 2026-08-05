@@ -378,7 +378,7 @@ class TestJudgeSkip:
 class TestNextOptions:
     def test_capped(self):
         out = metrics.format_next_options("capped", cap_reached=True, needs_human=0)
-        assert 'Bump cap and continue: "run the Gemini loop with cap 6"' in out
+        assert 'Bump cap and continue: "run the review loop with cap 6"' in out
 
     def test_human(self):
         out = metrics.format_next_options("human", cap_reached=False, needs_human=1)
@@ -680,7 +680,7 @@ class TestFormatWaitHeartbeat:
             quiet_period_remaining_seconds=30,
         )
         assert out == (
-            "[loop] Gemini responded — waiting for review threads to settle, "
+            "[loop] Reviewer responded — waiting for review threads to settle, "
             "30s quiet period remaining"
         )
 
@@ -692,7 +692,7 @@ class TestFormatWaitHeartbeat:
             checks=11,
         )
         assert out == (
-            "[loop] wait timed out after 15m — Gemini did not confirm; "
+            "[loop] wait timed out after 15m — The reviewer did not confirm; "
             "record with --gemini-unconfirmed"
         )
 
@@ -716,7 +716,7 @@ class TestFormatWaitHeartbeat:
 class TestFormatStats:
     def test_empty_message(self):
         out = metrics.format_stats("o/r", {"count": 0})
-        assert "No Gemini loop runs recorded yet" in out
+        assert "No review loop runs recorded yet" in out
 
     def test_full_output_with_judge_footnote(self):
         agg = {
