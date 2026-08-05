@@ -1,6 +1,6 @@
 # Layer B finding-quality eval — pending first run
 
-The weekly eval workflow has not yet run on this repo. Once it does, this file will be overwritten with the rendered report and the README's "Skill calibration" section will start pulling real numbers from here.
+The weekly eval workflow has not yet run on this repo. Once it does, this file will be overwritten with the rendered report, which is the repo's only end-to-end trust artifact.
 
 To trigger the first run:
 
@@ -17,7 +17,7 @@ To trigger the first run:
 
 ## Why we publish it here
 
-The eval is the maintainer's tool for calibrating the skill. Publishing the rendered output to the repo (instead of only into a private tracking Issue) makes the trust signal visible to anyone evaluating whether to install the plugin. The README's "Skill calibration" section links to this file.
+The eval is the maintainer's tool for calibrating the skill. Publishing the rendered output to the repo (instead of only into a private tracking Issue) makes the trust signal visible to anyone evaluating whether to install the plugin. Link this file from the README once the first run has produced real numbers.
 
 ## Hand-labeled ground truth
 

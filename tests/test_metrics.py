@@ -680,7 +680,7 @@ class TestFormatWaitHeartbeat:
             quiet_period_remaining_seconds=30,
         )
         assert out == (
-            "[loop] Gemini responded — waiting for review threads to settle, "
+            "[loop] Reviewer responded — waiting for review threads to settle, "
             "30s quiet period remaining"
         )
 

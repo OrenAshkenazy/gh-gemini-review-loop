@@ -55,8 +55,8 @@ Everything else it does — reading `isResolved`/`isOutdated` off the `reviewThr
 Being honest about the boundary saves you an install:
 
 - **You use CodeRabbit and pay for Pro.** `@coderabbitai autofix` is on by default and handles CodeRabbit's own threads. What's left is the blocking test gate and the sibling sweep — decide whether those are worth a second tool.
-- **You use Copilot code review on a paid plan.** "Fix batch with Copilot" applies multiple Copilot comments at once, and the coding agent validates against your tests before pushing. Same caveat: Copilot's own comments only.
-- **You're on Claude Code Review (Team/Enterprise).** It auto-resolves threads when you push a fix, and a `REVIEW.md` with convergence rules solves much of the round-three problem upstream, for free.
+- **You use Copilot code review on a paid plan.** "Fix batch with Copilot" applies multiple Copilot comments at once in a cloud agent that can run your repo's setup steps. Same caveat: Copilot's own comments only.
+- **You're on Claude Code Review (Team/Enterprise).** In its push-triggered mode it auto-resolves threads when you fix and push, and a `REVIEW.md` with convergence rules solves much of the round-three problem upstream. It's a research preview and bills separately, roughly $15–25 per review.
 - **You want a hosted, zero-config service.** This is a local skill that shells out to `gh`. It does nothing while you aren't running it.
 
 This is for the case where you don't control which bot reviews your repo, you don't want to pay that bot's vendor for its fix feature, and you want a bound on how many rounds this takes.
@@ -70,8 +70,8 @@ Checkable claims, with the honest scope of each:
 | Thread-state filtering | `reviewThreads` GraphQL, `isResolved` / `isOutdated`, plus `ADDRESSED_BY_REPLY` for maintainer *"wontfix"* replies | `fetch_gemini_threads.py` |
 | Pattern clustering + recurrence | Deterministic signature, cross-cycle recurrence tracking. **The sweep itself is an instruction to the agent, not a script** — it greps your changed files under the agent's control | `cluster_findings.py` |
 | Verification gate | Auto-detects Python / Node / Rust / Go. Required-check failure flips the run to `verification: failed`. **`Skip` is an offered menu option** — pick it and there is no gate | `detect_profile.py`, `run_profile.py` |
-| Cycle cap | Hard count, agent-scoped: only the agent's own pings consume it | `fetch_gemini_threads.py` |
-| Severity ordering | Parsed for **Codex (`P0`–`P3`) and Gemini (`critical`–`low`) only.** Other bots' findings are `unknown` and are kept by default | `thread_severity()` |
+| Cycle cap | Hard count, agent-scoped: only the agent's own pings consume it. Enforced at the write — `request_rereview.py` counts prior pings and refuses past the cap, rather than trusting the agent to stop | `request_rereview.py` |
+| Severity ordering | Parsed for **Codex `![P0]`–`![P3]` badges and `![critical]`–`![low]` image alt text only.** A bot using neither convention yields `unknown`, which is kept by default | `thread_severity()` |
 | Optional judge | Second-model triage per finding (`false_positive`, `needs_human`, …). Off by default, needs an OpenAI key | `judge.py` |
 | Audit trail + local stats | One live-edited PR comment, per-run receipts, per-repo aggregates via `--stats`. Never transmitted | `metrics.py` |
 | Zero infrastructure | Stdlib Python + `gh` + `git`. No SDK, no server, no account | all scripts |
@@ -99,7 +99,7 @@ If you're comparing alternatives, the closest is [pbakaus/agent-reviews](https:/
 
 `--list-reviewers` discovers which bots have commented on your PR; `--reviewer` persists your choice per PR.
 
-**Severity caveat, stated plainly:** only Codex and Gemini priority markers are parsed today. For any other bot every finding is `unknown`, so `--min-severity high` keeps everything and `--drop-unknown-severity` drops everything. Use severity filtering only with a bot whose format is parsed.
+**Severity caveat, stated plainly:** only two marker conventions are parsed today — Codex's `![P0]`–`![P3]` and the `![critical]`–`![low]` alt-text form Gemini uses. For any other bot every finding is `unknown`, so `--min-severity high` keeps everything and `--drop-unknown-severity` drops everything. Use severity filtering only with a bot whose format is parsed.
 
 ## Other install paths
 
@@ -247,8 +247,8 @@ Resulting file:
 
 ```json
 {
-  "schema_version": 2,
-  "max_rereview_requests": 4
+  "max_rereview_requests": 4,
+  "schema_version": 2
 }
 ```
 
@@ -258,7 +258,7 @@ Judge settings live in the same file; the script preserves `max_rereview_request
 
 The skill drives a set of small stdlib Python scripts under [`plugins/gh-review-loop/skills/gh-review-loop/scripts/`](plugins/gh-review-loop/skills/gh-review-loop/scripts/). Each is independently runnable and `--json`-clean on stdout with progress on stderr, so you can drive the loop by hand or from CI.
 
-Every write to your PR supports `--dry-run`, including the re-review request.
+Every write the scripts make to your PR supports `--dry-run`, including the re-review request. The `git push` itself is an ordinary git command run by the agent, not a script write.
 
 ## Feedback wanted
 

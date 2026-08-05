@@ -1,4 +1,4 @@
-"""Local, identity-free run metrics for the Gemini review loop.
+"""Local, identity-free run metrics for the AI reviewer loop.
 
 Pure module: no network, no imports from fetch_gemini_threads. Owns the
 runs.jsonl schema, append/load, run-summary formatting, and aggregation.
@@ -189,7 +189,7 @@ def classify_finding_state(signals: dict[str, Any]) -> str:
     - ``cap_reached``        : the re-review cap was reached.
 
     No single signal decides ``fixed_pending_confirmation``; it requires the
-    *combination* fixed_locally + file_changed at cap with no Gemini
+    *combination* fixed_locally + file_changed at cap with no reviewer
     confirmation.
 
     Precedence (first matching rule wins, highest-confidence first):
@@ -402,7 +402,7 @@ def format_wait_heartbeat(
         )
     if status == "settling":
         return (
-            "[loop] Gemini responded — waiting for review threads to settle, "
+            "[loop] Reviewer responded — waiting for review threads to settle, "
             f"{_count(quiet_period_remaining_seconds)}s quiet period remaining"
         )
     if status == "timed_out":
@@ -634,7 +634,7 @@ def format_convergence_line(stats: dict[str, Any], *, swept_count: int) -> str:
         names = ", ".join(recurred)
         return (
             f"Convergence: ⚠ pattern(s) {names} RECURRED after sweep. "
-            "Sweep missed a variant or Gemini keeps re-flagging."
+            "Sweep missed a variant or the reviewer keeps re-flagging."
         )
     return (
         f"Convergence: {distinct} distinct patterns this cycle, "

@@ -3074,7 +3074,7 @@ class TestWaitHeartbeatCommand:
         )
         assert fgt.main() == 0
         out = capsys.readouterr().out
-        assert "Gemini responded — waiting for review threads to settle" in out
+        assert "Reviewer responded — waiting for review threads to settle" in out
         assert "30s quiet period remaining" in out
         assert "\033[95m" in out
 

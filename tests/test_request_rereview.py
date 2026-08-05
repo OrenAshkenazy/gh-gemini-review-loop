@@ -467,3 +467,94 @@ def test_default_reviewer_is_not_a_sunset_vendor():
     """A default that no longer reviews turns 'no reviewer' into a silent wait."""
     assert not review_vendors.is_sunset(request_rereview.DEFAULT_REVIEWER_LOGIN)
     assert review_vendors.is_sunset("gemini-code-assist")
+
+
+class TestCapEnforcement:
+    """The cap is the loop's only guarantee it cannot spam a PR."""
+
+    @staticmethod
+    def _comments(*bodies_by_login):
+        nodes = [{"user": {"login": login}, "body": body}
+                 for login, body in bodies_by_login]
+        return subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout=json.dumps(nodes), stderr=""
+        )
+
+    def _runner(self, comments):
+        def runner(cmd, **kwargs):
+            if cmd[:3] == ["gh", "api", "user"]:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout="agent\n", stderr=""
+                )
+            return comments
+        return runner
+
+    def test_counts_only_the_agents_own_pings(self):
+        runner = self._runner(self._comments(
+            ("agent", "@codex review"),
+            ("a-human", "@codex review"),
+            ("agent", "unrelated comment"),
+        ))
+        used = request_rereview.count_agent_pings(
+            "acme/widget", 159, "@codex", "agent", runner=runner
+        )
+        assert used == 1
+
+    def test_returns_none_when_the_count_cannot_be_established(self):
+        def failing(cmd, **kwargs):
+            return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="boom")
+
+        assert request_rereview.count_agent_pings(
+            "acme/widget", 159, "@codex", "agent", runner=failing
+        ) is None
+        assert request_rereview.count_agent_pings(
+            "acme/widget", 159, "@codex", None
+        ) is None
+
+    def test_mention_matches_as_a_whole_word(self):
+        pattern = request_rereview._trigger_re("@codex")
+        assert pattern.search("@codex review")
+        assert pattern.search("please @codex review the latest changes.")
+        assert not pattern.search("@codex-reviewer please look")
+
+    def test_main_refuses_to_post_once_the_cap_is_used(self, monkeypatch, capsys):
+        posted = []
+        monkeypatch.setattr(request_rereview, "post_rereview",
+                            lambda *a, **k: posted.append(a))
+        monkeypatch.setattr(request_rereview, "gh_login", lambda *a, **k: "agent")
+        monkeypatch.setattr(request_rereview, "count_agent_pings",
+                            lambda *a, **k: 3)
+        monkeypatch.setattr(request_rereview, "effective_cap", lambda *a: 3)
+
+        rc = request_rereview.main(
+            ["--repo", "acme/widget", "--pr", "159", "--json"]
+        )
+
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert posted == []
+        assert payload["status"] == "capped"
+        assert payload["posted"] is False
+        assert payload["rereviews_used"] == 3
+        assert payload["rereview_limit"] == 3
+
+    def test_main_posts_while_under_the_cap(self, monkeypatch, capsys):
+        posted = []
+
+        def fake_post(repo, pr, phrase, **kwargs):
+            posted.append(phrase)
+            return {"created_at": CREATED_AT, "repo": repo, "pr": pr, "phrase": phrase}
+
+        monkeypatch.setattr(request_rereview, "post_rereview", fake_post)
+        monkeypatch.setattr(request_rereview, "gh_login", lambda *a, **k: "agent")
+        monkeypatch.setattr(request_rereview, "count_agent_pings", lambda *a, **k: 2)
+        monkeypatch.setattr(request_rereview, "effective_cap", lambda *a: 3)
+
+        assert request_rereview.main(["--repo", "acme/widget", "--pr", "159"]) == 0
+        capsys.readouterr()
+        assert posted == ["@codex review"]
+
+    def test_a_broken_prefs_file_does_not_lift_the_cap(self, monkeypatch):
+        monkeypatch.setattr(request_rereview.judge, "load_preferences",
+                            lambda: (_ for _ in ()).throw(OSError("unreadable")))
+        assert request_rereview.effective_cap(None) == 3

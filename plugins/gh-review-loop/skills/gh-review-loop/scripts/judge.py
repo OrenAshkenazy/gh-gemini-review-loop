@@ -1,4 +1,4 @@
-"""End-user-side LLM-as-judge for Gemini Code Assist findings.
+"""End-user-side LLM-as-judge for AI reviewer findings.
 
 This module ships INSIDE the installed plugin (it is what the user invokes
 via ``--judge-mode``). It is intentionally separate from ``evals/judge.py``
@@ -18,7 +18,7 @@ actionable advice, not just calibration labels):
 
 Plus:
 - ``severity_override``  — One of critical/high/medium/low/none. Judge's
-  opinion on the right severity, which can differ from Gemini's label.
+  opinion on the right severity, which can differ from the reviewer's label.
 - ``recommended_action`` — fix / reply / ignore / escalate.
 
 Privacy / cost / safety invariants
@@ -110,9 +110,9 @@ PREFS_SCHEMA_VERSION = 2
 
 SYSTEM_PROMPT = """\
 You are an expert code-review judge. The user is deciding whether to act on \
-a Gemini Code Assist finding on their pull request. Be strict: do not assume \
-Gemini is correct just because it sounds confident, and do not assume it is \
-wrong just because the finding is minor.
+a finding posted by an AI code reviewer on their pull request. Be strict: do \
+not assume the reviewer is correct just because it sounds confident, and do \
+not assume it is wrong just because the finding is minor.
 
 Classify the finding as exactly ONE verdict:
 - "valid_actionable": Real issue the user should act on (bug, security, \
@@ -131,7 +131,7 @@ the line just hasn't been auto-resolved on GitHub.
 
 Also output:
 - "severity_override": Your opinion on the right severity (critical / high \
-/ medium / low / none). Can match or differ from Gemini's label. "none" \
+/ medium / low / none). Can match or differ from the reviewer's label. "none" \
 means below the threshold worth surfacing.
 - "recommended_action": fix / reply / ignore / escalate.
 
@@ -349,7 +349,7 @@ def should_judge_run(*, mode: str, phase: str | None) -> bool:
 
 
 def build_user_prompt(finding: dict) -> str:
-    """Render a Gemini finding into the structured user prompt."""
+    """Render a reviewer finding into the structured user prompt."""
     severity = finding.get("severity") or "unknown"
     path = finding.get("path") or "(unknown path)"
     line = finding.get("line") or "?"
@@ -358,9 +358,9 @@ def build_user_prompt(finding: dict) -> str:
 
     parts = [
         f"File: {path}:{line}",
-        f"Gemini severity: {severity}",
+        f"Reviewer severity: {severity}",
         "",
-        "Gemini's finding:",
+        "Reviewer's finding:",
         body,
     ]
     if diff_hunk:
