@@ -60,11 +60,14 @@ CODEX = ReviewVendor(
 
 KNOWN_VENDORS = {vendor.login: vendor for vendor in (GEMINI, CODEX)}
 
-# The reviewer the loop assumes when the user has not chosen one. Must be a
-# vendor that is alive and that the loop can trigger itself: an auto-reviewing
-# default turns "no reviewer here" into a silent wait, while a ping-first
-# default turns it into a working cycle 0.
-DEFAULT_VENDOR = CODEX
+# The loop has no default reviewer: with nothing configured it asks rather than
+# assumes. This is the reviewer it may *offer*. It is a ping-first vendor so
+# that accepting the offer starts a review immediately, where offering an
+# auto-reviewing vendor would only start a wait.
+SUGGESTED_VENDOR = CODEX
+
+# Back-compat alias for callers that still import the old name.
+DEFAULT_VENDOR = SUGGESTED_VENDOR
 
 
 def is_consumer_tier_retired(name: str | None) -> bool:

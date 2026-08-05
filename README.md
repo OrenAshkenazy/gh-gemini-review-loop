@@ -28,7 +28,7 @@ codex plugin marketplace add OrenAshkenazy/gh-review-loop
 codex plugin add gh-review-loop@gh-review-loop
 ```
 
-Then, from a repo with an open PR that a reviewer bot has commented on:
+Then, from a repo with an open PR that a reviewer bot has commented on (the loop asks which bot the first time, and remembers):
 
 > Run the AI reviewer loop
 
@@ -95,15 +95,15 @@ If you're comparing alternatives, the closest is [pbakaus/agent-reviews](https:/
 - **Claude Code or Codex** with plugin support.
 - **`gh` CLI**, authenticated against the repos you'll run this on.
 - **Python 3.10+** and **git**.
-- **A reviewer bot that posts GitHub review threads on your PRs.** Codex (`@codex`) is the bundled default and works out of the box. CodeRabbit, Copilot, Qodo, Sourcery and others work once you give the loop their author login and re-review mention.
+- **A reviewer bot that posts GitHub review threads on your PRs.** Codex and Gemini Code Assist ship with full vendor knowledge. CodeRabbit, Copilot, Qodo, Sourcery and others work once you give the loop their author login and re-review mention. There is no assumed default: on a PR with no reviewer configured the loop asks instead of guessing.
 
-> **Note on Gemini Code Assist.** Gemini works here exactly as it always did — *if* you're on the enterprise GitHub app. Google [deprecated the consumer app 2026-06-18 and shut it down 2026-07-17](https://developers.google.com/gemini-code-assist/docs/deprecations/consumer-code-review), so it can no longer be installed on the free tier. That's why it isn't the bundled default any more, not because support was dropped. Select it with `--reviewer gemini-code-assist`.
+> **Note on Gemini Code Assist.** Gemini is a first-class reviewer here and works exactly as it always did, automatic first review included, on the enterprise GitHub app. Google [deprecated the consumer app 2026-06-18 and shut it down 2026-07-17](https://developers.google.com/gemini-code-assist/docs/deprecations/consumer-code-review), so it can no longer be installed on the free tier. Nothing about its support here changed. Select it with `--reviewer gemini-code-assist`.
 
 ## Supported reviewers
 
 | Reviewer | Support | Re-review trigger | Severity format |
 |---|---|---|---|
-| Codex (`chatgpt-codex-connector`) | **Built-in default** | `@codex review` | `P0`–`P3`, normalized |
+| Codex (`chatgpt-codex-connector`) | Built-in, full support. Offered first on an unconfigured PR because it reviews on request, so accepting starts a cycle immediately | `@codex review` | `P0`–`P3`, normalized |
 | Gemini Code Assist | Built-in, full support. Needs the **enterprise** GitHub app ([consumer app shut down](https://developers.google.com/gemini-code-assist/docs/deprecations/consumer-code-review)) | `@gemini-code-assist please review…` | `critical` / `high` / `medium` / `low` |
 | CodeRabbit, Copilot, Qodo, Sourcery, … | Configurable | Supplied via `--review-trigger-mention` | **Not parsed** — findings carry `unknown` severity |
 

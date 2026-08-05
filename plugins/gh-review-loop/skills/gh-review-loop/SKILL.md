@@ -9,7 +9,7 @@ description: Use after a GitHub PR is opened, or when the user asks to handle AI
 
 Use this skill to run the full GitHub PR loop: after PR creation, wait for the configured AI reviewer to finish reviewing, fetch unresolved actionable review threads, acknowledge the requested fixes, implement clear fixes, verify them, commit and push to the PR branch, and ask the reviewer to re-review the latest revision.
 
-Codex (`@codex`) is the bundled default adapter. On first use for a PR, discover reviewer candidates with `--list-reviewers`, confirm the chosen bot, and persist it with `--reviewer`. Gemini Code Assist is fully supported and behaves normally for anyone on the enterprise GitHub app. It is not a *default* because the consumer app was shut down on 2026-07-17 and can no longer be installed, so assuming it for an unconfigured PR strands most users. Never fall back to it silently; if the user asks for it, use it. For compatible reviewer bots such as CodeRabbit, Copilot, Qodo, or Sourcery, pass a safe re-review mention only when it is known; never guess `@login` for an unknown bot.
+There is no default reviewer: with nothing configured the loop asks rather than assumes. On first use for a PR, discover reviewer candidates with `--list-reviewers`, confirm the chosen bot, and persist it with `--reviewer`. Gemini Code Assist is fully supported and behaves normally, including its automatic first review, for anyone on the enterprise GitHub app. Offer it like any other known vendor. The only caveat: its consumer app was shut down on 2026-07-17, so if a user picks it and no threads ever arrive, tell them that rather than waiting out the timeout. For compatible reviewer bots such as CodeRabbit, Copilot, Qodo, or Sourcery, pass a safe re-review mention only when it is known; never guess `@login` for an unknown bot.
 
 Prefer thread-aware review data over flat PR comments. GitHub review threads preserve `isResolved`, `isOutdated`, file paths, line anchors, and diff hunks, which are necessary for reliable automation.
 
@@ -22,14 +22,17 @@ persisted reviewer must be prompt-first:
 2. If candidates are returned, ask the user to confirm the single candidate or
    choose among multiple candidates, then persist the choice with
    `--reviewer <login> --reviewer-source confirmed [--reviewer-name <name>] [--review-trigger-mention <mention>]`.
-3. If zero candidates are returned on a fresh PR, do not assume a reviewer and
-   do not wait on one. Report that no reviewer bot has commented on this PR and
-   offer: **Ping the default reviewer now** (`@codex review` — the default only
-   reviews on request, so this starts cycle 0), **Pick another reviewer**
-   (name the login and its re-review mention), or **None**. **None** stops with
-   "No AI reviewer threads found on this PR." Never offer waiting on a reviewer
-   that has not spoken and was not chosen — a shut-down app is indistinguishable
-   from a slow one, and the wait burns the full timeout for nothing.
+3. If zero candidates are returned on a fresh PR, the selection comes back with
+   `source: "none_configured"` and `configured: false`. Do not treat the
+   accompanying `suggestion` as a choice already made. Report that no reviewer
+   has commented and offer three things: **Ping the suggested reviewer**
+   (`@codex review` — it reviews only on request, so accepting starts cycle 0
+   immediately), **Pick another reviewer** (any known vendor, including Gemini
+   Code Assist, or any bot whose login and re-review mention the user supplies),
+   or **None**, which stops with "No AI reviewer threads found on this PR."
+   Never wait on a reviewer the user did not choose. A reviewer that is not
+   installed is indistinguishable from a slow one, and the wait burns the full
+   timeout for nothing.
 4. If the JSON result has `partial: true`, do not claim no reviewer exists; ask
    the user to choose manually or retry discovery.
 
