@@ -101,9 +101,54 @@ def resolve_review_trigger(
 DEFAULT_REREVIEW_LIMIT = 3
 
 
+_MENTION_RE = re.compile(r"@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?")
+
+
 def _trigger_re(mention: str) -> re.Pattern[str]:
     """Match the reviewer mention as a whole word, case-insensitively."""
     return re.compile(rf"(?<![\w/-]){re.escape(mention.strip())}(?![\w-])", re.IGNORECASE)
+
+
+def mention_in(text: str) -> str | None:
+    """Extract the @mention from a re-review phrase.
+
+    The cap counts pings to a *reviewer*, so it must match on the mention, not
+    on the exact sentence. Two cycles that worded the request differently are
+    still two pings, and counting the full phrase would miss the earlier one and
+    under-count the cap.
+    """
+    match = _MENTION_RE.search(text or "")
+    return match.group(0) if match else None
+
+
+def parse_paginated_json(stdout: str | None) -> list[Any] | None:
+    """Parse `gh api --paginate` output into one list.
+
+    Without --slurp, gh emits one JSON document per page, concatenated, so a PR
+    with more than one page of comments does not parse as a single array.
+    Decoding documents in sequence handles both shapes without depending on a
+    gh version that has --slurp. Returns None when the output is not a sequence
+    of JSON arrays, so the caller can tell "could not count" from "counted zero".
+    """
+    text = (stdout or "").strip()
+    if not text:
+        return []
+    decoder = json.JSONDecoder()
+    items: list[Any] = []
+    index = 0
+    length = len(text)
+    while index < length:
+        try:
+            document, end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(document, list):
+            return None
+        items.extend(document)
+        index = end
+        while index < length and text[index].isspace():
+            index += 1
+    return items
 
 
 def effective_cap(cli_value: int | None) -> int:
@@ -162,11 +207,8 @@ def count_agent_pings(
         return None
     if result.returncode != 0:
         return None
-    try:
-        comments = json.loads(result.stdout or "[]")
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(comments, list):
+    comments = parse_paginated_json(result.stdout)
+    if comments is None:
         return None
     pattern = _trigger_re(trigger)
     count = 0
@@ -398,9 +440,29 @@ def main(argv: list[str] | None = None) -> int:
         # is enforced here at the write itself rather than trusted to a caller.
         if not args.no_cap_check:
             cap = effective_cap(args.max_rereview_requests)
-            used = count_agent_pings(
-                args.repo, args.pr, trigger or phrase, gh_login()
-            )
+            # Count by mention, never by the full sentence: a ping worded
+            # differently in an earlier cycle is still a ping.
+            countable = trigger or mention_in(phrase)
+            if countable is None:
+                # No mention to count by. Refuse rather than post uncounted:
+                # an uncountable write is an uncapped write.
+                payload = {
+                    "status": "uncountable_trigger",
+                    "posted": False,
+                    "repo": args.repo,
+                    "pr": args.pr,
+                    "message": (
+                        "Cannot count prior re-review requests: --phrase contains "
+                        "no @mention to match on. Pass --reviewer-mention so the "
+                        "cap can be enforced, or --no-cap-check to bypass it."
+                    ),
+                }
+                if args.json_output:
+                    print(json.dumps(payload, indent=2, sort_keys=True))
+                else:
+                    print(f"[loop] {payload['message']}")
+                return 0
+            used = count_agent_pings(args.repo, args.pr, countable, gh_login())
             if used is not None and used >= cap:
                 payload = capped_payload(args.repo, args.pr, used, cap)
                 if args.json_output:
