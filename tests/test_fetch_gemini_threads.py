@@ -270,7 +270,7 @@ class TestRereviewRequests:
 
     def test_counts_matching_trigger(self):
         pr = self._pr([
-            {"author": {"login": "a"}, "body": "@gemini-code-assist please review"},
+            {"author": {"login": "a"}, "body": "@codex review"},
             {"author": {"login": "b"}, "body": "unrelated"},
         ])
         assert len(rereview_requests(pr)) == 1
@@ -278,7 +278,7 @@ class TestRereviewRequests:
     def test_counts_configured_reviewer_trigger(self):
         pr = self._pr([
             {"author": {"login": "a"}, "body": "@coderabbitai please review"},
-            {"author": {"login": "b"}, "body": "@gemini-code-assist please review"},
+            {"author": {"login": "b"}, "body": "@codex review"},
         ])
         result = rereview_requests(pr, review_trigger_mention="@coderabbitai")
         assert len(result) == 1
@@ -304,8 +304,8 @@ class TestRereviewRequests:
 
     def test_filter_by_agent_login(self):
         pr = self._pr([
-            {"author": {"login": "agent"}, "body": "@gemini-code-assist please review"},
-            {"author": {"login": "human"}, "body": "@gemini-code-assist can you review again?"},
+            {"author": {"login": "agent"}, "body": "@codex review"},
+            {"author": {"login": "human"}, "body": "@codex can you review again?"},
         ])
         assert len(rereview_requests(pr, agent_login="agent")) == 1
         assert len(rereview_requests(pr, agent_login="human")) == 1
@@ -313,7 +313,7 @@ class TestRereviewRequests:
         assert len(rereview_requests(pr)) == 2  # no filter
 
     def test_ignores_comment_without_review_word(self):
-        pr = self._pr([{"author": {"login": "a"}, "body": "@gemini-code-assist hi"}])
+        pr = self._pr([{"author": {"login": "a"}, "body": "@codex hi"}])
         assert rereview_requests(pr) == []
 
 
@@ -522,7 +522,7 @@ class TestReviewerSelectionCli:
             "reviews": {"nodes": []},
             "reviewThreads": {
                 "nodes": [
-                    self._thread("gemini-code-assist", "T_gemini"),
+                    self._thread("chatgpt-codex-connector", "T_default"),
                     self._thread("coderabbitai", "T_code_rabbit"),
                 ]
             },
@@ -557,8 +557,9 @@ class TestReviewerSelectionCli:
         payload = json.loads(capsys.readouterr().out)
         assert payload["reviewerSelection"]["source"] == "default_unconfirmed"
         assert payload["reviewerSelection"]["confirmation_required"] is True
-        assert payload["reviewerSelection"]["login"] == "gemini-code-assist"
-        assert [thread["id"] for thread in payload["threads"]] == ["T_gemini"]
+        assert payload["reviewerSelection"]["login"] == "chatgpt-codex-connector"
+        assert payload["reviewerSelection"]["unconfirmed"] is True
+        assert [thread["id"] for thread in payload["threads"]] == ["T_default"]
 
     def test_persisted_reviewer_is_reused_without_prompt(
         self, tmp_path, monkeypatch, capsys
@@ -825,7 +826,7 @@ class TestReviewerSelectionCli:
         payload = json.loads(capsys.readouterr().out)
         assert payload["partial"] is True
         assert [candidate["login"] for candidate in payload["reviewers"]] == [
-            "gemini-code-assist",
+            "chatgpt-codex-connector",
             "coderabbitai",
         ]
         assert fgt.read_reviewer_selection(self.PR) is None
@@ -838,7 +839,7 @@ class TestReviewerDiscoveryFetch:
     def test_review_trigger_re_falls_back_for_non_string_mentions(self, mention):
         trigger = fgt._review_trigger_re(mention)
 
-        assert trigger.search("@gemini-code-assist please review")
+        assert trigger.search("@codex review")
 
     def test_fetch_reviewer_discovery_paginates_review_threads(self, monkeypatch):
         calls = []
@@ -3011,7 +3012,7 @@ class TestWaitChunkCli:
         )
         assert fgt.main() == 0
         out = capsys.readouterr().out
-        assert "[loop] waiting for gemini-code-assist — 90s elapsed" in out
+        assert "[loop] waiting for chatgpt-codex-connector — 90s elapsed" in out
         assert "\033[95m" in out  # purple
 
     def test_pending_json_stdout_is_machine_only(self, tmp_path, monkeypatch, capsys):

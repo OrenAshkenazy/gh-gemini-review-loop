@@ -11,11 +11,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import review_vendors
 import reviewer_resolver
 
 
-DEFAULT_REVIEWER_MENTION = "@gemini-code-assist"
-DEFAULT_REVIEWER_LOGIN = "gemini-code-assist"
+DEFAULT_REVIEWER_MENTION = review_vendors.DEFAULT_VENDOR.mention
+DEFAULT_REVIEWER_LOGIN = review_vendors.DEFAULT_VENDOR.login
 
 
 def build_default_phrase(reviewer_mention: str = DEFAULT_REVIEWER_MENTION) -> str:
@@ -25,7 +26,7 @@ def build_default_phrase(reviewer_mention: str = DEFAULT_REVIEWER_MENTION) -> st
     return f"{reviewer_mention} please review the latest changes."
 
 
-DEFAULT_PHRASE = build_default_phrase()
+DEFAULT_PHRASE = review_vendors.DEFAULT_VENDOR.rereview_phrase
 
 
 def no_safe_trigger_payload(reviewer_login: str) -> dict[str, Any]:
@@ -122,11 +123,28 @@ def post_rereview(
     pr: int,
     phrase: str,
     runner: Any = subprocess.run,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Post the top-level PR comment and return the normalized result payload."""
+    """Post the top-level PR comment and return the normalized result payload.
+
+    With ``dry_run`` set, validate the arguments and report the exact comment
+    body that would be posted without calling ``gh``. This is the only write
+    the loop makes to someone else's PR, so it needs a preview like every
+    other write in the skill.
+    """
     owner, repo_name = parse_repo(repo)
     if not isinstance(pr, int) or pr <= 0:
         raise ValueError("--pr must be a positive integer")
+
+    if dry_run:
+        return {
+            "created_at": None,
+            "repo": repo,
+            "pr": pr,
+            "phrase": phrase,
+            "dry_run": True,
+            "posted": False,
+        }
 
     cmd = [
         "gh",
@@ -193,6 +211,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reviewer login used in controlled stop messages.",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the comment that would be posted without posting it.",
+    )
+    parser.add_argument(
         "--no-safe-trigger",
         action="store_true",
         help="Do not post; emit a controlled no_safe_trigger result instead.",
@@ -255,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
                 or reviewer_resolver.phrase_for(trigger)
                 or build_default_phrase(trigger)
             )
-        payload = post_rereview(args.repo, args.pr, phrase)
+        payload = post_rereview(args.repo, args.pr, phrase, dry_run=args.dry_run)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -265,6 +288,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json_output:
         print(json.dumps(payload, indent=2, sort_keys=True))
+    elif payload.get("dry_run"):
+        print(f"[loop] dry run — would post to {payload['repo']}#{payload['pr']}: {payload['phrase']}")
     else:
         print(f"[loop] Re-review requested at {payload['created_at']}")
     return 0

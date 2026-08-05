@@ -101,7 +101,7 @@ def test_full_codex_cycle_fetches_fixes_re_asks_and_rechecks(loop, monkeypatch, 
     # 2. Ask Codex to review the pushed fixes, using only the persisted selection.
     posted = {}
 
-    def fake_post(repo, pr, phrase):
+    def fake_post(repo, pr, phrase, **kwargs):
         posted["phrase"] = phrase
         return {"created_at": REREVIEW_AT, "repo": repo, "pr": pr, "phrase": phrase}
 

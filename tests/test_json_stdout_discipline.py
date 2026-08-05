@@ -39,7 +39,7 @@ def test_fetch_threads_json_stdout_is_json_only_with_progress_on_stderr(
         "comments": {
             "nodes": [
                 {
-                    "author": {"login": "gemini-code-assist"},
+                    "author": {"login": "chatgpt-codex-connector"},
                     "body": "Please fix this.",
                     "createdAt": "2026-06-09T07:17:16Z",
                     "url": "https://github.example/thread-1",
@@ -167,7 +167,7 @@ def test_request_rereview_json_stdout_is_json_only(monkeypatch, capsys):
     monkeypatch.setattr(
         request_rereview,
         "post_rereview",
-        lambda repo, pr, phrase: {
+        lambda repo, pr, phrase, **kwargs: {
             "created_at": "2026-06-09T07:17:16Z",
             "repo": repo,
             "pr": pr,
@@ -191,7 +191,7 @@ def test_request_rereview_json_stdout_is_json_only(monkeypatch, capsys):
 
 
 def test_request_rereview_json_failure_has_stderr_and_no_stdout(monkeypatch, capsys):
-    def fail_post(repo, pr, phrase):  # noqa: ARG001
+    def fail_post(repo, pr, phrase, **kwargs):  # noqa: ARG001
         raise RuntimeError("gh api failed: permission denied")
 
     monkeypatch.setattr(request_rereview, "post_rereview", fail_post)

@@ -18,14 +18,30 @@ class ReviewVendor:
     mention: str
     rereview_phrase: str
     auto_reviews: bool
+    # Set when the vendor's GitHub app no longer performs reviews. A sunset
+    # vendor can still be selected explicitly (enterprise tenants, historical
+    # threads on an old PR) but is never chosen as a default, because waiting
+    # on a shut-down app is indistinguishable from waiting on a slow one.
+    sunset: bool = False
+    sunset_note: str = ""
 
 
+# Google shut down the consumer Gemini Code Assist GitHub app on 2026-07-17;
+# new installs were blocked from 2026-06-18. The enterprise app is unaffected,
+# so the record stays selectable -- it is just no longer a default.
+# https://developers.google.com/gemini-code-assist/docs/deprecations/consumer-code-review
 GEMINI = ReviewVendor(
     login="gemini-code-assist",
     display_name="Gemini Code Assist",
     mention="@gemini-code-assist",
     rereview_phrase="@gemini-code-assist please review the latest changes.",
     auto_reviews=True,
+    sunset=True,
+    sunset_note=(
+        "The consumer Gemini Code Assist GitHub app was shut down on 2026-07-17. "
+        "Only the enterprise app still posts reviews. If you are not on the "
+        "enterprise app, pick another reviewer."
+    ),
 )
 
 # Codex answers to ``@codex``; its GraphQL author login is the connector app.
@@ -40,6 +56,18 @@ CODEX = ReviewVendor(
 )
 
 KNOWN_VENDORS = {vendor.login: vendor for vendor in (GEMINI, CODEX)}
+
+# The reviewer the loop assumes when the user has not chosen one. Must be a
+# vendor that is alive and that the loop can trigger itself: an auto-reviewing
+# default turns "no reviewer here" into a silent wait, while a ping-first
+# default turns it into a working cycle 0.
+DEFAULT_VENDOR = CODEX
+
+
+def is_sunset(name: str | None) -> bool:
+    """True when the named reviewer's app no longer performs reviews."""
+    vendor = vendor_for(name)
+    return bool(vendor and vendor.sunset)
 
 # Callers hold either the account login (`chatgpt-codex-connector`) or the
 # handle it answers to (`@codex`); both name the same vendor.

@@ -1,6 +1,6 @@
 ---
 name: gh-review-loop
-description: Use after a GitHub PR is opened, or when the user asks to handle AI reviewer feedback from Gemini Code Assist or another configured reviewer bot, run the review loop, fix reviewer comments, or request re-review. Waits, fixes, pushes, re-asks. Capped by user preference, default 3 cycles.
+description: Use after a GitHub PR is opened, or when the user asks to handle AI reviewer feedback from Codex, CodeRabbit, Copilot, or another configured reviewer bot, run the review loop, fix reviewer comments, sweep sibling instances of a flagged pattern, or request re-review. Waits, fixes, verifies against the repo's own tests, pushes, re-asks. Capped by user preference, default 3 cycles.
 ---
 
 # AI Reviewer PR Review Loop
@@ -9,7 +9,7 @@ description: Use after a GitHub PR is opened, or when the user asks to handle AI
 
 Use this skill to run the full GitHub PR loop: after PR creation, wait for the configured AI reviewer to finish reviewing, fetch unresolved actionable review threads, acknowledge the requested fixes, implement clear fixes, verify them, commit and push to the PR branch, and ask the reviewer to re-review the latest revision.
 
-Gemini Code Assist is the bundled default adapter. On first use for a PR, discover reviewer candidates with `--list-reviewers`, confirm the chosen bot, and persist it with `--reviewer`. For compatible reviewer bots such as CodeRabbit, Copilot, Qodo, or Sourcery, pass a safe re-review mention only when it is known; never guess `@login` for an unknown bot.
+Codex (`@codex`) is the bundled default adapter. On first use for a PR, discover reviewer candidates with `--list-reviewers`, confirm the chosen bot, and persist it with `--reviewer`. The consumer Gemini Code Assist GitHub app was shut down on 2026-07-17; never select it as a fallback, and if the user asks for it, say so and confirm they are on the enterprise app before proceeding. For compatible reviewer bots such as CodeRabbit, Copilot, Qodo, or Sourcery, pass a safe re-review mention only when it is known; never guess `@login` for an unknown bot.
 
 Prefer thread-aware review data over flat PR comments. GitHub review threads preserve `isResolved`, `isOutdated`, file paths, line anchors, and diff hunks, which are necessary for reliable automation.
 
@@ -22,9 +22,14 @@ persisted reviewer must be prompt-first:
 2. If candidates are returned, ask the user to confirm the single candidate or
    choose among multiple candidates, then persist the choice with
    `--reviewer <login> --reviewer-source confirmed [--reviewer-name <name>] [--review-trigger-mention <mention>]`.
-3. If zero candidates are returned on a fresh PR, offer **Use Gemini default and
-   wait**, **Pick another**, or **None**. Only **None** stops with "No AI
-   reviewer threads found on this PR."
+3. If zero candidates are returned on a fresh PR, do not assume a reviewer and
+   do not wait on one. Report that no reviewer bot has commented on this PR and
+   offer: **Ping the default reviewer now** (`@codex review` — the default only
+   reviews on request, so this starts cycle 0), **Pick another reviewer**
+   (name the login and its re-review mention), or **None**. **None** stops with
+   "No AI reviewer threads found on this PR." Never offer waiting on a reviewer
+   that has not spoken and was not chosen — a shut-down app is indistinguishable
+   from a slow one, and the wait burns the full timeout for nothing.
 4. If the JSON result has `partial: true`, do not claim no reviewer exists; ask
    the user to choose manually or retry discovery.
 
@@ -54,15 +59,15 @@ mention is supplied with `--review-trigger-mention`.
 When `fetch_gemini_threads.py --format json` reports
 `reviewerSelection.confirmation_required: true`, stop before edits or
 re-review requests and run the prompt flow above. `source:
-default_unconfirmed` means Gemini is only the compatibility fallback, not a
+default_unconfirmed` means the reviewer is only an unconfirmed default, not a
 confirmed selection.
 
 ## Thread States
 
-Each Gemini review thread is in one of these states. The fetch script tags each thread accordingly, and the stop logic consumes the tag:
+Each reviewer thread is in one of these states. The fetch script tags each thread accordingly, and the stop logic consumes the tag:
 
-- **`RESOLVED`** — Gemini or the maintainer has explicitly resolved the thread. Skip.
-- **`OUTDATED`** — The line anchor has moved out from under the thread (the code Gemini commented on no longer exists at that position). Auto-resolved by the script. Skip.
+- **`RESOLVED`** — The reviewer or the maintainer has explicitly resolved the thread. Skip.
+- **`OUTDATED`** — The line anchor has moved out from under the thread (the code the reviewer commented on no longer exists at that position). Auto-resolved by the script. Skip.
 - **`ADDRESSED_BY_REPLY`** — Unresolved, but the current user (or another maintainer) has posted a substantive reply (≥30 chars, not a bot, not a token "ack"). Treated as a human decision to defer/wontfix; the loop does not try to fix this thread again. The script auto-resolves these on the next pass via GraphQL (see "GitHub Write Safety" below). Opt out with `--no-resolve-addressed-by-reply`.
 - **`UNRESOLVED`** — Actionable. Drives the next fix attempt.
 
@@ -70,9 +75,9 @@ A thread can transition `UNRESOLVED → ADDRESSED_BY_REPLY → RESOLVED` (reply 
 
 ## Cycle Counting
 
-A **cycle** is one Gemini re-review request posted by the agent after Gemini's initial review.
+A **cycle** is one re-review request posted by the agent after the reviewer's first review.
 
-- **Cycle 0:** Gemini's initial automatic review at PR open. Free; does not count toward the cap.
+- **Cycle 0:** The reviewer's first review — automatic for bots that self-review, or the agent's opening ping for bots that only review on request. Free; does not count toward the cap.
 - **Cycles 1–N:** Each subsequent re-review request the agent posts, where `N` is `max_rereview_requests` from `~/.config/gh-gemini-review-loop/preferences.json` or the default `3`. After cycle `N`, hard stop.
 - Replies posted via `repos/.../pulls/comments/{id}/replies` do **NOT** count as a cycle.
 - Pushes to the PR branch without a re-review request do **NOT** count as a cycle.
@@ -86,11 +91,11 @@ threads, classify fixed-pending findings, and print or record the final summary.
 
 ## Severity Ordering
 
-Gemini prefixes inline review comments with a markdown image whose alt text is the severity (`critical` / `high` / `medium` / `low`). The script parses this and orders actionable threads `critical → high → medium → low → unknown`, so high-severity findings are reported and fixed first. The severity tag also appears in the per-thread markdown header, e.g. `## 1. src/auth.py:42 [high]`.
+Gemini prefixes inline review comments with a markdown image whose alt text is the severity (`critical` / `high` / `medium` / `low`); Codex uses `P0`–`P3`. These are the only two formats parsed today — every other bot's findings carry `unknown` severity. The script parses this and orders actionable threads `critical → high → medium → low → unknown`, so high-severity findings are reported and fixed first. The severity tag also appears in the per-thread markdown header, e.g. `## 1. src/auth.py:42 [high]`.
 
 ## Pattern → Sweep → Converge
 
-Gemini is an LLM reviewer: when it flags a code pattern, fixing only the flagged
+Bot reviewers are LLMs: when one flags a code pattern, fixing only the flagged
 sites teaches it to flag *more* instances of the same pattern in other changed
 files next cycle. To collapse that expansion into one cycle, each cycle runs:
 
@@ -100,7 +105,7 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
    deterministic pattern signature. Reason about patterns, not a flat finding list.
 2. **Sweep (report-then-go).** For each multi-site pattern (`count >= 2`), grep the
    PR's **changed files** for sibling instances of the same shape — including ones
-   Gemini has not flagged yet — using the cluster's example sites as the template.
+   the reviewer has not flagged yet — using the cluster's example sites as the template.
    Print a short sweep report (which extra sites, why), then fix the whole cluster
    plus the swept siblings in this cycle. Do not block on approval, but never edit
    unflagged code silently — the report must appear first.
@@ -110,12 +115,12 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
 4. **Verify** (the repo profile) and **re-review** as usual.
 
 The receipt's `Convergence:` line is advisory only. When a swept pattern reappears
-("⚠ … RECURRED after sweep"), the sweep missed a variant or Gemini keeps
+("⚠ … RECURRED after sweep"), the sweep missed a variant or the reviewer keeps
 re-flagging — decide whether to refine the sweep, stop, or continue. It never
 changes control flow; the re-review cap remains the only hard stop.
 
 Sweep scope is **changed files only** — that is both safe (blast radius = the PR's
-own diff) and sufficient (Gemini only reviews changed files).
+own diff) and sufficient (bot reviewers only review changed files).
 
 ## Loop Receipt
 
@@ -137,7 +142,7 @@ When the one-shot `--post-receipt` is appropriate: scripted/batch contexts where
 
 ## Optional Judge Eval (`--judge-mode`)
 
-The Gemini review loop supports an optional OpenAI-based judge eval. It classifies each Gemini finding as one of `valid_actionable / false_positive / duplicate / already_addressed / explanation_only / needs_human`, plus a `severity_override` and `recommended_action`. The judge is **read-only** — it never resolves threads, posts comments, or pushes.
+The review loop supports an optional OpenAI-based judge eval. It classifies each reviewer finding as one of `valid_actionable / false_positive / duplicate / already_addressed / explanation_only / needs_human`, plus a `severity_override` and `recommended_action`. The judge is **read-only** — it never resolves threads, posts comments, or pushes.
 
 Judge eval is **off by default**. Nothing is sent to OpenAI unless the user explicitly opts in.
 
@@ -176,7 +181,7 @@ Do **not** prompt for judge eval during a normal loop run. Do **not** prompt at 
 ```
 [loop] cycle 1/<cap> — 4 actionable thread(s) (high: 1, medium: 3). Fixing.
 [loop] Tip: judge eval can give a second opinion on these findings.
-         Try: "run the Gemini loop with judge eval at completion"
+         Try: "run the review loop with judge eval at completion"
 ```
 
 The tip fires at the moment the user is looking at real findings — before any fixes are applied. It appears exactly once across all future sessions.
@@ -191,7 +196,7 @@ Prompt with the current runtime's choice-prompt mechanism **only** when the user
 
 Prompt text:
 
-> Judge eval sends Gemini findings and related PR context to OpenAI.
+> Judge eval sends reviewer findings and related PR context to OpenAI.
 >
 > Choose eval mode:
 > 1. Every cycle
@@ -440,7 +445,7 @@ fails:
 - next options for non-clean terminal outcomes
 - wait heartbeat (`--wait-chunk-seconds` pending output, or `--wait-heartbeat`)
 
-Before push or before Gemini confirms the re-review, use the script's fixed-
+Before push or before the reviewer confirms the re-review, use the script's fixed-
 pending wording. Locally fixed work must appear as `Fixed locally` plus
 `Awaiting push/re-review confirmation`, not as `Remaining valid actionable`.
 
@@ -502,12 +507,12 @@ Run metrics and `--stats` are local-only — stored under `~/.config/gh-gemini-r
 <HARD-GATE>
 DO NOT run `git push` or call `--record-run` until you have:
 1. Called `--cycle-summary` (for a non-terminal cycle) OR confirmed `--record-run` is the terminal call.
-2. For a terminal cycle after a final push, requested Gemini re-review,
+2. For a terminal cycle after a final push, requested reviewer re-review,
    captured `REREVIEW_AT`, waited with `--wait --after "$REREVIEW_AT"`, and
-   set the terminal record's Gemini confirmation flag from that wait result.
+   set the terminal record's reviewer confirmation flag from that wait result.
 3. Printed the FULL stdout of that script call verbatim in your text response to the user.
 
-This is enforced mechanically: a PreToolUse:Bash hook (`loop_summary_gate.py`) blocks every `git push` while a Gemini loop is active and the summary is stale. The hook does NOT fire for `--record-run` (the terminal receipt is exempt). Trying to push without summarizing first returns exit code 2 and explains the fix.
+This is enforced mechanically: a PreToolUse:Bash hook (`loop_summary_gate.py`) blocks every `git push` while a review loop is active and the summary is stale. The hook does NOT fire for `--record-run` (the terminal receipt is exempt). Trying to push without summarizing first returns exit code 2 and explains the fix.
 
 Violating the letter of this rule violates the spirit.
 </HARD-GATE>
@@ -558,7 +563,7 @@ Threads where the judge verdict was `needs_human`. These require a product/forma
 Human decision required
 
 1. <file>:<line> · <GitHub comment URL>
-   Finding: <what Gemini flagged, verbatim or closely paraphrased>
+   Finding: <what the reviewer flagged, verbatim or closely paraphrased>
    Why human: <concrete reason — format consistency, security policy, product behavior tradeoff>
    The agent did not auto-fix this because <specific reason: changes report format behavior / requires policy decision / both options are valid>.
    Options:
@@ -597,15 +602,15 @@ Remaining because cap was reached
 
 **Bucket 3 — Already fixed but still unresolved on GitHub**
 
-Threads where you applied a code fix in this loop, but the GitHub thread still shows UNRESOLVED. These are not open work items — they will become OUTDATED on the next Gemini review.
+Threads where you applied a code fix in this loop, but the GitHub thread still shows UNRESOLVED. These are not open work items — they will become OUTDATED on the next reviewer pass.
 
 ```
 Already fixed but still unresolved on GitHub
 
 1. <file>:<line> · <GitHub comment URL>
-   Finding: <what Gemini originally flagged>
+   Finding: <what the reviewer originally flagged>
    Status: fix applied in this session
-   Why still shown: code change shifts the line anchor; thread auto-resolves as OUTDATED on next Gemini review
+   Why still shown: code change shifts the line anchor; thread auto-resolves as OUTDATED on the next reviewer pass
 ```
 
 **Omit any bucket with zero entries.** If every remaining thread fits bucket 1, just print bucket 1. Never print an empty bucket header.
@@ -613,7 +618,7 @@ Already fixed but still unresolved on GitHub
 **Classification logic (in order of priority):**
 
 1. Judge verdict `needs_human` → bucket 1
-2. Thread from a prior Gemini review where you applied a code fix at that file/line in this session → bucket 3
+2. Thread from a prior reviewer pass where you applied a code fix at that file/line in this session → bucket 3
 3. All other `valid_actionable` threads (new from latest review, or no fix attempted) → bucket 2
 
 **After the buckets — next step suggestions:**
@@ -701,7 +706,7 @@ Run metrics and `--stats` are local-only — stored under `~/.config/gh-gemini-r
 
 If the user explicitly opts out of any default behavior (e.g. "don't auto-resolve anything"), respect it for the rest of the session via `--no-resolve-outdated --no-resolve-addressed-by-reply`.
 
-This skill supports one configured reviewer bot per run. It does not aggregate several reviewers into one combined loop. Gemini Code Assist is the default adapter; for another compatible bot, pass `--reviewer`, `--review-trigger-mention`, and `--reviewer-name`. Severity parsing reads markdown image alt text — both the shared scale (`![high]`, `![medium]`, …) and Codex's `![P0]`–`![P3]` badges — so reviewers without either marker fall back to `unknown` severity.
+This skill supports one configured reviewer bot per run. It does not aggregate several reviewers into one combined loop. Codex is the default adapter; for another compatible bot, pass `--reviewer`, `--review-trigger-mention`, and `--reviewer-name`. Severity parsing reads markdown image alt text — both the shared scale (`![high]`, `![medium]`, …) and Codex's `![P0]`–`![P3]` badges — so reviewers without either marker fall back to `unknown` severity.
 
 ## Stopping Conditions
 
@@ -710,7 +715,7 @@ Stop the loop and report status instead of pushing or asking the reviewer again 
 1. **Cap reached** — the reviewer has already been asked to re-review the PR up to the configured cap.
 2. **All clean** — There are no `UNRESOLVED` actionable reviewer threads after stale-thread cleanup.
 3. **Human decision required** — All remaining `UNRESOLVED` threads are informational, duplicate, contradictory, or require a human product/design/security decision.
-4. **Test regression** — Tests fail after a fix attempt and the failure is not clearly caused by the latest Gemini-addressing change.
+4. **Test regression** — Tests fail after a fix attempt and the failure is not clearly caused by the latest finding-addressing change.
 5. **No progress** — A thread that was UNRESOLVED in the previous cycle is still UNRESOLVED after a fix attempt AND the surrounding code/hunk was not changed AND no substantive maintainer reply (as defined in Thread States) was posted on it. This catches genuine stuckness — distinct from ADDRESSED_BY_REPLY, which is intentional deferral and should not trip this condition.
 
    The script detects this mechanically: when the actionable thread fingerprint (SHA256 of thread ids + bodies) is identical to the previous cycle's, it prints:
@@ -770,8 +775,8 @@ The skill is meant to auto-trigger after `gh pr create`. If the agent forgets �
 
 If the agent pushes new commits to a PR branch after the loop has already stopped:
 
-- If any of those commits touch files where Gemini left `UNRESOLVED` or `ADDRESSED_BY_REPLY` threads, automatically resume the loop (subject to the configured cap).
-- Otherwise stay stopped — Gemini's own automatic re-review on the new commit will run unattended, and the agent need not coordinate.
+- If any of those commits touch files where the reviewer left `UNRESOLVED` or `ADDRESSED_BY_REPLY` threads, automatically resume the loop (subject to the configured cap).
+- Otherwise stay stopped. A self-reviewing bot will pick up the new commit unattended; a ping-only bot will not review again until asked, which is the intended stop.
 
 Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their own.
 
@@ -779,7 +784,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
 
 1. Trigger the loop by default after PR creation.
    - When the agent creates or opens a PR and this skill is available, continue into this workflow automatically unless the user explicitly says not to.
-   - Treat "create the PR", "open a PR", "yeet this", "ship this PR", "run the AI reviewer loop", and "run the Gemini loop" as permission to complete the full loop: wait, fetch, acknowledge, fix, verify, commit, push, and request reviewer re-review.
+   - Treat "create the PR", "open a PR", "yeet this", "ship this PR", "run the AI reviewer loop", and "run the review loop" as permission to complete the full loop: wait, fetch, acknowledge, fix, verify, commit, push, and request reviewer re-review.
 
 2. Resolve the PR.
    - If the user provides a PR URL, repo, or PR number, use it directly.
@@ -859,7 +864,7 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
 
 11. Commit, push, and request re-review.
     - For this skill's full loop, commit fixes to the PR branch. Push only after the required cycle receipt has been relayed for non-terminal cycles.
-    - Use a clear commit message such as `fix: address Gemini Code Assist review`.
+    - Use a clear commit message such as `fix: address AI reviewer findings`.
     - Before pushing a non-terminal cycle, emit the per-cycle receipt:
       `python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --cycle-summary --fixed-count <n-this-cycle> --verification <passed|failed|skipped>`
       then relay the printed `[loop] Cycle receipt` block verbatim. This is read-only — it does not write `runs.jsonl`.
@@ -948,7 +953,7 @@ From any repository with a GitHub PR:
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py"
 ```
 
-By default this resolves unresolved outdated Gemini threads AND addressed-by-reply
+By default this resolves unresolved outdated reviewer threads AND addressed-by-reply
 threads (unresolved threads where a non-bot maintainer posted a substantive
 reply, >=30 chars) before printing current feedback. The re-review cap does not
 block this cleanup.
@@ -1025,7 +1030,7 @@ The script emits `warning: ... hit page limit ...` to stderr if any GraphQL page
 
 ## GitHub Write Safety
 
-This skill's default full loop includes committing, pushing, asking Gemini for re-review, and resolving outdated Gemini threads after PR creation or when the user asks for the Gemini loop.
+This skill's default full loop includes committing, pushing, asking the configured reviewer for re-review, and resolving outdated reviewer threads after PR creation or when the user asks for the review loop.
 
 **Resolution policy:**
 
