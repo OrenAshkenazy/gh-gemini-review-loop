@@ -18,17 +18,20 @@ class ReviewVendor:
     mention: str
     rereview_phrase: str
     auto_reviews: bool
-    # Set when the vendor's GitHub app no longer performs reviews. A sunset
-    # vendor can still be selected explicitly (enterprise tenants, historical
-    # threads on an old PR) but is never chosen as a default, because waiting
-    # on a shut-down app is indistinguishable from waiting on a slow one.
-    sunset: bool = False
-    sunset_note: str = ""
+    # Set when a vendor's *free or individual* tier no longer performs reviews
+    # while a paid or enterprise tier still does. Such a vendor stays fully
+    # selectable and fully supported; it is only disqualified from being the
+    # default, because a default applies to every user and most users are on
+    # the tier that no longer works.
+    consumer_tier_retired: bool = False
+    tier_note: str = ""
 
 
-# Google shut down the consumer Gemini Code Assist GitHub app on 2026-07-17;
-# new installs were blocked from 2026-06-18. The enterprise app is unaffected,
-# so the record stays selectable -- it is just no longer a default.
+# Google shut down the *consumer* Gemini Code Assist GitHub app on 2026-07-17;
+# new consumer installs were blocked from 2026-06-18. The enterprise app is
+# unaffected and still posts reviews, so Gemini remains a fully supported
+# reviewer here. It is only disqualified as the *default*, since a new user on
+# the consumer tier can no longer install the app at all.
 # https://developers.google.com/gemini-code-assist/docs/deprecations/consumer-code-review
 GEMINI = ReviewVendor(
     login="gemini-code-assist",
@@ -36,11 +39,11 @@ GEMINI = ReviewVendor(
     mention="@gemini-code-assist",
     rereview_phrase="@gemini-code-assist please review the latest changes.",
     auto_reviews=True,
-    sunset=True,
-    sunset_note=(
-        "The consumer Gemini Code Assist GitHub app was shut down on 2026-07-17. "
-        "Only the enterprise app still posts reviews. If you are not on the "
-        "enterprise app, pick another reviewer."
+    consumer_tier_retired=True,
+    tier_note=(
+        "Gemini Code Assist reviews on GitHub now require the enterprise app. "
+        "The consumer app was shut down on 2026-07-17. If you are on the "
+        "enterprise app this works normally; if not, pick another reviewer."
     ),
 )
 
@@ -64,10 +67,20 @@ KNOWN_VENDORS = {vendor.login: vendor for vendor in (GEMINI, CODEX)}
 DEFAULT_VENDOR = CODEX
 
 
-def is_sunset(name: str | None) -> bool:
-    """True when the named reviewer's app no longer performs reviews."""
+def is_consumer_tier_retired(name: str | None) -> bool:
+    """True when the vendor still reviews, but only on a paid or enterprise tier.
+
+    This is a defaulting signal, not a support signal. Such a vendor works
+    exactly as well as any other for the users who have it.
+    """
     vendor = vendor_for(name)
-    return bool(vendor and vendor.sunset)
+    return bool(vendor and vendor.consumer_tier_retired)
+
+
+def tier_note_for(name: str | None) -> str:
+    """Return the vendor's tier caveat, or "" when it has none."""
+    vendor = vendor_for(name)
+    return vendor.tier_note if vendor else ""
 
 # Callers hold either the account login (`chatgpt-codex-connector`) or the
 # handle it answers to (`@codex`); both name the same vendor.

@@ -42,7 +42,17 @@ Bot reviewers expand. You fix the two instances of a pattern it flagged, push, a
 
 Three things in this loop attack that directly:
 
-**It sweeps the class, not the instance.** Findings are clustered by a deterministic pattern signature. When one pattern is flagged at 2+ sites, the agent greps the PR's changed files for the siblings the reviewer *hasn't* flagged yet, reports which extra sites it found and why, then fixes the whole family in one cycle. Blast radius never leaves your own diff. Swept patterns are tracked across cycles, so if one comes back you see `⚠ RECURRED after sweep` instead of silently re-fixing it.
+**It sweeps the class, not the instance.** Findings are clustered by a deterministic pattern signature. When one pattern is flagged at 2+ sites, `sweep_siblings.py` reduces those lines to tokens, intersects them, and reports every other line in the PR's changed files containing all of the shared tokens — the siblings the reviewer hasn't reached yet:
+
+```text
+[sweep] read_text without errors= guard
+  flagged:   fetch_gemini_threads.py:1039, judge.py:199
+  shared:    )) data encoding json loads path read_text
+  siblings:  1 unflagged site(s) match the same shape
+    + request_rereview.py:59  data = json.loads(path.read_text(encoding="utf-8"))
+```
+
+Intersecting across sites is the safety property: a candidate has to match what the flagged sites have in *common*, not what any one of them happens to contain. It reports before anything is edited, refuses on a single site or a too-generic shape, and never reads a file outside your diff. Swept patterns are tracked across cycles, so if one comes back you see `⚠ RECURRED after sweep` instead of silently re-fixing it.
 
 **It won't push red.** Configure a verification profile once — a one-key menu pick on first run, auto-detected from your `pyproject.toml` / `package.json` / `Cargo.toml` / `go.mod` — and every cycle runs your own tests and linters before the commit goes up. A failed required check flips the run to `verification: failed`. Compare: CodeRabbit's autofix runs a build-verification step and [ships the changes anyway when it fails](https://docs.coderabbit.ai/finishing-touches/autofix).
 
@@ -68,7 +78,7 @@ Checkable claims, with the honest scope of each:
 | Capability | Scope | Where |
 |---|---|---|
 | Thread-state filtering | `reviewThreads` GraphQL, `isResolved` / `isOutdated`, plus `ADDRESSED_BY_REPLY` for maintainer *"wontfix"* replies | `fetch_gemini_threads.py` |
-| Pattern clustering + recurrence | Deterministic signature, cross-cycle recurrence tracking. **The sweep itself is an instruction to the agent, not a script** — it greps your changed files under the agent's control | `cluster_findings.py` |
+| Pattern clustering + sibling sweep | Deterministic signature, cross-cycle recurrence tracking, and a sweep that intersects the flagged lines' tokens and reports matching unflagged lines. Refuses on one site, on a too-generic shape, and never reads outside the changed files | `cluster_findings.py`, `sweep_siblings.py` |
 | Verification gate | Auto-detects Python / Node / Rust / Go. Required-check failure flips the run to `verification: failed`. **`Skip` is an offered menu option** — pick it and there is no gate | `detect_profile.py`, `run_profile.py` |
 | Cycle cap | Hard count, agent-scoped: only the agent's own pings consume it. Enforced at the write — `request_rereview.py` counts prior pings and refuses past the cap, rather than trusting the agent to stop | `request_rereview.py` |
 | Severity ordering | Parsed for **Codex `![P0]`–`![P3]` badges and `![critical]`–`![low]` image alt text only.** A bot using neither convention yields `unknown`, which is kept by default | `thread_severity()` |
@@ -87,14 +97,14 @@ If you're comparing alternatives, the closest is [pbakaus/agent-reviews](https:/
 - **Python 3.10+** and **git**.
 - **A reviewer bot that posts GitHub review threads on your PRs.** Codex (`@codex`) is the bundled default and works out of the box. CodeRabbit, Copilot, Qodo, Sourcery and others work once you give the loop their author login and re-review mention.
 
-> **Note on Gemini Code Assist.** The consumer Gemini Code Assist GitHub app was [deprecated 2026-06-18 and shut down 2026-07-17](https://developers.google.com/gemini-code-assist/docs/deprecations/consumer-code-review). It is no longer the default here. The vendor record is kept for enterprise tenants, which are unaffected — select it explicitly with `--reviewer gemini-code-assist`.
+> **Note on Gemini Code Assist.** Gemini works here exactly as it always did — *if* you're on the enterprise GitHub app. Google [deprecated the consumer app 2026-06-18 and shut it down 2026-07-17](https://developers.google.com/gemini-code-assist/docs/deprecations/consumer-code-review), so it can no longer be installed on the free tier. That's why it isn't the bundled default any more, not because support was dropped. Select it with `--reviewer gemini-code-assist`.
 
 ## Supported reviewers
 
 | Reviewer | Support | Re-review trigger | Severity format |
 |---|---|---|---|
 | Codex (`chatgpt-codex-connector`) | **Built-in default** | `@codex review` | `P0`–`P3`, normalized |
-| Gemini Code Assist | Built-in, **enterprise only** ([consumer app shut down](https://developers.google.com/gemini-code-assist/docs/deprecations/consumer-code-review)) | `@gemini-code-assist please review…` | `critical` / `high` / `medium` / `low` |
+| Gemini Code Assist | Built-in, full support. Needs the **enterprise** GitHub app ([consumer app shut down](https://developers.google.com/gemini-code-assist/docs/deprecations/consumer-code-review)) | `@gemini-code-assist please review…` | `critical` / `high` / `medium` / `low` |
 | CodeRabbit, Copilot, Qodo, Sourcery, … | Configurable | Supplied via `--review-trigger-mention` | **Not parsed** — findings carry `unknown` severity |
 
 `--list-reviewers` discovers which bots have commented on your PR; `--reviewer` persists your choice per PR.

@@ -463,10 +463,26 @@ def test_dry_run_still_validates_its_arguments():
         request_rereview.post_rereview("acme/widget", 0, "@codex review", dry_run=True)
 
 
-def test_default_reviewer_is_not_a_sunset_vendor():
-    """A default that no longer reviews turns 'no reviewer' into a silent wait."""
-    assert not review_vendors.is_sunset(request_rereview.DEFAULT_REVIEWER_LOGIN)
-    assert review_vendors.is_sunset("gemini-code-assist")
+def test_default_reviewer_is_installable_on_every_tier():
+    """The default applies to every user, so it cannot need a paid tier.
+
+    Gemini still reviews normally for enterprise tenants; it is disqualified as
+    a default only because a consumer-tier user can no longer install the app.
+    """
+    assert not review_vendors.is_consumer_tier_retired(
+        request_rereview.DEFAULT_REVIEWER_LOGIN
+    )
+    assert review_vendors.is_consumer_tier_retired("gemini-code-assist")
+
+
+def test_a_tier_restricted_vendor_is_still_fully_supported():
+    gemini = review_vendors.vendor_for("gemini-code-assist")
+    assert gemini is not None
+    assert gemini.mention == "@gemini-code-assist"
+    assert gemini.rereview_phrase
+    assert gemini.auto_reviews is True
+    assert "enterprise" in review_vendors.tier_note_for("gemini-code-assist")
+    assert review_vendors.tier_note_for("@codex") == ""
 
 
 class TestCapEnforcement:

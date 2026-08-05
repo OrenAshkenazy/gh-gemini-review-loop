@@ -9,7 +9,7 @@ description: Use after a GitHub PR is opened, or when the user asks to handle AI
 
 Use this skill to run the full GitHub PR loop: after PR creation, wait for the configured AI reviewer to finish reviewing, fetch unresolved actionable review threads, acknowledge the requested fixes, implement clear fixes, verify them, commit and push to the PR branch, and ask the reviewer to re-review the latest revision.
 
-Codex (`@codex`) is the bundled default adapter. On first use for a PR, discover reviewer candidates with `--list-reviewers`, confirm the chosen bot, and persist it with `--reviewer`. The consumer Gemini Code Assist GitHub app was shut down on 2026-07-17; never select it as a fallback, and if the user asks for it, say so and confirm they are on the enterprise app before proceeding. For compatible reviewer bots such as CodeRabbit, Copilot, Qodo, or Sourcery, pass a safe re-review mention only when it is known; never guess `@login` for an unknown bot.
+Codex (`@codex`) is the bundled default adapter. On first use for a PR, discover reviewer candidates with `--list-reviewers`, confirm the chosen bot, and persist it with `--reviewer`. Gemini Code Assist is fully supported and behaves normally for anyone on the enterprise GitHub app. It is not a *default* because the consumer app was shut down on 2026-07-17 and can no longer be installed, so assuming it for an unconfigured PR strands most users. Never fall back to it silently; if the user asks for it, use it. For compatible reviewer bots such as CodeRabbit, Copilot, Qodo, or Sourcery, pass a safe re-review mention only when it is known; never guess `@login` for an unknown bot.
 
 Prefer thread-aware review data over flat PR comments. GitHub review threads preserve `isResolved`, `isOutdated`, file paths, line anchors, and diff hunks, which are necessary for reliable automation.
 
@@ -103,12 +103,30 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
 
 1. **Cluster.** The cycle receipt's `Patterns (N):` section groups findings by a
    deterministic pattern signature. Reason about patterns, not a flat finding list.
-2. **Sweep (report-then-go).** For each multi-site pattern (`count >= 2`), grep the
-   PR's **changed files** for sibling instances of the same shape — including ones
-   the reviewer has not flagged yet — using the cluster's example sites as the template.
-   Print a short sweep report (which extra sites, why), then fix the whole cluster
-   plus the swept siblings in this cycle. Do not block on approval, but never edit
-   unflagged code silently — the report must appear first.
+2. **Sweep (report-then-go).** For each multi-site pattern (`count >= 2`), run
+   `sweep_siblings.py` to find instances of the same shape the reviewer has not
+   flagged yet, restricted to the PR's changed files:
+
+   ```bash
+   python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/sweep_siblings.py" \
+     --signature <sig> --label "<label>" \
+     --site <path:line> --site <path:line> \
+     --changed-file <path> [--changed-file <path> ...] --json
+   ```
+
+   Pass every site from the cluster and every file in the PR's diff. The script
+   intersects the tokens of the flagged lines and reports only lines containing
+   all of them, so a candidate has to match what the flagged sites have in
+   *common*. It reports; it never edits.
+
+   Print the report, then fix the cluster plus the reported siblings in this
+   cycle. Do not block on approval, but never edit unflagged code silently —
+   the report must appear first.
+
+   Honor the script's `status`. `too_few_sites`, `pattern_too_thin`, and
+   `no_source` all mean **do not sweep**: fix the flagged sites only. When
+   `truncated` is true the pattern is wider than a sweep should be — show the
+   report and ask the user before touching unflagged code.
 3. **Mark.** Pass `--swept-pattern <sig>` (the `sig:` token from the Patterns
    receipt) for each pattern you swept, alongside the usual `--fixed-finding`
    markers, so the convergence advisory can detect recurrence.
