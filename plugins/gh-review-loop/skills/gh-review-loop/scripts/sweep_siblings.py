@@ -55,6 +55,12 @@ DEFAULT_MAX_CANDIDATES = 20
 # is neither reviewable nor worth scanning.
 MAX_FILE_BYTES = 2_000_000
 
+# A reviewer finding anchors to code. Proposing a comment line as a sibling is
+# never actionable, and prose happens to share ordinary words with code, which
+# is the one false-positive class a token intersection cannot rule out on its
+# own. Handles Python, JS/TS/Java/Go/Rust, shell, SQL and Lisp comment markers.
+_COMMENT_ONLY_RE = re.compile(r"^\s*(#|//|/\*|\*|--|;)")
+
 _STRING_RE = re.compile(r"""(['"])(?:\\.|(?!\1).)*\1""", re.DOTALL)
 _NUMBER_RE = re.compile(r"\b\d[\d_.]*\b")
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z_0-9]*|[(){}\[\].,;:=<>!+\-*/%&|^~@]+")
@@ -154,6 +160,11 @@ def _read_lines(path: Path) -> list[str]:
         return []
 
 
+def is_code_line(line: str) -> bool:
+    """False for blank lines and lines that are only a comment."""
+    return bool(line.strip()) and not _COMMENT_ONLY_RE.match(line)
+
+
 def _line_at(lines: list[str], number: int | None) -> str:
     if number is None or number < 1 or number > len(lines):
         return ""
@@ -215,11 +226,12 @@ def sweep(
         return file_cache[rel]
 
     flagged_lines = [_line_at(lines_of(s.path), s.line) for s in located]
-    if not any(line.strip() for line in flagged_lines):
+    flagged_lines = [line for line in flagged_lines if is_code_line(line)]
+    if len(flagged_lines) < MIN_FLAGGED_SITES:
         result.status = "no_source"
         result.reason = (
-            "Could not read the flagged lines. The sweep only proposes sites it "
-            "can compare against real source, so it stops here."
+            "Fewer than two flagged sites resolved to readable code. The sweep "
+            "only compares real source lines, so it stops here."
         )
         return result
 
@@ -241,7 +253,7 @@ def sweep(
         for index, text in enumerate(lines_of(rel), start=1):
             if (rel, index) in already:
                 continue
-            if not text.strip():
+            if not is_code_line(text):
                 continue
             if common <= tokenize(text):
                 candidates.append({

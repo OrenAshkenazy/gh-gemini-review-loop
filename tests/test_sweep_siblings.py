@@ -265,3 +265,54 @@ class TestCli:
         assert rc == 0
         assert payload["status"] == "too_few_sites"
         assert payload["candidates"] == []
+
+
+class TestCommentLines:
+    """A reviewer finding anchors to code, so a comment is never a sibling.
+
+    Prose shares ordinary words with code, which is the one false-positive
+    class a token intersection cannot rule out on its own. Found by fuzzing
+    random line pairs: a docstring mentioning `state.json` matched a
+    `json.dumps` call and proposed comment lines as siblings.
+    """
+
+    @pytest.mark.parametrize("line,is_code", [
+        ("    data = json.loads(x)", True),
+        ("# state.json must be a JSON object", False),
+        ("    # trailing thought", False),
+        ("// javascript comment", False),
+        (" * javadoc continuation", False),
+        ("-- sql comment", False),
+        ("; lisp comment", False),
+        ("", False),
+        ("    ", False),
+        ("value = 1  # inline comments do not disqualify the line", True),
+    ])
+    def test_classifies_code_versus_comment(self, line, is_code):
+        assert sweeper.is_code_line(line) is is_code
+
+    def test_a_comment_is_never_reported_as_a_sibling(self, tmp_path):
+        (tmp_path / "m.py").write_text(
+            "data = json.loads(path.read_text())\n"
+            "more = json.loads(path.read_text())\n"
+            "# json.loads(path.read_text()) is what this used to do\n"
+            "other = json.loads(path.read_text())\n"
+        )
+        result = sweeper.sweep(
+            signature="s", label="json.loads", sites=["m.py:1", "m.py:2"],
+            changed_files=["m.py"], root=tmp_path,
+        )
+        assert [c["line"] for c in result.candidates] == [4]
+
+    def test_flagged_sites_pointing_at_comments_do_not_sweep(self, tmp_path):
+        (tmp_path / "m.py").write_text(
+            "# the config is loaded from state.json here\n"
+            "# and state.json is written back on exit\n"
+            "data = json.loads(path.read_text())\n"
+        )
+        result = sweeper.sweep(
+            signature="s", label="prose", sites=["m.py:1", "m.py:2"],
+            changed_files=["m.py"], root=tmp_path,
+        )
+        assert result.status == "no_source"
+        assert result.candidates == []

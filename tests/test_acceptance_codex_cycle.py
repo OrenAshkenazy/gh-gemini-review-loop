@@ -152,3 +152,10 @@ def test_codex_rereview_pings_are_counted_toward_the_cap(loop):
     )
 
     assert len(requests) == 2
+
+
+@pytest.fixture(autouse=True)
+def _cap_check_is_inert(monkeypatch):
+    """See tests/test_request_rereview.py: the cap check needs `gh`, and these
+    tests are about stdout discipline and cycle flow, not the cap."""
+    monkeypatch.setattr(request_rereview, "gh_login", lambda *a, **k: None)
