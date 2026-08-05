@@ -883,11 +883,26 @@ Doc-only commits (README, CLAUDE.md, comments) never resume the loop on their ow
       Statuses: `waiting` (no response yet), `settling` (the reviewer responded,
       quiet period running), `ready` (proceed — the same call returns the
       fetched threads), `timed_out` (total `--timeout` budget exhausted),
-      `refused` (the reviewer declined outright — quota exhausted, service
-      withdrawn). On `refused`, stop immediately: relay the printed
-      `[loop] STOP` block and record with `--outcome human --outcome-reason
-      'reviewer refused the review' --gemini-unconfirmed`. Never keep waiting
+      `refused` (the reviewer declined outright). On `refused`, stop waiting
+      immediately and relay the printed `[loop] STOP` block. Never keep waiting
       or re-ping — the reviewer already answered, and a retry burns a cycle.
+      The payload's `kind` decides what happens next:
+      - `kind: withdrawn` (the service is gone — sunset, no longer supported):
+        terminal. Record with `--outcome human --outcome-reason 'reviewer
+        refused the review' --gemini-unconfirmed`.
+      - `kind: quota_exhausted` (the reviewer's usage cap is spent): the user
+        can lift it, so ask them **now** — do not wait it out, do not record a
+        terminal outcome yet. Prompt with the current runtime's choice-prompt
+        mechanism (in Claude Code this may be `AskUserQuestion`; in Codex use
+        the available user-input flow or ask one concise question directly),
+        offering exactly two options: **Stop the loop** — record with
+        `--outcome human --outcome-reason 'reviewer quota exhausted'
+        --gemini-unconfirmed`; or **Upgrade / add credits, then retry** — after
+        the user confirms they have done so, re-run the same chunked wait
+        command with the same `--after "$REREVIEW_AT"`. Do not re-request the
+        review: the re-review was already delivered and refused, and re-asking
+        spends a cycle. Include the reviewer's own comment URL from the stop
+        block so the user can reach the billing page.
       After each `waiting`/`settling` chunk: relay the printed `[loop]`
       heartbeat verbatim (markdown mode) or run `--wait-heartbeat` and relay
       its output (JSON mode), then immediately run the next chunk passing the
