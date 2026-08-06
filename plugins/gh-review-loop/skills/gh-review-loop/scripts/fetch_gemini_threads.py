@@ -1586,6 +1586,28 @@ def read_swept_patterns(pr: PullRequest) -> set[str]:
     return {x for x in val if isinstance(x, str)} if isinstance(val, list) else set()
 
 
+def swept_pattern_sets(
+    pr: PullRequest, history_swept: set[str]
+) -> tuple[set[str], set[str]]:
+    """Split swept signatures into ``(this_run, ever)``.
+
+    These answer different questions and must not be conflated. ``this_run`` is
+    what the agent reported via ``--swept-pattern`` on this run alone; it drives
+    the receipt's "Swept N patterns" and is what gets persisted, so a run that
+    swept nothing reports zero. ``ever`` folds in signatures recorded by earlier
+    runs of the same PR and drives recurrence detection only, because a pattern
+    swept in an earlier cycle that reappears now is exactly what the convergence
+    advisory exists to flag.
+
+    Persisting ``this_run`` rather than ``ever`` is what keeps the count
+    honest: ``metrics.pattern_history_for_pr`` already unions across records, so
+    writing the union back into each new record would compound it and the
+    reported count could never fall again.
+    """
+    this_run = read_swept_patterns(pr)
+    return this_run, this_run | history_swept
+
+
 def repo_root(cwd: str | None = None) -> Path | None:
     """Return the working tree root, or None when it cannot be resolved.
 
@@ -3434,11 +3456,11 @@ def main() -> int:
             # resumed loop folds in pattern signatures recorded by prior runs of
             # this PR (runs.jsonl) — otherwise recurrence resets to 0 on resume.
             history = metrics.pattern_history_for_pr(f"{pr.owner}/{pr.repo}", pr.number)
-            swept_sigs = read_swept_patterns(pr) | history["swept"]
+            swept_this_run, swept_ever = swept_pattern_sets(pr, history["swept"])
             conv_stats = cluster_findings.recurrence_stats(
                 current_sigs,
                 prior_sigs=prior_pattern_signatures(pr) | history["seen"],
-                swept_sigs=swept_sigs,
+                swept_sigs=swept_ever,
             )
             record = metrics.build_record(
                 repo=f"{pr.owner}/{pr.repo}",
@@ -3460,11 +3482,15 @@ def main() -> int:
                     "distinct_patterns": conv_stats["distinct_patterns"],
                     "max_cluster_size": max((c.count for c in clusters), default=0),
                     "pattern_recurrence_rate": round(conv_stats["recurrence_rate"], 3),
-                    "swept_count": len(swept_sigs),
+                    "swept_count": len(swept_this_run),
                     # Persisted so later runs of this PR can compute cross-run
                     # recurrence after --record-run clears the live accumulator.
+                    # Only this run's own sweeps: pattern_history_for_pr unions
+                    # across records, so writing the union back here would
+                    # compound it into every later record and the count could
+                    # never fall again.
                     "signatures": sorted({c.signature for c in clusters}),
-                    "swept": sorted(swept_sigs),
+                    "swept": sorted(swept_this_run),
                 } if clusters else None,
                 **derived,
             )
@@ -3521,7 +3547,7 @@ def main() -> int:
                 if patterns_block:
                     print(patterns_block)
                 convergence_line = metrics.format_convergence_line(
-                    conv_stats, swept_count=len(swept_sigs)
+                    conv_stats, swept_count=len(swept_this_run)
                 )
                 if convergence_line:
                     print(convergence_line)

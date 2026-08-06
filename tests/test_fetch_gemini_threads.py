@@ -13,7 +13,9 @@ from pathlib import Path
 
 import pytest
 
+import cluster_findings
 import fetch_gemini_threads as fgt
+import metrics
 
 from fetch_gemini_threads import (
     ADDRESSED_BY_REPLY_MIN_CHARS,
@@ -3159,3 +3161,122 @@ class TestRepoRoot:
 
         with mock.patch.object(subprocess, "run", blank):
             assert fgt.repo_root() is None
+
+
+class TestSweptPatternLifecycle:
+    """The receipt's "Swept N patterns" must describe THIS run, not history.
+
+    Regression: the convergence block unioned the live --swept-pattern
+    accumulator with the swept signatures of every prior recorded run of the
+    PR, and then wrote that union back into the new record. So one run that
+    swept two patterns made every later run of the same PR report "Swept 2
+    patterns" forever, even when it swept nothing and passed no
+    --swept-pattern at all. This number goes into published evidence.
+    """
+
+    PR = PullRequest(owner="acme", repo="widget", number=7)
+
+    @staticmethod
+    def _record(swept, patterns_swept_value):
+        """A runs.jsonl record for this PR whose patterns.swept is given."""
+        return metrics.build_record(
+            repo="acme/widget",
+            pr=7,
+            provider="sourcery-ai",
+            findings_fetched=1,
+            fixed_count=0,
+            observed_fixed_count=0,
+            remaining_actionable=1,
+            needs_human=0,
+            addressed_by_reply=0,
+            cycles_used=1,
+            cycle_cap=5,
+            verification="passed",
+            verification_details=None,
+            outcome="clean",
+            outcome_reason="outcome: clean",
+            started_at=None,
+            finding_paths=["loaders/profiles.py"],
+            judge=None,
+            patterns={
+                "distinct_patterns": 1,
+                "max_cluster_size": 2,
+                "pattern_recurrence_rate": 0.0,
+                "swept_count": len(swept),
+                "signatures": ["type-guard"],
+                "swept": sorted(patterns_swept_value),
+            },
+        )
+
+    def test_a_run_that_swept_nothing_reports_zero(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+
+        # Cycle 1 sweeps two patterns.
+        fgt.accumulate_swept_patterns(self.PR, ["exception-wrap", "64250ca5"])
+        this_run, _ = fgt.swept_pattern_sets(self.PR, set())
+        assert this_run == {"exception-wrap", "64250ca5"}
+
+        # --record-run persists the record and clears the live accumulator.
+        metrics.append_record(self._record(this_run, this_run))
+        clear_run_tracking(self.PR)
+
+        # Cycle 2 sweeps nothing.
+        history = metrics.pattern_history_for_pr("acme/widget", 7)
+        assert history["swept"] == {"exception-wrap", "64250ca5"}
+        this_run, ever = fgt.swept_pattern_sets(self.PR, history["swept"])
+
+        assert this_run == set(), "this run swept nothing, so its count must be 0"
+        assert ever == {"exception-wrap", "64250ca5"}, "history is still available"
+
+        line = metrics.format_convergence_line(
+            {"distinct_patterns": 1, "recurred_after_sweep": []},
+            swept_count=len(this_run),
+        )
+        assert line.endswith("Swept 0 patterns.")
+
+    def test_history_still_drives_recurrence_detection(self, tmp_path, monkeypatch):
+        """Splitting the sets must not cost us cross-run recurrence."""
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+
+        fgt.accumulate_swept_patterns(self.PR, ["type-guard"])
+        this_run, _ = fgt.swept_pattern_sets(self.PR, set())
+        metrics.append_record(self._record(this_run, this_run))
+        clear_run_tracking(self.PR)
+
+        history = metrics.pattern_history_for_pr("acme/widget", 7)
+        this_run, ever = fgt.swept_pattern_sets(self.PR, history["swept"])
+        assert this_run == set()
+
+        # The pattern swept last run is flagged again this run: that is a
+        # recurrence, and it is only detectable via `ever`.
+        stats = cluster_findings.recurrence_stats(
+            ["type-guard"], prior_sigs={"type-guard"}, swept_sigs=ever
+        )
+        assert stats["recurred_after_sweep"] == ["type-guard"]
+
+    def test_persisting_the_union_would_compound_across_records(
+        self, tmp_path, monkeypatch
+    ):
+        """Each record must carry only its own sweeps.
+
+        pattern_history_for_pr already unions across records. Writing the union
+        back into every new record is what made the count unable to fall.
+        """
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+
+        fgt.accumulate_swept_patterns(self.PR, ["alpha"])
+        this_run, _ = fgt.swept_pattern_sets(self.PR, set())
+        metrics.append_record(self._record(this_run, this_run))
+        clear_run_tracking(self.PR)
+
+        # A later run sweeps nothing; its record must say so.
+        history = metrics.pattern_history_for_pr("acme/widget", 7)
+        this_run, ever = fgt.swept_pattern_sets(self.PR, history["swept"])
+        metrics.append_record(self._record(this_run, this_run))
+
+        records, _ = metrics.load_records()
+        swept_per_record = [r["patterns"]["swept"] for r in records]
+        assert swept_per_record == [["alpha"], []], (
+            "the second record swept nothing and must not inherit the first's"
+        )
+        assert [r["patterns"]["swept_count"] for r in records] == [1, 0]
