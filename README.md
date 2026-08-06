@@ -8,9 +8,9 @@
 
 ![Terminal demo of gh-review-loop clearing AI reviewer feedback on a PR](docs/gh-review-loop-demo.gif)
 
-A skill for **Claude Code** and **Codex** that clears AI reviewer feedback on your PR without you leaving the terminal. It reads real GitHub review-thread state, fixes what's actionable, **sweeps the sibling instances the reviewer didn't flag**, gates every push on your repo's own tests, and asks for re-review — hard-capped so it can't spam the PR.
+A skill for **Claude Code** and **Codex** that clears AI reviewer feedback on your PR without you leaving the terminal. It reads real GitHub review-thread state, fixes what's actionable, **sweeps the sibling instances the reviewer didn't flag**, gates every push on your repo's own tests, and asks for re-review, hard-capped so it can't spam the PR.
 
-Works with whatever reviewer bot your repo already has. MIT, no server, no account, no vendor plan.
+Works with whatever AI reviewer assistance your repo already has. MIT, no server, no account, no vendor plan.
 
 ## Install
 
