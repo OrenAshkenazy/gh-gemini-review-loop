@@ -14,6 +14,24 @@ import review_vendors
 CREATED_AT = "2026-06-09T07:17:16Z"
 
 
+@pytest.fixture(autouse=True)
+def _cap_check_is_inert_by_default(monkeypatch):
+    """Neutralize the cap check for tests that are not about the cap.
+
+    Enforcing the cap needs the authenticated login and the PR's existing
+    comments, both of which come from `gh`. Tests covering phrase construction
+    and output formatting do not care, and leaving the lookup live made them
+    issue real API calls on any machine with `gh` authenticated -- which is how
+    this surfaced: as an unrelated-looking failure on a maintainer's laptop and
+    nowhere else.
+
+    Returning no login makes count_agent_pings report "could not count", which
+    is the documented degrade-to-permissive path. TestCapEnforcement overrides
+    this with its own stubs.
+    """
+    monkeypatch.setattr(request_rereview, "gh_login", lambda *a, **k: None)
+
+
 def _successful_post(**overrides):
     payload = {"created_at": CREATED_AT, **overrides}
     return subprocess.CompletedProcess(

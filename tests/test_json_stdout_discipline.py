@@ -8,6 +8,8 @@ import sys
 import detect_profile
 import fetch_gemini_threads as fgt
 import judge
+import pytest
+
 import request_rereview
 from fetch_gemini_threads import PullRequest
 from run_profile import main as run_profile_main
@@ -269,3 +271,10 @@ def test_wait_timed_out_json_stdout_is_machine_only(tmp_path, monkeypatch, capsy
     assert fgt.main() == 0
     payload = assert_json_stdout(capsys.readouterr().out)
     assert payload["wait"]["status"] == "timed_out"
+
+
+@pytest.fixture(autouse=True)
+def _cap_check_is_inert(monkeypatch):
+    """See tests/test_request_rereview.py: the cap check needs `gh`, and these
+    tests are about stdout discipline and cycle flow, not the cap."""
+    monkeypatch.setattr(request_rereview, "gh_login", lambda *a, **k: None)
