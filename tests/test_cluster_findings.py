@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
 
+import pytest
+
+import cluster_findings
 from cluster_findings import cluster, pattern_signature, recurrence_stats
 
 
@@ -152,3 +155,113 @@ def test_recurrence_uses_prior_from_history_union():
     )
     assert stats["recurrence_rate"] == 2 / 3        # type-guard seen before
     assert stats["recurred_after_sweep"] == ["type-guard"]
+
+
+class TestShapeMerging:
+    """Prose clustering fails when a reviewer words one defect two ways.
+
+    On PR #67 Sourcery posted "exception-wrap" and "add type and error checks
+    around the parsed JSON" for the same unguarded json.loads. They hashed
+    apart, so a pattern at two sites looked like two patterns at one site each
+    and never reached the sweep's two-site minimum. The code did not vary the
+    way the prose did.
+    """
+
+    @staticmethod
+    def _thread(path, line, body):
+        return {"path": path, "line": line,
+                "comments": {"nodes": [{"author": {"login": "bot"}, "body": body}]}}
+
+    @pytest.fixture
+    def repo(self, tmp_path):
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / "svc.py").write_text(
+            'data = json.loads(path.read_text(encoding="utf-8"))\n'      # 1
+            'other = json.loads(path.read_text(encoding="utf-8"))\n'     # 2
+            'conn = psycopg2.connect(dsn, sslmode="require")\n'          # 3
+            'digest = hashlib.md5(raw).hexdigest()\n'                    # 4
+            '# json.loads(path.read_text()) in a comment\n'              # 5
+        )
+        return tmp_path
+
+    def test_two_wordings_of_one_shape_merge(self, repo):
+        threads = [
+            self._thread("app/svc.py", 1, "exception-wrap: wrap this in try/except"),
+            self._thread("app/svc.py", 2, "**suggestion (bug_risk):** add type and error checks"),
+        ]
+        assert len(cluster_findings.cluster(threads)) == 2, "prose alone splits them"
+
+        merged = cluster_findings.cluster(threads, root=repo)
+        assert len(merged) == 1
+        assert merged[0].count == 2
+        assert merged[0].signature.startswith("shape:")
+
+    def test_unrelated_findings_do_not_merge(self, repo):
+        threads = [
+            self._thread("app/svc.py", 1, "wrap this in try/except"),
+            self._thread("app/svc.py", 3, "connection is never closed"),
+            self._thread("app/svc.py", 4, "md5 is unsuitable for passwords"),
+        ]
+        clusters = cluster_findings.cluster(threads, root=repo)
+        assert len(clusters) == 3
+        assert all(c.count == 1 for c in clusters)
+
+    def test_omitting_root_preserves_prose_only_behaviour(self, repo):
+        threads = [
+            self._thread("app/svc.py", 1, "wrap this in try/except"),
+            self._thread("app/svc.py", 2, "add type and error checks"),
+        ]
+        assert cluster_findings.cluster(threads) == cluster_findings.cluster(threads)
+        assert len(cluster_findings.cluster(threads)) == 2
+
+    def test_a_comment_anchor_is_never_shape_merged(self, repo):
+        threads = [
+            self._thread("app/svc.py", 1, "wrap this in try/except"),
+            self._thread("app/svc.py", 5, "this comment is stale"),
+        ]
+        clusters = cluster_findings.cluster(threads, root=repo)
+        assert len(clusters) == 2, "prose describes code, a comment line is not a sibling"
+
+    def test_unreadable_anchors_fall_back_to_prose(self, repo):
+        threads = [
+            self._thread("app/gone.py", 1, "wrap this in try/except"),
+            self._thread("app/missing.py", 2, "add type and error checks"),
+        ]
+        clusters = cluster_findings.cluster(threads, root=repo)
+        assert len(clusters) == 2
+        assert all(not c.signature.startswith("shape:") for c in clusters)
+
+    def test_merging_is_order_independent(self, repo):
+        a = self._thread("app/svc.py", 1, "wrap this in try/except")
+        b = self._thread("app/svc.py", 2, "add type and error checks")
+        forward = cluster_findings.cluster([a, b], root=repo)
+        reverse = cluster_findings.cluster([b, a], root=repo)
+        assert [c.signature for c in forward] == [c.signature for c in reverse]
+        assert [sorted(c.sites) for c in forward] == [sorted(c.sites) for c in reverse]
+
+    def test_one_shape_cannot_absorb_unbounded_prose_clusters(self, repo, monkeypatch):
+        """The cap bounds shape merging, not prose clustering.
+
+        Prose clustering has never had a cap and this does not add one; what is
+        bounded is how many *distinct* prose clusters one shape may pull
+        together, so an over-broad shape cannot collapse a whole review.
+        """
+        monkeypatch.setattr(cluster_findings, "MAX_SHAPE_GROUP", 2)
+        (repo / "app" / "many.py").write_text(
+            "".join(f'v{i} = json.loads(path.read_text(encoding="utf-8"))\n' for i in range(6))
+        )
+        # Distinct wording, so each finding is its own prose cluster going in.
+        wordings = [
+            "wrap this in try/except",
+            "add type checks around the parsed payload",
+            "malformed input will raise here",
+            "guard against a decode failure",
+            "this can throw on bad data",
+            "validate before returning",
+        ]
+        threads = [self._thread("app/many.py", i + 1, w) for i, w in enumerate(wordings)]
+        assert len(cluster_findings.cluster(threads)) == 6, "prose keeps them apart"
+
+        groups = cluster_findings.shape_groups(threads, repo)
+        assert groups, "the shape is shared, so some merging must happen"
+        assert all(len(g) <= 2 for g in groups)

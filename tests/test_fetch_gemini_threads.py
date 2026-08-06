@@ -7,7 +7,9 @@ pure helpers that operate on already-fetched GraphQL payloads.
 import datetime
 import json
 import os
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -3116,3 +3118,44 @@ def test_accumulate_and_read_swept_patterns(tmp_path, monkeypatch):
     fgt.accumulate_swept_patterns(pr, ["sigA"])
     fgt.accumulate_swept_patterns(pr, ["sigB", "sigA"])
     assert fgt.read_swept_patterns(pr) == {"sigA", "sigB"}
+
+
+class TestRepoRoot:
+    """Clustering reads anchored source lines, so it needs the working tree root.
+
+    Without this wiring the shape-merging capability exists but the loop never
+    uses it -- a feature that ships dead.
+    """
+
+    def test_returns_the_toplevel_path(self):
+        def runner(cmd, **kwargs):
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/srv/acme/widget\n", "")
+
+        import unittest.mock as mock
+        with mock.patch.object(subprocess, "run", runner):
+            assert fgt.repo_root() == Path("/srv/acme/widget")
+
+    def test_fails_open_when_git_errors(self):
+        import unittest.mock as mock
+
+        def failing(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 128, "", "not a git repository")
+
+        with mock.patch.object(subprocess, "run", failing):
+            assert fgt.repo_root() is None
+
+        def raising(cmd, **kwargs):
+            raise OSError("git not found")
+
+        with mock.patch.object(subprocess, "run", raising):
+            assert fgt.repo_root() is None
+
+    def test_blank_output_is_not_a_root(self):
+        import unittest.mock as mock
+
+        def blank(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 0, "  \n", "")
+
+        with mock.patch.object(subprocess, "run", blank):
+            assert fgt.repo_root() is None

@@ -106,6 +106,13 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
 
 1. **Cluster.** The cycle receipt's `Patterns (N):` section groups findings by a
    deterministic pattern signature. Reason about patterns, not a flat finding list.
+
+   Clustering runs with the repository root supplied, so findings anchored to
+   lines of the same code shape merge even when the reviewer worded them
+   differently. Those clusters carry a `shape:` signature. This matters because
+   a reviewer that says "exception-wrap" at one site and "add error checks" at
+   another is describing one pattern, and without the merge each looks like a
+   single-site finding and never reaches the sweep's two-site minimum.
 2. **Sweep (report-then-go).** For each multi-site pattern (`count >= 2`), run
    `sweep_siblings.py` to find instances of the same shape the reviewer has not
    flagged yet, restricted to the PR's changed files:
