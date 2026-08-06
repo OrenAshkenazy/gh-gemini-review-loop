@@ -1586,6 +1586,31 @@ def read_swept_patterns(pr: PullRequest) -> set[str]:
     return {x for x in val if isinstance(x, str)} if isinstance(val, list) else set()
 
 
+def repo_root(cwd: str | None = None) -> Path | None:
+    """Return the working tree root, or None when it cannot be resolved.
+
+    Clustering reads the source lines findings anchor to, and thread paths are
+    repo-relative. Fails OPEN: any git error yields None, and the caller falls
+    back to prose-only clustering rather than reading the wrong files.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    top = (result.stdout or "").strip()
+    return Path(top) if top else None
+
+
 def changed_files_in_range(
     base: str | None, head: str | None, *, cwd: str | None = None
 ) -> set[str]:
@@ -3395,8 +3420,12 @@ def main() -> int:
                         "warning: --verification-details is not valid JSON; storing {}.",
                         file=sys.stderr,
                     )
+            # Pass the repo root so clustering can merge findings the reviewer
+            # worded differently but which anchor to the same code shape. Falls
+            # back to prose-only clustering when the root cannot be resolved.
             clusters = cluster_findings.cluster(
-                [t for t in threads if isinstance(t, dict)]
+                [t for t in threads if isinstance(t, dict)],
+                root=repo_root(),
             )
             # One signature entry per finding (repeat per cluster member) so the
             # recurrence rate is over findings, not distinct patterns.

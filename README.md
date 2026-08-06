@@ -60,7 +60,7 @@ Checkable claims, with the honest scope of each:
 | Capability | Scope | Where |
 |---|---|---|
 | Thread-state filtering | `reviewThreads` GraphQL, `isResolved` / `isOutdated`, plus `ADDRESSED_BY_REPLY` for maintainer *"wontfix"* replies | `fetch_gemini_threads.py` |
-| Pattern clustering + sibling sweep | Deterministic signature, cross-cycle recurrence tracking, and a sweep that intersects the flagged lines' tokens and reports matching unflagged lines. Refuses on one site, on a too-generic shape, and never reads outside the changed files | `cluster_findings.py`, `sweep_siblings.py` |
+| Pattern clustering + sibling sweep | Findings cluster by signature and by the shape of the code they anchor to, so one defect described two ways still counts as one pattern. The sweep then intersects the flagged lines' tokens and reports matching unflagged lines. Refuses on one site, on a too-generic shape, and never reads outside the changed files | `cluster_findings.py`, `sweep_siblings.py` |
 | Verification gate | Auto-detects Python / Node / Rust / Go. Required-check failure flips the run to `verification: failed`. **`Skip` is an offered menu option** — pick it and there is no gate | `detect_profile.py`, `run_profile.py` |
 | Cycle cap | Hard count, agent-scoped: only the agent's own pings consume it. Enforced at the write — `request_rereview.py` counts prior pings and refuses past the cap, rather than trusting the agent to stop | `request_rereview.py` |
 | Severity ordering | Parsed for **Codex `![P0]`–`![P3]` badges and `![critical]`–`![low]` image alt text only.** A bot using neither convention yields `unknown`, which is kept by default | `thread_severity()` |

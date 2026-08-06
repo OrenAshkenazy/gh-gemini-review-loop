@@ -13,7 +13,10 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+import sweep_siblings
 
 # Local copies of two trivial patterns so this module stays independent of the
 # 2800-line fetch_gemini_threads module.
@@ -190,14 +193,94 @@ def _label(body: str) -> str:
     return (norm[:60] + "…") if len(norm) > 60 else norm
 
 
-def cluster(threads: list[Any]) -> list[Cluster]:
-    """Group threads by pattern_signature; sort by severity desc then count desc."""
+# Two findings shaped the same must share at least this many tokens at their
+# anchored source lines before prose-distinct clusters are merged. Same floor as
+# the sweep's own specificity check, for the same reason: fewer than two shared
+# tokens is not a shape.
+MIN_SHAPE_TOKENS = 2
+
+# Merging is capped so one over-broad shape cannot swallow an entire review into
+# a single cluster. Beyond this, the findings are more likely diverse than alike.
+MAX_SHAPE_GROUP = 12
+
+
+def _anchored_line(thread: Any, root: Path) -> str:
+    """Return the source line a finding is anchored to, or "" if unreadable."""
+    if not isinstance(thread, dict):
+        return ""
+    path = thread.get("path")
+    line = thread.get("line")
+    if line is None:
+        line = thread.get("originalLine")
+    if not isinstance(path, str) or not isinstance(line, int) or line < 1:
+        return ""
+    try:
+        target = root / path
+        if target.stat().st_size > sweep_siblings.MAX_FILE_BYTES:
+            return ""
+        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+    except (OSError, ValueError):
+        return ""
+    if line > len(lines):
+        return ""
+    text = lines[line - 1]
+    return text if sweep_siblings.is_code_line(text) else ""
+
+
+def shape_groups(threads: list[Any], root: Path) -> list[list[int]]:
+    """Group thread indices whose anchored source lines share a code shape.
+
+    Prose clustering fails when a reviewer describes the same defect two ways --
+    "exception-wrap" and "add error checks around the parsed JSON" hash apart,
+    so a pattern present at two sites looks like two patterns at one site each
+    and never reaches the sweep's two-site minimum.
+
+    The code does not vary the way the prose does. Grouping on the anchored
+    lines' shared tokens recovers the pattern regardless of what the bot called
+    it. Greedy over a stable order, so the result does not depend on the order
+    threads arrive in.
+    """
+    tokens = [sweep_siblings.tokenize(_anchored_line(t, root)) for t in threads]
+    order = sorted(range(len(threads)), key=lambda i: (_site(threads[i]) if isinstance(threads[i], dict) else str(i), i))
+
+    groups: list[dict[str, Any]] = []
+    for index in order:
+        current = tokens[index]
+        if not current:
+            continue
+        best: dict[str, Any] | None = None
+        best_common: set[str] = set()
+        for group in groups:
+            if len(group["members"]) >= MAX_SHAPE_GROUP:
+                continue
+            common = group["tokens"] & current
+            if len(common) >= MIN_SHAPE_TOKENS and len(common) > len(best_common):
+                best, best_common = group, common
+        if best is None:
+            groups.append({"tokens": set(current), "members": [index]})
+        else:
+            best["tokens"] = best_common
+            best["members"].append(index)
+    return [sorted(g["members"]) for g in groups if len(g["members"]) > 1]
+
+
+def cluster(threads: list[Any], *, root: str | Path | None = None) -> list[Cluster]:
+    """Group threads by pattern_signature; sort by severity desc then count desc.
+
+    With ``root`` set, clusters whose findings are anchored to lines of the same
+    code shape are merged afterwards, so a pattern the reviewer described two
+    different ways still reaches the sweep as one pattern. Without ``root`` the
+    behaviour is prose-only, exactly as before.
+    """
     groups: dict[str, list[dict[str, Any]]] = {}
     for thread in threads:
         sig = pattern_signature(thread)
         if not sig:
             continue
         groups.setdefault(sig, []).append(thread)
+
+    if root is not None:
+        groups = _merge_by_shape(groups, Path(root))
 
     clusters: list[Cluster] = []
     for sig, members in groups.items():
@@ -217,6 +300,34 @@ def cluster(threads: list[Any]) -> list[Cluster]:
         )
     clusters.sort(key=lambda c: (_SEVERITY_ORDER[c.severity], -c.count))
     return clusters
+
+
+def _merge_by_shape(
+    groups: dict[str, list[dict[str, Any]]], root: Path
+) -> dict[str, list[dict[str, Any]]]:
+    """Merge prose-distinct clusters whose findings share a code shape."""
+    keys = list(groups)
+    representative = [groups[k][0] for k in keys]
+    merged_indices = shape_groups(representative, root)
+    if not merged_indices:
+        return groups
+
+    absorbed: set[int] = set()
+    out: dict[str, list[dict[str, Any]]] = {}
+    for indices in merged_indices:
+        members: list[dict[str, Any]] = []
+        for i in indices:
+            members.extend(groups[keys[i]])
+            absorbed.add(i)
+        # A shape-derived signature is its own kind, and says so in the receipt:
+        # a reader seeing `shape:` knows the merge came from the code, not the
+        # reviewer's wording.
+        joined = "|".join(sorted(keys[i] for i in indices))
+        out["shape:" + hashlib.sha1(joined.encode()).hexdigest()[:8]] = members
+    for i, key in enumerate(keys):
+        if i not in absorbed:
+            out[key] = groups[key]
+    return out
 
 
 def recurrence_stats(
