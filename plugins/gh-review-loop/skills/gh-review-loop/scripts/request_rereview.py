@@ -167,7 +167,8 @@ def effective_cap(cli_value: int | None) -> int:
 
 def gh_login(runner: Any = None) -> str | None:
     """Return the gh-authenticated login, or None if it cannot be resolved."""
-    runner = runner or subprocess.run
+    if runner is None:
+        runner = subprocess.run
     try:
         result = runner(
             ["gh", "api", "user", "--jq", ".login"],
@@ -196,7 +197,8 @@ def count_agent_pings(
     """
     if not trigger or not agent_login:
         return None
-    runner = runner or subprocess.run
+    if runner is None:
+        runner = subprocess.run
     owner, repo_name = parse_repo(repo)
     try:
         result = runner(
@@ -276,7 +278,8 @@ def post_rereview(
     the loop makes to someone else's PR, so it needs a preview like every
     other write in the skill.
     """
-    runner = runner or subprocess.run
+    if runner is None:
+        runner = subprocess.run
     owner, repo_name = parse_repo(repo)
     if not isinstance(pr, int) or pr <= 0:
         raise ValueError("--pr must be a positive integer")

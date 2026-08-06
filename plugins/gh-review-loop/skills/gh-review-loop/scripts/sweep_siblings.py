@@ -230,8 +230,8 @@ def sweep(
     if len(flagged_lines) < MIN_FLAGGED_SITES:
         result.status = "no_source"
         result.reason = (
-            "Fewer than two flagged sites resolved to readable code. The sweep "
-            "only compares real source lines, so it stops here."
+            f"Fewer than {MIN_FLAGGED_SITES} flagged sites resolved to readable "
+            "code. The sweep only compares real source lines, so it stops here."
         )
         return result
 
