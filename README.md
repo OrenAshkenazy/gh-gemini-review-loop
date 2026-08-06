@@ -60,16 +60,6 @@ Intersecting across sites is the safety property: a candidate has to match what 
 
 Everything else it does — reading `isResolved`/`isOutdated` off the `reviewThreads` GraphQL, honoring a maintainer's *"wontfix"* reply, sorting by severity, keeping one live-edited status comment instead of comment spam — is table stakes done carefully. Correct, but not why you'd pick this.
 
-## You probably don't need this if
-
-Being honest about the boundary saves you an install:
-
-- **You use CodeRabbit and pay for Pro.** `@coderabbitai autofix` is on by default and handles CodeRabbit's own threads. What's left is the blocking test gate and the sibling sweep — decide whether those are worth a second tool.
-- **You use Copilot code review on a paid plan.** "Fix batch with Copilot" applies multiple Copilot comments at once in a cloud agent that can run your repo's setup steps. Same caveat: Copilot's own comments only.
-- **You're on Claude Code Review (Team/Enterprise).** In its push-triggered mode it auto-resolves threads when you fix and push, and a `REVIEW.md` with convergence rules solves much of the round-three problem upstream. It's a research preview and bills separately, roughly $15–25 per review.
-- **You want a hosted, zero-config service.** This is a local skill that shells out to `gh`. It does nothing while you aren't running it.
-
-This is for the case where you don't control which bot reviews your repo, you don't want to pay that bot's vendor for its fix feature, and you want a bound on how many rounds this takes.
 
 ## What's actually implemented
 
