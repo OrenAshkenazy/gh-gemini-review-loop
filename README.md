@@ -42,15 +42,7 @@ Bot reviewers expand. You fix the two instances of a pattern it flagged, push, a
 
 Three things in this loop attack that directly:
 
-**It sweeps the class, not the instance.** Findings are clustered by a deterministic pattern signature. When one pattern is flagged at 2+ sites, `sweep_siblings.py` reduces those lines to tokens, intersects them, and reports every other line in the PR's changed files containing all of the shared tokens — the siblings the reviewer hasn't reached yet:
-
-```text
-[sweep] read_text without errors= guard
-  flagged:   fetch_gemini_threads.py:1039, judge.py:199
-  shared:    )) data encoding json loads path read_text
-  siblings:  1 unflagged site(s) match the same shape
-    + request_rereview.py:59  data = json.loads(path.read_text(encoding="utf-8"))
-```
+**It sweeps the class, not the instance.** Findings are clustered by a deterministic pattern signature. When one pattern is flagged at 2+ sites, `sweep_siblings.py` reduces those lines to tokens, intersects them, and reports every other line in the PR's changed files containing all of the shared tokens — the siblings the reviewer hasn't reached yet.
 
 Intersecting across sites is the safety property: a candidate has to match what the flagged sites have in *common*, not what any one of them happens to contain. It reports before anything is edited, refuses on a single site or a too-generic shape, and never reads a file outside your diff. Swept patterns are tracked across cycles, so if one comes back you see `⚠ RECURRED after sweep` instead of silently re-fixing it.
 
