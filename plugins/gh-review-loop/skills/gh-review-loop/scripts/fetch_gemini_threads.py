@@ -1608,6 +1608,37 @@ def swept_pattern_sets(
     return this_run, this_run | history_swept
 
 
+def build_convergence(
+    pr: PullRequest, clusters: list[Any], history: dict[str, set[str]]
+) -> dict[str, Any]:
+    """Decide every pattern-related receipt field in one place.
+
+    The caller renders and persists what this returns; it must not recompute
+    any of it. That is the point: the swept counts were previously derived at
+    one site in ``main()`` and rendered at another ~85 lines away, so the two
+    could disagree and no test could reach either. Keeping the decision here
+    means a test of this function is a test of what the receipt actually says.
+
+    Returns ``stats`` (for the record's rates), ``line`` (the rendered
+    Convergence advisory), and ``swept_count`` / ``swept`` (this run only).
+    """
+    # One signature entry per finding (repeat per cluster member) so the
+    # recurrence rate is over findings, not distinct patterns.
+    current_sigs = [c.signature for c in clusters for _ in range(c.count)]
+    this_run, ever = swept_pattern_sets(pr, history["swept"])
+    stats = cluster_findings.recurrence_stats(
+        current_sigs,
+        prior_sigs=prior_pattern_signatures(pr) | history["seen"],
+        swept_sigs=ever,
+    )
+    return {
+        "stats": stats,
+        "line": metrics.format_convergence_line(stats, swept_count=len(this_run)),
+        "swept_count": len(this_run),
+        "swept": sorted(this_run),
+    }
+
+
 def repo_root(cwd: str | None = None) -> Path | None:
     """Return the working tree root, or None when it cannot be resolved.
 
@@ -3449,19 +3480,12 @@ def main() -> int:
                 [t for t in threads if isinstance(t, dict)],
                 root=repo_root(),
             )
-            # One signature entry per finding (repeat per cluster member) so the
-            # recurrence rate is over findings, not distinct patterns.
-            current_sigs = [c.signature for c in clusters for _ in range(c.count)]
             # Cross-run history: --record-run clears the live accumulator, so a
             # resumed loop folds in pattern signatures recorded by prior runs of
             # this PR (runs.jsonl) — otherwise recurrence resets to 0 on resume.
             history = metrics.pattern_history_for_pr(f"{pr.owner}/{pr.repo}", pr.number)
-            swept_this_run, swept_ever = swept_pattern_sets(pr, history["swept"])
-            conv_stats = cluster_findings.recurrence_stats(
-                current_sigs,
-                prior_sigs=prior_pattern_signatures(pr) | history["seen"],
-                swept_sigs=swept_ever,
-            )
+            convergence = build_convergence(pr, clusters, history)
+            conv_stats = convergence["stats"]
             record = metrics.build_record(
                 repo=f"{pr.owner}/{pr.repo}",
                 pr=pr.number,
@@ -3482,7 +3506,7 @@ def main() -> int:
                     "distinct_patterns": conv_stats["distinct_patterns"],
                     "max_cluster_size": max((c.count for c in clusters), default=0),
                     "pattern_recurrence_rate": round(conv_stats["recurrence_rate"], 3),
-                    "swept_count": len(swept_this_run),
+                    "swept_count": convergence["swept_count"],
                     # Persisted so later runs of this PR can compute cross-run
                     # recurrence after --record-run clears the live accumulator.
                     # Only this run's own sweeps: pattern_history_for_pr unions
@@ -3490,7 +3514,7 @@ def main() -> int:
                     # compound it into every later record and the count could
                     # never fall again.
                     "signatures": sorted({c.signature for c in clusters}),
-                    "swept": sorted(swept_this_run),
+                    "swept": convergence["swept"],
                 } if clusters else None,
                 **derived,
             )
@@ -3546,9 +3570,7 @@ def main() -> int:
                 patterns_block = metrics.format_patterns_block(clusters)
                 if patterns_block:
                     print(patterns_block)
-                convergence_line = metrics.format_convergence_line(
-                    conv_stats, swept_count=len(swept_this_run)
-                )
+                convergence_line = convergence["line"]
                 if convergence_line:
                     print(convergence_line)
                 prior_fps = prior_finding_fingerprints(pr)

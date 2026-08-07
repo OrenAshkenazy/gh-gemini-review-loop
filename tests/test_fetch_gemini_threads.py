@@ -3280,3 +3280,92 @@ class TestSweptPatternLifecycle:
             "the second record swept nothing and must not inherit the first's"
         )
         assert [r["patterns"]["swept_count"] for r in records] == [1, 0]
+
+
+class TestConvergenceReceiptWiring:
+    """The receipt must use the fix, not merely contain it.
+
+    Regression: the swept sets were derived at one point in main() and rendered
+    ~85 lines later at another. Both call sites could be reverted to the union
+    with the whole suite still green, because the tests only covered the helper.
+    That is the same capability-vs-wiring gap that shipped a dead
+    cluster(root=...) in an earlier revision. build_convergence() owns the
+    decision so a test of it is a test of what the receipt says, and the source
+    check below keeps main() from quietly deciding again.
+    """
+
+    PR = PullRequest(owner="acme", repo="widget", number=11)
+
+    @staticmethod
+    def _cluster(sig, count=1):
+        return cluster_findings.Cluster(
+            signature=sig,
+            label=sig,
+            severity="unknown",
+            sites=tuple(f"loaders/profiles.py:{16 + i}" for i in range(count)),
+            count=count,
+        )
+
+    def test_receipt_says_zero_when_this_run_swept_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+
+        history = {"seen": {"type-guard"}, "swept": {"exception-wrap", "64250ca5"}}
+        result = fgt.build_convergence(self.PR, [self._cluster("type-guard")], history)
+
+        assert result["swept_count"] == 0
+        assert result["swept"] == []
+        assert result["line"].endswith("Swept 0 patterns."), result["line"]
+
+    def test_receipt_counts_only_this_run_when_it_did_sweep(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        fgt.accumulate_swept_patterns(self.PR, ["alpha"])
+
+        history = {"seen": set(), "swept": {"beta", "gamma"}}
+        result = fgt.build_convergence(self.PR, [self._cluster("alpha")], history)
+
+        assert result["swept_count"] == 1, "history must not inflate this run's count"
+        assert result["swept"] == ["alpha"]
+
+    def test_recurrence_still_sees_patterns_swept_in_earlier_runs(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+
+        # Swept in a previous run, flagged again now.
+        history = {"seen": {"type-guard"}, "swept": {"type-guard"}}
+        result = fgt.build_convergence(self.PR, [self._cluster("type-guard")], history)
+
+        assert result["stats"]["recurred_after_sweep"] == ["type-guard"]
+        assert "RECURRED after sweep" in result["line"]
+        assert result["swept_count"] == 0, "recurrence is orthogonal to this run's count"
+
+    def test_main_does_not_decide_the_swept_fields_itself(self):
+        """Only build_convergence may compute these; main() just reads keys."""
+        import ast
+
+        source = Path(fgt.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        owners = {"swept_pattern_sets": [], "format_convergence_line": []}
+        for func in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+            for node in ast.walk(func):
+                if not isinstance(node, ast.Call):
+                    continue
+                target = node.func
+                name = (
+                    target.attr
+                    if isinstance(target, ast.Attribute)
+                    else getattr(target, "id", None)
+                )
+                if name in owners:
+                    owners[name].append(func.name)
+
+        assert owners["swept_pattern_sets"] == ["build_convergence"], (
+            f"swept_pattern_sets is called from {owners['swept_pattern_sets']}; "
+            "only build_convergence may call it"
+        )
+        assert owners["format_convergence_line"] == ["build_convergence"], (
+            f"format_convergence_line is called from "
+            f"{owners['format_convergence_line']}; only build_convergence may "
+            "render the convergence line"
+        )
