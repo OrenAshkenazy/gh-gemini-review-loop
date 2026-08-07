@@ -68,6 +68,8 @@ Checkable claims, with the honest scope of each:
 | Audit trail + local stats | One live-edited PR comment, per-run receipts, per-repo aggregates via `--stats`. Never transmitted | `metrics.py` |
 | Zero infrastructure | Stdlib Python + `gh` + `git`. No SDK, no server, no account | all scripts |
 
+**Reproduce the sweep.** [`python3 evals/replay/replay.py`](evals/replay/) runs two captured Sourcery reviews of [PR #67](https://github.com/OrenAshkenazy/gh-review-loop/pull/67) through the clustering and sweep code — no network, no arguments, stdlib only. The fixtures are that reviewer's real payloads, copied verbatim from the GitHub API rather than written for the demo. Run 1 merges two differently-worded findings into one pattern and reports 3 unflagged siblings; run 2 yields one site and correctly no sweep, because the same reviewer returned different findings on identical file contents.
+
 If you're comparing alternatives, the closest is [pbakaus/agent-reviews](https://github.com/pbakaus/agent-reviews) — broader bot coverage and a nicer CLI, no test gate, no hard round cap, no sibling sweep.
 
 ---
