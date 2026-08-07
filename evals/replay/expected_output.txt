@@ -1,0 +1,49 @@
+========================================================================
+run1: PR #67, Sourcery's initial review of commit b391162. Two findings, one defect described two different ways.
+commit: b391162cf77fcb99b46a7581f87cff5c5e31de8d
+threads: 2
+  - loaders/profiles.py:17
+  - loaders/bundle.py:13
+========================================================================
+
+-- clustered by finding prose alone --
+Patterns (2):
+  [unknown] exception-wrap — 1 site   (sig: exception-wrap)
+           loaders/profiles.py:17
+  [unknown] **suggestion (bug_risk):** add type and error checks around … — 1 site   (sig: 64250ca5)
+           loaders/bundle.py:13
+
+-- clustered by prose and code shape (shipping behaviour) --
+Patterns (1):
+  [unknown] **suggestion:** defensively handle malformed or non-object j… — 2 sites   (sig: shape:802659ea)
+           loaders/profiles.py:17, loaders/bundle.py:13
+
+-- sweep --
+[sweep] **suggestion:** defensively handle malformed or non-object j…
+  flagged:   loaders/profiles.py:17, loaders/bundle.py:13
+  shared:    data get {})
+  siblings:  3 unflagged site(s) match the same shape
+    + loaders/bundle.py:25  return data.get("overrides", {})
+    + loaders/profiles.py:23  return data.get("reviewers", {})
+    + loaders/profiles.py:29  return data.get("defaults", {})
+
+========================================================================
+run2: PR #67, Sourcery's review of commit 67551bd — the same file contents as b391162, re-pushed. One finding.
+commit: 67551bdac5be73938767f6de4663f057c650f31c
+threads: 1
+  - loaders/profiles.py:16
+========================================================================
+
+-- clustered by finding prose alone --
+Patterns (1):
+  [unknown] type-guard — 1 site   (sig: type-guard)
+           loaders/profiles.py:16
+
+-- clustered by prose and code shape (shipping behaviour) --
+Patterns (1):
+  [unknown] type-guard — 1 site   (sig: type-guard)
+           loaders/profiles.py:16
+
+-- sweep --
+no cluster reached 2 sites; nothing to sweep
+

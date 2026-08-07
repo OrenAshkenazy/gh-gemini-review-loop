@@ -1,0 +1,36 @@
+{
+  "captured_from": "GitHub REST API /pulls/comments/{id}",
+  "changed_files": [
+    "loaders/profiles.py",
+    "loaders/bundle.py"
+  ],
+  "commit": "67551bdac5be73938767f6de4663f057c650f31c",
+  "description": "PR #67, Sourcery's review of commit 67551bd \u2014 the same file contents as b391162, re-pushed. One finding.",
+  "source": "https://github.com/OrenAshkenazy/gh-review-loop/pull/67",
+  "threads": [
+    {
+      "comments": [
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "sourcery-ai"
+          },
+          "body": "**issue (bug_risk):** The code assumes the JSON top-level is always a dict; a non-dict payload will raise at runtime when calling `.get`.\n\nIf the JSON is malformed or the schema changes so the top-level is not a dict, `data.get(...)` will raise `AttributeError`. Consider guarding with `isinstance(data, dict)` and returning the default (or raising a clearer error) to make this more robust to unexpected contents.",
+          "createdAt": "2026-08-06T19:40:22Z",
+          "id": "3731481473",
+          "line": 16,
+          "originalLine": 16,
+          "path": "loaders/profiles.py",
+          "url": "https://github.com/OrenAshkenazy/gh-review-loop/pull/67#discussion_r3731481473"
+        }
+      ],
+      "diffSide": "RIGHT",
+      "id": "replay-3731481473",
+      "isOutdated": false,
+      "isResolved": false,
+      "line": 16,
+      "originalLine": 16,
+      "path": "loaders/profiles.py"
+    }
+  ]
+}

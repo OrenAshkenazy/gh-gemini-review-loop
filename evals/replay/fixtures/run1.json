@@ -1,0 +1,60 @@
+{
+  "captured_from": "GitHub REST API /pulls/comments/{id}",
+  "changed_files": [
+    "loaders/profiles.py",
+    "loaders/bundle.py"
+  ],
+  "commit": "b391162cf77fcb99b46a7581f87cff5c5e31de8d",
+  "description": "PR #67, Sourcery's initial review of commit b391162. Two findings, one defect described two different ways.",
+  "source": "https://github.com/OrenAshkenazy/gh-review-loop/pull/67",
+  "threads": [
+    {
+      "comments": [
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "sourcery-ai"
+          },
+          "body": "**suggestion:** Defensively handle malformed or non-object JSON when loading profiles.\n\nThis assumes a valid JSON file whose top-level value is a dict. If the file is missing, truncated, or shaped differently (e.g. a list), `path.read_text`, `json.loads`, or `data.get` may raise and crash callers. Please catch `OSError` / `JSONDecodeError`, and guard against non-dict `data` (e.g. `if not isinstance(data, dict): return {}`), so corrupted or malformed manifests (and the corresponding `load_reviewer_map` / `load_team_defaults`) fail in a controlled way.\n\nSuggested implementation:\n\n```python\nfrom pathlib import Path\nfrom typing import Any\n\n\ndef read_manifest(path: Path) -> dict[str, Any]:\n    \"\"\"Read the bundle manifest that lists every included profile.\n\n    Returns an empty dict if the manifest file is missing, malformed, or does not\n    contain a top-level object with a dict-valued \"manifest\" key.\n    \"\"\"\n    try:\n        text = path.read_text(encoding=\"utf-8\")\n        data = json.loads(text)\n    except (OSError, json.JSONDecodeError):\n        # Missing file, unreadable file, or invalid JSON\n        return {}\n\n    if not isinstance(data, dict):\n        # Top-level JSON value must be an object\n        return {}\n\n    manifest = data.get(\"manifest\")\n    if not isinstance(manifest, dict):\n        # \"manifest\" must be a dict of profiles\n        return {}\n\n    return manifest\n\n```\n\nIf `load_reviewer_map` and `load_team_defaults` currently assume `read_manifest` never fails or returns non-dict values, they may need minor adjustments to handle the empty-dict fallback (e.g., treating it as \"no profiles found\" rather than an error). Ensure they behave correctly when `read_manifest` returns `{}`.\n\n\u2705 Addressed in 08c5a02035d833908787651cc3cf6691d9c2a08a: The profiles loader was refactored to use a shared `_read_json_object` helper that catches `OSError`/`JSONDecodeError` and verifies the top-level JSON is a dict, and all public loaders (`load_profile`, `load_reviewer_map`, `load_team_defaults`) now safely fall back to `{}` on malformed or non-object JSON.",
+          "createdAt": "2026-08-05T15:29:13Z",
+          "id": "3721865840",
+          "line": null,
+          "originalLine": 17,
+          "path": "loaders/profiles.py",
+          "url": "https://github.com/OrenAshkenazy/gh-review-loop/pull/67#discussion_r3721865840"
+        }
+      ],
+      "diffSide": "RIGHT",
+      "id": "replay-3721865840",
+      "isOutdated": false,
+      "isResolved": false,
+      "line": null,
+      "originalLine": 17,
+      "path": "loaders/profiles.py"
+    },
+    {
+      "comments": [
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "sourcery-ai"
+          },
+          "body": "**suggestion (bug_risk):** Add type and error checks around bundle JSON to avoid crashes on bad input.\n\nRight now this assumes a well-formed JSON object. If the file is malformed or the top-level isn\u2019t a dict, `json.loads` or `.get` can raise and crash the import. Please add basic validation (catch `JSONDecodeError` and check `isinstance(data, dict)` before using `.get`) so callers can distinguish invalid bundle files from \u201cno manifest\u201d cases.\n\nSuggested implementation:\n\n```python\ndef read_manifest(path: Path) -> dict[str, Any]:\n    \"\"\"Read the bundle manifest that lists every included profile.\n\n    Raises:\n        ValueError: If the bundle file is not valid JSON or the top-level JSON\n            value is not an object (dict).\n    \"\"\"\n    raw_text = path.read_text(encoding=\"utf-8\")\n    try:\n        data: Any = json.loads(raw_text)\n    except json.JSONDecodeError as exc:\n        raise ValueError(f\"Invalid bundle manifest JSON in {path}\") from exc\n\n    if not isinstance(data, dict):\n        raise ValueError(\n            f\"Bundle manifest JSON must be an object; got {type(data).__name__} in {path}\"\n        )\n\n    manifest = data.get(\"manifest\", {})\n    if not isinstance(manifest, dict):\n        raise ValueError(\n            f\"'manifest' field must be an object; got {type(manifest).__name__} in {path}\"\n        )\n\n    return manifest\n\n```\n\nThe SEARCH block above assumes the duplicated imports and function definitions in your snippet reflect the current file contents. If the file does not actually contain the duplicated `from __future__`/`import json`/`read_manifest` blocks, adjust the SEARCH section to match only the existing `read_manifest` definition and body:\n\n- Locate the current `def read_manifest(path: Path) -> dict[str, Any]:` and replace its body with the new implementation.\n- Ensure the imports (`json`, `Path`, `Any`) remain present only once at the top of the file.",
+          "createdAt": "2026-08-05T15:29:13Z",
+          "id": "3721865850",
+          "line": null,
+          "originalLine": 13,
+          "path": "loaders/bundle.py",
+          "url": "https://github.com/OrenAshkenazy/gh-review-loop/pull/67#discussion_r3721865850"
+        }
+      ],
+      "diffSide": "RIGHT",
+      "id": "replay-3721865850",
+      "isOutdated": false,
+      "isResolved": false,
+      "line": null,
+      "originalLine": 13,
+      "path": "loaders/bundle.py"
+    }
+  ]
+}
