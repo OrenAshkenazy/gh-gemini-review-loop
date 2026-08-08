@@ -2480,6 +2480,16 @@ def color_loop_block(block: str, *, enabled: bool) -> str:
     return block
 
 
+def print_clustering_blocks(clusters: list[Any]) -> None:
+    """Print the shared pattern view and any degenerate-clustering warning."""
+    patterns_block = metrics.format_patterns_block(clusters)
+    if patterns_block:
+        print(patterns_block)
+    clustering_advisory = metrics.format_degenerate_clustering_advisory(clusters)
+    if clustering_advisory:
+        print(clustering_advisory)
+
+
 def render_markdown(
     pr: dict[str, Any],
     threads: list[dict[str, Any]],
@@ -3567,12 +3577,7 @@ def main() -> int:
                 # Printed directly (like suite_block / findings_block): these
                 # start with "Patterns ("/"Convergence:", not "[loop]", so
                 # color_loop_block would be a no-op wrap.
-                patterns_block = metrics.format_patterns_block(clusters)
-                if patterns_block:
-                    print(patterns_block)
-                clustering_advisory = metrics.format_degenerate_clustering_advisory(clusters)
-                if clustering_advisory:
-                    print(clustering_advisory)
+                print_clustering_blocks(clusters)
                 convergence_line = convergence["line"]
                 if convergence_line:
                     print(convergence_line)
@@ -3656,6 +3661,14 @@ def main() -> int:
             ),
             end="",
         )
+        # The clustering warning is an ordering guard, so show it on the
+        # initial fetch while the agent is deciding what to fix. Summary-mode
+        # output repeats it later as an audit trail.
+        clusters = cluster_findings.cluster(
+            [thread for thread in threads if isinstance(thread, dict)],
+            root=repo_root(),
+        )
+        print_clustering_blocks(clusters)
         if judge_status.get("ran") and judge_results:
             print(
                 color_loop_block(

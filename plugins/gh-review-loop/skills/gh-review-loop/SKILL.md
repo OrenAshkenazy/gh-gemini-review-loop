@@ -145,10 +145,16 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
 The receipt's `Clustering:` and `Convergence:` lines are advisory only. When
 three or more findings all form singleton clusters, `Clustering:` warns that
 their signatures are likely prose-hash fallbacks and requires a manual sweep
-before fixing. When a swept pattern reappears ("⚠ … RECURRED after sweep"),
-`Convergence:` says the sweep missed a variant or the reviewer keeps re-flagging
-— decide whether to refine the sweep, stop, or continue. Neither line changes
-control flow; the re-review cap remains the only hard stop.
+before fixing. This warning appears on the initial thread fetch, then repeats in
+the cycle receipt as an audit trail. A manual sweep means inspecting every PR
+changed file for siblings suggested by the singleton findings' bodies and code
+anchors, and reporting the inspected scope plus suspected siblings before
+editing. Do not combine unrelated singleton sites as inputs to
+`sweep_siblings.py`; its two-site intersection remains reserved for an actual
+multi-site cluster. When a swept pattern reappears ("⚠ … RECURRED after
+sweep"), `Convergence:` says the sweep missed a variant or the reviewer keeps
+re-flagging — decide whether to refine the sweep, stop, or continue. Neither
+line changes control flow; the re-review cap remains the only hard stop.
 
 Sweep scope is **changed files only** — that is both safe (blast radius = the PR's
 own diff) and sufficient (bot reviewers only review changed files).

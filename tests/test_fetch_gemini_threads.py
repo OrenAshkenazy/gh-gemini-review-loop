@@ -571,6 +571,55 @@ class TestReviewerSelectionCli:
         assert "Do not wait on an unconfirmed reviewer" in selection["message"]
         assert [thread["id"] for thread in payload["threads"]] == ["T_default"]
 
+    def test_markdown_fetch_warns_before_fixing_degenerate_clusters(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._patch_common(monkeypatch, tmp_path)
+        pull_request = self._pull_request()
+        pull_request["reviewThreads"]["nodes"] = [
+            {
+                **self._thread("chatgpt-codex-connector", f"T{i}"),
+                "path": f"src/file{i}.py",
+                "comments": {
+                    "nodes": [{
+                        "author": {
+                            "login": "chatgpt-codex-connector",
+                            "__typename": "Bot",
+                        },
+                        "body": body,
+                        "createdAt": "2026-06-28T12:00:00Z",
+                    }]
+                },
+            }
+            for i, body in enumerate([
+                "Validate the configuration before use",
+                "Document the public return value",
+                "Avoid rebuilding this cache repeatedly",
+            ])
+        ]
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: pull_request)
+        monkeypatch.setattr(fgt, "repo_root", lambda: None)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr", "https://github.com/o/r/pull/5",
+                "--author", "chatgpt-codex-connector",
+                "--judge-mode", "off",
+                "--no-agent-filter",
+                "--no-resolve-outdated",
+                "--no-resolve-addressed-by-reply",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        out = capsys.readouterr().out
+        assert "# Codex Threads for PR #5" in out
+        assert "Patterns (3):" in out
+        assert "manual sweep is required before fixing" in out
+
     def test_persisted_reviewer_is_reused_without_prompt(
         self, tmp_path, monkeypatch, capsys
     ):
