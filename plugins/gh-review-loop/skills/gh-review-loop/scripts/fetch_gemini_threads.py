@@ -3570,6 +3570,9 @@ def main() -> int:
                 patterns_block = metrics.format_patterns_block(clusters)
                 if patterns_block:
                     print(patterns_block)
+                clustering_advisory = metrics.format_degenerate_clustering_advisory(clusters)
+                if clustering_advisory:
+                    print(clustering_advisory)
                 convergence_line = convergence["line"]
                 if convergence_line:
                     print(convergence_line)

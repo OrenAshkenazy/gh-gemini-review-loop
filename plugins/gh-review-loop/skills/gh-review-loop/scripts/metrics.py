@@ -623,6 +623,18 @@ def format_patterns_block(clusters: list[Any]) -> str:
     return "\n".join(lines)
 
 
+def format_degenerate_clustering_advisory(clusters: list[Any]) -> str:
+    """Warn when every finding became its own pattern, or return ``''``."""
+    valid = [cluster for cluster in clusters if cluster is not None]
+    if len(valid) < 3 or max(cluster.count for cluster in valid) != 1:
+        return ""
+    return (
+        "Clustering: ⚠ every finding produced a singleton pattern. "
+        "Signatures are likely prose-hash fallbacks; a manual sweep is required "
+        "before fixing."
+    )
+
+
 def format_convergence_line(stats: dict[str, Any], *, swept_count: int) -> str:
     """One-line advisory convergence summary, or '' when no patterns this cycle."""
     distinct = stats.get("distinct_patterns", 0)

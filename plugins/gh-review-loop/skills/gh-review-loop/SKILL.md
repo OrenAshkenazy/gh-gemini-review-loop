@@ -142,10 +142,13 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
    markers, so the convergence advisory can detect recurrence.
 4. **Verify** (the repo profile) and **re-review** as usual.
 
-The receipt's `Convergence:` line is advisory only. When a swept pattern reappears
-("⚠ … RECURRED after sweep"), the sweep missed a variant or the reviewer keeps
-re-flagging — decide whether to refine the sweep, stop, or continue. It never
-changes control flow; the re-review cap remains the only hard stop.
+The receipt's `Clustering:` and `Convergence:` lines are advisory only. When
+three or more findings all form singleton clusters, `Clustering:` warns that
+their signatures are likely prose-hash fallbacks and requires a manual sweep
+before fixing. When a swept pattern reappears ("⚠ … RECURRED after sweep"),
+`Convergence:` says the sweep missed a variant or the reviewer keeps re-flagging
+— decide whether to refine the sweep, stop, or continue. Neither line changes
+control flow; the re-review cap remains the only hard stop.
 
 Sweep scope is **changed files only** — that is both safe (blast radius = the PR's
 own diff) and sufficient (bot reviewers only review changed files).
