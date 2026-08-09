@@ -15,9 +15,8 @@ import pytest
 import sweep_siblings as sweeper
 
 
-PR195_SOURCES = Path(__file__).parent / "fixtures" / "cluster_corpus_pr195_sources"
-MIRROR_PR195 = json.loads(
-    (Path(__file__).parent / "fixtures" / "mirror_corpus_pr195.json").read_text()
+MIRROR_CORPUS = json.loads(
+    (Path(__file__).parent / "fixtures" / "mirror_corpus.json").read_text()
 )
 
 
@@ -87,10 +86,10 @@ class TestTokenize:
 class TestNormalizeBlock:
     def test_strips_comments_and_collapses_whitespace(self):
         assert sweeper.normalize_block([
-            "  const   floor = value; // kept in sync",
+            "  const   options = values; // kept in sync",
             "/* block comment",
-            "   continued */  return   floor;",
-        ]) == ("const floor = value;", "return floor;")
+            "   continued */  return   options;",
+        ]) == ("const options = values;", "return options;")
 
     def test_preserves_comment_markers_in_strings_and_decrement_operators(self):
         assert sweeper.normalize_block([
@@ -137,17 +136,17 @@ class TestParseSite:
         assert (site.path, site.line) == (path, line)
 
     def test_parses_a_flagged_range(self):
-        site = sweeper.parse_site("lib/build-provider-query.ts:95-98")
+        site = sweeper.parse_site("lib/options.ts:5-8")
 
-        assert site.path == "lib/build-provider-query.ts"
-        assert site.start_line == 95
-        assert site.line == 98
-        assert str(site) == "lib/build-provider-query.ts:95-98"
+        assert site.path == "lib/options.ts"
+        assert site.start_line == 5
+        assert site.line == 8
+        assert str(site) == "lib/options.ts:5-8"
 
 
 @pytest.fixture
-def mirror_pr195_repo(tmp_path):
-    for fixture in MIRROR_PR195:
+def mirror_repo(tmp_path):
+    for fixture in MIRROR_CORPUS:
         target = tmp_path / fixture["path"]
         target.parent.mkdir(parents=True, exist_ok=True)
         padding = [""] * (fixture["startLine"] - 1)
@@ -240,39 +239,40 @@ class TestSweep:
         assert result.candidates == []
         assert "Too broad to sweep safely" in result.reason
 
-    def test_pr195_pattern_a_punctuation_intersection_is_too_thin(self):
+    def test_punctuation_only_intersection_is_too_thin(self, tmp_path):
+        (tmp_path / "conditions.js").write_text(
+            "!alpha && beta\n"
+            "!gamma && delta\n"
+        )
         result = sweeper.sweep(
-            signature="pattern-a",
-            label="independent development gate",
+            signature="conditional-gate",
+            label="independent conditional gate",
             sites=[
-                "561c92fd/lib/candidate-discovery/fill-shortlist.ts:716",
-                "e4aaa78c/lib/build-provider-query.ts:85",
+                "conditions.js:1",
+                "conditions.js:2",
             ],
-            changed_files=[
-                "561c92fd/lib/candidate-discovery/fill-shortlist.ts",
-                "e4aaa78c/lib/build-provider-query.ts",
-            ],
-            root=PR195_SOURCES,
+            changed_files=["conditions.js"],
+            root=tmp_path,
         )
 
         assert result.status == "pattern_too_thin"
         assert result.invariant_tokens == ("!", "&&")
         assert result.candidates == []
 
-    def test_pr195_flagged_range_finds_the_twin_implementation(self, mirror_pr195_repo):
+    def test_flagged_range_finds_the_twin_implementation(self, mirror_repo):
         result = sweeper.sweep(
-            signature="provider-floor",
-            label="threshold floor",
-            sites=["lib/build-provider-query.ts:95-98"],
-            changed_files=[fixture["path"] for fixture in MIRROR_PR195],
-            root=mirror_pr195_repo,
+            signature="option-normalization",
+            label="option normalization",
+            sites=["lib/options.ts:5-8"],
+            changed_files=[fixture["path"] for fixture in MIRROR_CORPUS],
+            root=mirror_repo,
         )
 
         assert result.status == "ok"
         assert len(result.candidates) == 1
         assert result.candidates[0]["candidateClass"] == "mirror"
         assert result.candidates[0]["site"] == (
-            "src/candidate-discovery/run-candidate-discovery.js:596-599"
+            "src/options.js:12-15"
         )
         assert result.candidates[0]["fingerprint"]
 
@@ -292,28 +292,28 @@ class TestSweep:
         assert result.status == "too_few_sites"
         assert result.candidates == []
 
-    def test_mirror_never_searches_outside_changed_files(self, mirror_pr195_repo):
+    def test_mirror_never_searches_outside_changed_files(self, mirror_repo):
         result = sweeper.sweep(
-            signature="provider-floor",
-            label="threshold floor",
-            sites=["lib/build-provider-query.ts:95-98"],
-            changed_files=["lib/build-provider-query.ts"],
-            root=mirror_pr195_repo,
+            signature="option-normalization",
+            label="option normalization",
+            sites=["lib/options.ts:5-8"],
+            changed_files=["lib/options.ts"],
+            root=mirror_repo,
         )
 
         assert result.status == "too_few_sites"
         assert result.candidates == []
 
-    def test_mirror_does_not_re_report_another_flagged_range(self, mirror_pr195_repo):
+    def test_mirror_does_not_re_report_another_flagged_range(self, mirror_repo):
         result = sweeper.sweep(
-            signature="provider-floor",
-            label="threshold floor",
+            signature="option-normalization",
+            label="option normalization",
             sites=[
-                "lib/build-provider-query.ts:95-98",
-                "src/candidate-discovery/run-candidate-discovery.js:596-599",
+                "lib/options.ts:5-8",
+                "src/options.js:12-15",
             ],
-            changed_files=[fixture["path"] for fixture in MIRROR_PR195],
-            root=mirror_pr195_repo,
+            changed_files=[fixture["path"] for fixture in MIRROR_CORPUS],
+            root=mirror_repo,
         )
 
         assert all(
@@ -324,20 +324,20 @@ class TestSweep:
     def test_mirror_does_not_re_report_seed_after_comment_stripping(self, tmp_path):
         (tmp_path / "query.js").write_text(
             "// flagged range includes this comment\n"
-            "const floor =\n"
-            "  minimum != null\n"
-            "    ? minimum\n"
-            "    : criteria.length;\n"
+            "const normalizedOptions = rawOptions\n"
+            "  .filter((option) => option.enabled)\n"
+            "  .map((option) => option.name.trim())\n"
+            "  .sort();\n"
             "\n"
-            "const floor =\n"
-            "  minimum != null\n"
-            "    ? minimum\n"
-            "    : criteria.length;\n"
+            "const normalizedOptions = rawOptions\n"
+            "  .filter((option) => option.enabled)\n"
+            "  .map((option) => option.name.trim())\n"
+            "  .sort();\n"
         )
 
         result = sweeper.sweep(
-            signature="provider-floor",
-            label="threshold floor",
+            signature="option-normalization",
+            label="option normalization",
             sites=["query.js:1-5"],
             changed_files=["query.js"],
             root=tmp_path,
@@ -475,13 +475,13 @@ class TestReport:
         )
         assert "skipped:" in sweeper.render_report(result)
 
-    def test_report_labels_a_mirror_candidate(self, mirror_pr195_repo):
+    def test_report_labels_a_mirror_candidate(self, mirror_repo):
         result = sweeper.sweep(
-            signature="provider-floor",
-            label="threshold floor",
-            sites=["lib/build-provider-query.ts:95-98"],
-            changed_files=[fixture["path"] for fixture in MIRROR_PR195],
-            root=mirror_pr195_repo,
+            signature="option-normalization",
+            label="option normalization",
+            sites=["lib/options.ts:5-8"],
+            changed_files=[fixture["path"] for fixture in MIRROR_CORPUS],
+            root=mirror_repo,
         )
 
         assert "[mirror]" in sweeper.render_report(result)

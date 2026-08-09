@@ -25,6 +25,8 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
+- Span-clustering and duplicate-block sweep regressions now use small,
+  repository-owned synthetic corpora.
 - **Bulletproof judge eval.** The `--judge-mode` path no longer depends on the `openai` SDK or on `OPENAI_API_KEY` being exported in a shell rc file — the two failure modes that wasted the most setup time (broken Homebrew Python, GUI-launched Claude Code not inheriting `~/.zshenv`, `pip install openai` blocked by externally-managed-environment).
   - `judge.py` now POSTs to `chat.completions` via stdlib `urllib`. Zero install step; works on any Python 3.10+. Self-hosted gateways still work via `OPENAI_BASE_URL`. HTTP error bodies surface verbatim so 401s show "Incorrect API key" instead of a generic message.
   - New `key_resolver.py` with tiered key lookup: env var → `~/.config/gh-gemini-review-loop/.env` (chmod 600) → macOS Keychain → Linux `secret-tool`. New CLI: `--set` (interactive or `--from-stdin`), `--print-source` (redacted), `--clear`. Storage default is the OS keystore — keys never sit in shell rc files or `ps` output.
