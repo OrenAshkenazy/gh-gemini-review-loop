@@ -8,10 +8,14 @@ too-generic pattern, a file outside the diff.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 import sweep_siblings as sweeper
+
+
+PR195_SOURCES = Path(__file__).parent / "fixtures" / "cluster_corpus_pr195_sources"
 
 
 UTF8 = '''\
@@ -67,6 +71,14 @@ class TestTokenize:
 
     def test_is_case_insensitive(self):
         assert sweeper.tokenize("Path.read_text()") == sweeper.tokenize("path.READ_TEXT()")
+
+    @pytest.mark.parametrize("token", ["name", "snake_case", "x1", "A"])
+    def test_letter_tokens_are_significant(self, token):
+        assert sweeper.is_significant_token(token)
+
+    @pytest.mark.parametrize("token", ["!", "&&", "=>", ");"])
+    def test_punctuation_tokens_are_not_significant(self, token):
+        assert not sweeper.is_significant_token(token)
 
 
 class TestInvariantTokens:
@@ -146,6 +158,25 @@ class TestSweep:
         assert result.status == "pattern_too_thin"
         assert result.candidates == []
         assert "Too broad to sweep safely" in result.reason
+
+    def test_pr195_pattern_a_punctuation_intersection_is_too_thin(self):
+        result = sweeper.sweep(
+            signature="pattern-a",
+            label="independent development gate",
+            sites=[
+                "561c92fd/lib/candidate-discovery/fill-shortlist.ts:716",
+                "e4aaa78c/lib/build-provider-query.ts:85",
+            ],
+            changed_files=[
+                "561c92fd/lib/candidate-discovery/fill-shortlist.ts",
+                "e4aaa78c/lib/build-provider-query.ts",
+            ],
+            root=PR195_SOURCES,
+        )
+
+        assert result.status == "pattern_too_thin"
+        assert result.invariant_tokens == ("!", "&&")
+        assert result.candidates == []
 
     def test_a_line_matching_only_some_invariant_tokens_is_not_a_sibling(self, repo):
         """Containment is all-or-nothing; partial overlap is not a match."""

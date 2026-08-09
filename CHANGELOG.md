@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Fixed
 
+- Shape clustering now reads every code line in a reviewer's anchored range,
+  with single-line fallback for reviewers that omit range starts. Token-based
+  clustering and sibling sweeps require identifier-like shared tokens, so
+  punctuation such as `!` and `&&` still constrains matches without making a
+  pattern sweepable. Closes #74, #75, and #76.
 - Degenerate review clustering now emits an explicit advisory when three or
   more findings all become singleton patterns, making prose-hash fallback
   failures visible before fixes begin in both Markdown and structured JSON

@@ -199,36 +199,55 @@ def _label(body: str) -> str:
 # tokens is not a shape.
 MIN_SHAPE_TOKENS = 2
 
+# Local placeholder names recur across unrelated multi-line spans. They remain
+# matching constraints, but cannot qualify two spans as the same code shape.
+_GENERIC_SHAPE_TOKENS = frozenset({
+    "item", "items", "member", "members", "name", "names",
+    "term", "terms", "value", "values",
+})
+
 # Merging is capped so one over-broad shape cannot swallow an entire review into
 # a single cluster. Beyond this, the findings are more likely diverse than alike.
 MAX_SHAPE_GROUP = 12
 
 
-def _anchored_line(thread: Any, root: Path) -> str:
-    """Return the source line a finding is anchored to, or "" if unreadable."""
+def _anchored_tokens(thread: Any, root: Path) -> set[str]:
+    """Return tokens from a finding's anchored code span, or an empty set."""
     if not isinstance(thread, dict):
-        return ""
+        return set()
     path = thread.get("path")
-    line = thread.get("line")
-    if line is None:
-        line = thread.get("originalLine")
-    if not isinstance(path, str) or not isinstance(line, int) or line < 1:
-        return ""
+    end = thread.get("line")
+    if end is not None:
+        start = thread.get("startLine") or end
+    else:
+        end = thread.get("originalLine")
+        start = thread.get("originalStartLine") or end
+    if (
+        not isinstance(path, str)
+        or not isinstance(start, int)
+        or not isinstance(end, int)
+        or start < 1
+        or end < start
+    ):
+        return set()
     try:
         target = root / path
         if target.stat().st_size > sweep_siblings.MAX_FILE_BYTES:
-            return ""
+            return set()
         lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     except (OSError, ValueError):
-        return ""
-    if line > len(lines):
-        return ""
-    text = lines[line - 1]
-    return text if sweep_siblings.is_code_line(text) else ""
+        return set()
+    if end > len(lines):
+        return set()
+    tokens: set[str] = set()
+    for text in lines[start - 1:end]:
+        if sweep_siblings.is_code_line(text):
+            tokens.update(sweep_siblings.tokenize(text))
+    return tokens
 
 
 def shape_groups(threads: list[Any], root: Path) -> list[list[int]]:
-    """Group thread indices whose anchored source lines share a code shape.
+    """Group thread indices whose anchored source spans share a code shape.
 
     Prose clustering fails when a reviewer describes the same defect two ways --
     "exception-wrap" and "add error checks around the parsed JSON" hash apart,
@@ -236,11 +255,11 @@ def shape_groups(threads: list[Any], root: Path) -> list[list[int]]:
     and never reaches the sweep's two-site minimum.
 
     The code does not vary the way the prose does. Grouping on the anchored
-    lines' shared tokens recovers the pattern regardless of what the bot called
+    spans' shared tokens recovers the pattern regardless of what the bot called
     it. Greedy over a stable order, so the result does not depend on the order
     threads arrive in.
     """
-    tokens = [sweep_siblings.tokenize(_anchored_line(t, root)) for t in threads]
+    tokens = [_anchored_tokens(thread, root) for thread in threads]
     order = sorted(range(len(threads)), key=lambda i: (_site(threads[i]) if isinstance(threads[i], dict) else str(i), i))
 
     groups: list[dict[str, Any]] = []
@@ -254,7 +273,12 @@ def shape_groups(threads: list[Any], root: Path) -> list[list[int]]:
             if len(group["members"]) >= MAX_SHAPE_GROUP:
                 continue
             common = group["tokens"] & current
-            if len(common) >= MIN_SHAPE_TOKENS and len(common) > len(best_common):
+            significant_count = sum(
+                sweep_siblings.is_significant_token(token)
+                and token not in _GENERIC_SHAPE_TOKENS
+                for token in common
+            )
+            if significant_count >= MIN_SHAPE_TOKENS and len(common) > len(best_common):
                 best, best_common = group, common
         if best is None:
             groups.append({"tokens": set(current), "members": [index]})
