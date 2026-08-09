@@ -488,6 +488,16 @@ class TestFormatAutoSnapshot:
             "7 seen, 4 resolved, 1 open · cycles 2/3"
         )
 
+    def test_auto_snapshot_appends_degenerate_clustering_warning(self):
+        out = metrics.format_auto_snapshot(self._rec(patterns={
+            "distinct_patterns": 3,
+            "max_cluster_size": 1,
+        }))
+
+        assert "likely prose-hash fallbacks" in out
+        assert "manual sweep required before fixing" in out
+        assert "\n" not in out
+
     def test_auto_snapshot_hides_agent_only_fields(self):
         out = metrics.format_auto_snapshot(self._rec())
         for jargon in ("Fixed:", "Observed fixed", "Verification:", "Outcome:"):

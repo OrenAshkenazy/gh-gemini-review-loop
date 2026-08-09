@@ -8,8 +8,9 @@ All notable changes to this project will be documented in this file. The format 
 
 - Degenerate review clustering now emits an explicit advisory when three or
   more findings all become singleton patterns, making prose-hash fallback
-  failures visible before fixes begin. The skill documents the safe manual
-  recovery for singleton clusters. Closes #73.
+  failures visible before fixes begin in both Markdown and structured JSON
+  output. The skill documents the safe manual recovery for singleton clusters.
+  Closes #73.
 
 ### Changed
 

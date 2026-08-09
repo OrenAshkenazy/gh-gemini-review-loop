@@ -254,13 +254,23 @@ def format_auto_snapshot(record: dict[str, Any]) -> str:
     # One line on purpose: Claude Code collapses multi-line hook output behind
     # "ctrl+o to expand", so a multi-line backstop summary wouldn't actually be
     # visible to someone watching the chat.
-    return (
+    snapshot = (
         "[loop] Summary (auto, agent didn't post one): "
         f"{record['findings_fetched']} seen, "
         f"{record.get('observed_fixed_count', 0)} resolved, "
         f"{record['remaining_actionable']} open · "
         f"cycles {record['cycles_used']}/{record['cycle_cap']}"
     )
+    patterns = record.get("patterns")
+    if (
+        isinstance(patterns, dict)
+        and patterns.get("distinct_patterns", 0) >= 3
+        and patterns.get("max_cluster_size") == 1
+    ):
+        snapshot += (
+            " · ⚠ likely prose-hash fallbacks; manual sweep required before fixing"
+        )
+    return snapshot
 
 
 def _count(value: Any) -> int:

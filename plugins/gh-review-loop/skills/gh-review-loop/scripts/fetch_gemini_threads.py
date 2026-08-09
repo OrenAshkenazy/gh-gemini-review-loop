@@ -3620,12 +3620,27 @@ def main() -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    # Compute once for both human and machine fetch output. The advisory is a
+    # pre-fix ordering guard, so JSON automation must receive it too.
+    fetch_clusters = cluster_findings.cluster(
+        [thread for thread in threads if isinstance(thread, dict)],
+        root=repo_root(),
+    )
+    clustering_advisory = metrics.format_degenerate_clustering_advisory(fetch_clusters)
+
     if args.format == "json":
         print(
             json.dumps(
                 {
                     "pullRequest": pull_request,
                     "threads": threads,
+                    "clustering": {
+                        "clusterCount": len(fetch_clusters),
+                        "maxClusterSize": max(
+                            (cluster.count for cluster in fetch_clusters), default=0
+                        ),
+                        "advisory": clustering_advisory,
+                    },
                     "reviewerSelection": reviewer_selection,
                     "loopStatus": {
                         "reReviewRequests": len(rereviews),
@@ -3664,11 +3679,7 @@ def main() -> int:
         # The clustering warning is an ordering guard, so show it on the
         # initial fetch while the agent is deciding what to fix. Summary-mode
         # output repeats it later as an audit trail.
-        clusters = cluster_findings.cluster(
-            [thread for thread in threads if isinstance(thread, dict)],
-            root=repo_root(),
-        )
-        print_clustering_blocks(clusters)
+        print_clustering_blocks(fetch_clusters)
         if judge_status.get("ran") and judge_results:
             print(
                 color_loop_block(

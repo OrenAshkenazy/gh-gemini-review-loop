@@ -619,6 +619,61 @@ class TestReviewerSelectionCli:
         assert "# Codex Threads for PR #5" in out
         assert "Patterns (3):" in out
         assert "manual sweep is required before fixing" in out
+        assert out.index("manual sweep is required before fixing") > out.index(
+            "Avoid rebuilding this cache repeatedly"
+        )
+        assert "[loop] Cycle receipt" not in out
+        assert "Verification:" not in out
+
+    def test_json_fetch_serializes_degenerate_clustering_guard(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._patch_common(monkeypatch, tmp_path)
+        pull_request = self._pull_request()
+        pull_request["reviewThreads"]["nodes"] = [
+            {
+                **self._thread("chatgpt-codex-connector", f"T{i}"),
+                "path": f"src/file{i}.py",
+                "comments": {
+                    "nodes": [{
+                        "author": {
+                            "login": "chatgpt-codex-connector",
+                            "__typename": "Bot",
+                        },
+                        "body": body,
+                        "createdAt": "2026-06-28T12:00:00Z",
+                    }]
+                },
+            }
+            for i, body in enumerate([
+                "Validate the configuration before use",
+                "Document the public return value",
+                "Avoid rebuilding this cache repeatedly",
+            ])
+        ]
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: pull_request)
+        monkeypatch.setattr(fgt, "repo_root", lambda: None)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr", "https://github.com/o/r/pull/5",
+                "--author", "chatgpt-codex-connector",
+                "--format", "json",
+                "--judge-mode", "off",
+                "--no-agent-filter",
+                "--no-resolve-outdated",
+                "--no-resolve-addressed-by-reply",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        clustering = json.loads(capsys.readouterr().out)["clustering"]
+        assert clustering["clusterCount"] == 3
+        assert clustering["maxClusterSize"] == 1
+        assert "manual sweep is required before fixing" in clustering["advisory"]
 
     def test_persisted_reviewer_is_reused_without_prompt(
         self, tmp_path, monkeypatch, capsys
