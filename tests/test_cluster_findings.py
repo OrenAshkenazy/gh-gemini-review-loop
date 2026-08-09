@@ -308,19 +308,28 @@ class TestShapeMerging:
         assert len(clusters) == 1
         assert clusters[0].count == 3
 
+    def test_pr195_generic_span_locals_do_not_merge_unrelated_findings(self):
+        groups = cluster_findings.shape_groups(
+            [_pr195_thread(index) for index in range(len(_PR195_CORPUS))],
+            _PR195_SOURCES,
+        )
+
+        assert not any({12, 14}.issubset(group) for group in map(set, groups))
+
     def test_anchored_tokens_union_the_whole_span(self):
         thread = _pr195_thread(13)
 
         actual = cluster_findings._anchored_tokens(thread, _PR195_SOURCES)
         source = (_PR195_SOURCES / thread["path"]).read_text().splitlines()
+        span = source[thread["startLine"] - 1:thread["line"]]
         expected = set().union(*(
             sweep_siblings.tokenize(line)
-            for line in source[266:270]
+            for line in span
             if sweep_siblings.is_code_line(line)
         ), set())
 
         assert actual == expected
-        assert actual != sweep_siblings.tokenize(source[269])
+        assert actual != sweep_siblings.tokenize(source[thread["line"] - 1])
 
     def test_anchored_tokens_fall_back_to_end_for_single_line(self, repo):
         thread = self._thread("app/svc.py", 1, "wrap this in try/except")
@@ -329,4 +338,14 @@ class TestShapeMerging:
 
         assert cluster_findings._anchored_tokens(thread, repo) == (
             sweep_siblings.tokenize('data = json.loads(path.read_text(encoding="utf-8"))')
+        )
+
+    def test_current_end_without_current_start_does_not_mix_original_range(self, repo):
+        thread = self._thread("app/svc.py", 3, "connection is never closed")
+        thread["startLine"] = None
+        thread["originalLine"] = 2
+        thread["originalStartLine"] = 1
+
+        assert cluster_findings._anchored_tokens(thread, repo) == (
+            sweep_siblings.tokenize('conn = psycopg2.connect(dsn, sslmode="require")')
         )

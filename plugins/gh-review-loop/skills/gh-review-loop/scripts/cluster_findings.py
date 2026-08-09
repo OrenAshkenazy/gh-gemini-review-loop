@@ -199,6 +199,13 @@ def _label(body: str) -> str:
 # tokens is not a shape.
 MIN_SHAPE_TOKENS = 2
 
+# Local placeholder names recur across unrelated multi-line spans. They remain
+# matching constraints, but cannot qualify two spans as the same code shape.
+_GENERIC_SHAPE_TOKENS = frozenset({
+    "item", "items", "member", "members", "name", "names",
+    "term", "terms", "value", "values",
+})
+
 # Merging is capped so one over-broad shape cannot swallow an entire review into
 # a single cluster. Beyond this, the findings are more likely diverse than alike.
 MAX_SHAPE_GROUP = 12
@@ -209,8 +216,12 @@ def _anchored_tokens(thread: Any, root: Path) -> set[str]:
     if not isinstance(thread, dict):
         return set()
     path = thread.get("path")
-    end = thread.get("line") or thread.get("originalLine")
-    start = thread.get("startLine") or thread.get("originalStartLine") or end
+    end = thread.get("line")
+    if end is not None:
+        start = thread.get("startLine") or end
+    else:
+        end = thread.get("originalLine")
+        start = thread.get("originalStartLine") or end
     if (
         not isinstance(path, str)
         or not isinstance(start, int)
@@ -263,7 +274,9 @@ def shape_groups(threads: list[Any], root: Path) -> list[list[int]]:
                 continue
             common = group["tokens"] & current
             significant_count = sum(
-                sweep_siblings.is_significant_token(token) for token in common
+                sweep_siblings.is_significant_token(token)
+                and token not in _GENERIC_SHAPE_TOKENS
+                for token in common
             )
             if significant_count >= MIN_SHAPE_TOKENS and len(common) > len(best_common):
                 best, best_common = group, common
