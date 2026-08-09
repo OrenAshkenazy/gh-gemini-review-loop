@@ -348,7 +348,7 @@ def test_persisted_codex_reviewer_without_trigger_posts_the_exact_codex_phrase(
     """Reviewer records written before Codex was known carry review_trigger: null."""
     captured = {}
     state = {
-        "OrenAshkenazy/SignalScout#159": {
+        "ExampleOrg/example-repo#159": {
             "reviewer": {
                 "login": "chatgpt-codex-connector",
                 "display_name": "Chatgpt Codex Connector",
@@ -369,7 +369,7 @@ def test_persisted_codex_reviewer_without_trigger_posts_the_exact_codex_phrase(
 
     rc = request_rereview.main([
         "--repo",
-        "OrenAshkenazy/SignalScout",
+        "ExampleOrg/example-repo",
         "--pr",
         "159",
         "--json",
@@ -391,7 +391,7 @@ def test_codex_reviewer_login_posts_the_exact_codex_phrase(monkeypatch, capsys):
 
     rc = request_rereview.main([
         "--repo",
-        "OrenAshkenazy/SignalScout",
+        "ExampleOrg/example-repo",
         "--pr",
         "159",
         "--reviewer-login",
@@ -414,7 +414,7 @@ def test_codex_mention_does_not_get_the_gemini_sentence_form(monkeypatch, capsys
 
     rc = request_rereview.main([
         "--repo",
-        "OrenAshkenazy/SignalScout",
+        "ExampleOrg/example-repo",
         "--pr",
         "159",
         "--review-trigger-mention",

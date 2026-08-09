@@ -11,13 +11,6 @@ from cluster_findings import cluster, pattern_signature, recurrence_stats
 _CORPUS = json.loads(
     (Path(__file__).parent / "fixtures" / "cluster_corpus_pr46.json").read_text()
 )
-_PR195_CORPUS = json.loads(
-    (Path(__file__).parent / "fixtures" / "cluster_corpus_pr195.json").read_text()
-)
-_PR195_ANCHORS = json.loads(
-    (Path(__file__).parent / "fixtures" / "cluster_corpus_pr195_anchors.json").read_text()
-)
-_PR195_SOURCES = Path(__file__).parent / "fixtures" / "cluster_corpus_pr195_sources"
 
 
 def _thread(body: str, path: str = "a.py") -> dict:
@@ -91,6 +84,13 @@ def test_cluster_groups_and_picks_max_severity_and_sorts():
     assert "render_demo_ui.py:204" in clusters[1].sites
 
 
+def test_cluster_site_preserves_a_flagged_range():
+    thread = _thread_full("Duplicated option normalization", "lib/options.ts", 8, "medium")
+    thread["startLine"] = 5
+
+    assert cluster([thread])[0].sites == ("lib/options.ts:5-8",)
+
+
 def test_cluster_ignores_non_dict_members():
     clusters = cluster([None, "nope", {}])
     assert clusters == []
@@ -100,17 +100,6 @@ def _corpus_threads():
         {"path": f["path"], "line": f["line"], "comments": [{"body": f["body"]}]}
         for f in _CORPUS
     ]
-
-
-def _pr195_thread(index):
-    finding = _PR195_CORPUS[index]
-    anchor = _PR195_ANCHORS[index]
-    return {
-        "path": f"{anchor['reviewSha']}/{anchor['path']}",
-        "line": anchor["line"],
-        "startLine": anchor["startLine"],
-        "comments": [{"body": finding["body"]}],
-    }
 
 
 def test_real_corpus_clusters_into_intent_categories():
@@ -203,6 +192,48 @@ class TestShapeMerging:
         )
         return tmp_path
 
+    @pytest.fixture
+    def span_repo(self, tmp_path):
+        repeated = (
+            "const normalizedOptions = rawOptions\n"
+            "  .filter((option) => option.enabled)\n"
+            "  .map((option) => option.name.trim())\n"
+            "  .sort();\n"
+        )
+        for revision in ("one", "two", "three"):
+            target = tmp_path / "revisions" / revision / "options.js"
+            target.parent.mkdir(parents=True)
+            target.write_text(repeated)
+
+        unrelated = {
+            "find.js": (
+                "const value = members.find((member) =>\n"
+                "  member.term === requestedName\n"
+                ");\n"
+            ),
+            "map.js": (
+                "const value = members.map((member) =>\n"
+                "  normalize(member.term)\n"
+                ");\n"
+            ),
+        }
+        for name, source in unrelated.items():
+            target = tmp_path / "unrelated" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(source)
+
+        singleton_sources = {
+            "close.js": "connection.close();\n",
+            "digest.js": "const digest = createDigest(payload);\n",
+            "parse.js": "const document = parseDocument(sourceText);\n",
+            "retry.js": "scheduleRetry(attemptNumber);\n",
+        }
+        for name, source in singleton_sources.items():
+            target = tmp_path / "singletons" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(source)
+        return tmp_path
+
     def test_two_wordings_of_one_shape_merge(self, repo):
         threads = [
             self._thread("app/svc.py", 1, "exception-wrap: wrap this in try/except"),
@@ -285,42 +316,55 @@ class TestShapeMerging:
         assert groups, "the shape is shared, so some merging must happen"
         assert all(len(g) <= 2 for g in groups)
 
-    def test_pr195_cycle_one_has_a_multi_site_shape_cluster(self):
-        clusters = cluster_findings.cluster(
-            [_pr195_thread(index) for index in range(7)],
-            root=_PR195_SOURCES,
-        )
+    def test_reworded_shape_emerges_from_a_mixed_seven_finding_cycle(self, span_repo):
+        repeated = [
+            {
+                **self._thread(
+                    f"revisions/{revision}/options.js",
+                    4,
+                    body,
+                ),
+                "startLine": 1,
+            }
+            for revision, body in (
+                ("one", "discard disabled options before rendering"),
+                ("two", "normalize enabled option names consistently"),
+                ("three", "sort the cleaned option list deterministically"),
+            )
+        ]
+        singletons = [
+            self._thread(f"singletons/{name}.js", 1, body)
+            for name, body in (
+                ("close", "release the connection after use"),
+                ("digest", "select an explicit digest algorithm"),
+                ("parse", "handle malformed documents"),
+                ("retry", "bound retry scheduling"),
+            )
+        ]
 
-        assert max(cluster.count for cluster in clusters) >= 2
+        clusters = cluster_findings.cluster(repeated + singletons, root=span_repo)
 
-    def test_pr195_captured_anchors_match_their_review_sources(self):
-        assert len(_PR195_ANCHORS) == len(_PR195_CORPUS) == 16
-        assert all(
-            cluster_findings._anchored_tokens(_pr195_thread(index), _PR195_SOURCES)
-            for index in range(len(_PR195_CORPUS))
-        )
+        assert len(clusters) == 5
+        assert sorted(cluster.count for cluster in clusters) == [1, 1, 1, 1, 3]
+        repeated_cluster = next(cluster for cluster in clusters if cluster.count == 3)
+        assert repeated_cluster.signature.startswith("shape:")
 
-    def test_pr195_repeated_keyword_policy_range_is_one_cluster(self):
-        repeated = [_pr195_thread(index) for index in (2, 9, 13)]
+    def test_generic_span_locals_do_not_merge_unrelated_findings(self, span_repo):
+        threads = [
+            {**self._thread("unrelated/find.js", 3, "selection is too broad"), "startLine": 1},
+            {**self._thread("unrelated/map.js", 3, "normalization loses metadata"), "startLine": 1},
+        ]
 
-        clusters = cluster_findings.cluster(repeated, root=_PR195_SOURCES)
+        assert cluster_findings.shape_groups(threads, span_repo) == []
 
-        assert len(clusters) == 1
-        assert clusters[0].count == 3
+    def test_anchored_tokens_union_the_whole_span(self, span_repo):
+        thread = {
+            **self._thread("revisions/one/options.js", 4, "normalize option names"),
+            "startLine": 1,
+        }
 
-    def test_pr195_generic_span_locals_do_not_merge_unrelated_findings(self):
-        groups = cluster_findings.shape_groups(
-            [_pr195_thread(index) for index in range(len(_PR195_CORPUS))],
-            _PR195_SOURCES,
-        )
-
-        assert not any({12, 14}.issubset(group) for group in map(set, groups))
-
-    def test_anchored_tokens_union_the_whole_span(self):
-        thread = _pr195_thread(13)
-
-        actual = cluster_findings._anchored_tokens(thread, _PR195_SOURCES)
-        source = (_PR195_SOURCES / thread["path"]).read_text().splitlines()
+        actual = cluster_findings._anchored_tokens(thread, span_repo)
+        source = (span_repo / thread["path"]).read_text().splitlines()
         span = source[thread["startLine"] - 1:thread["line"]]
         expected = set().union(*(
             sweep_siblings.tokenize(line)
