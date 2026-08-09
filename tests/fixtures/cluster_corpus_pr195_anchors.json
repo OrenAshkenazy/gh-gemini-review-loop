@@ -1,0 +1,18 @@
+[
+  {"reviewSha": "5b0e6fd8", "path": "lib/search-policy/keyword-policy.js", "line": 1, "startLine": null},
+  {"reviewSha": "5b0e6fd8", "path": "lib/search-policy/keyword-policy.js", "line": 306, "startLine": null},
+  {"reviewSha": "5b0e6fd8", "path": "lib/search-policy/keyword-policy.js", "line": 267, "startLine": 264},
+  {"reviewSha": "5b0e6fd8", "path": "lib/search-policy/keyword-policy.js", "line": 515, "startLine": null},
+  {"reviewSha": "5b0e6fd8", "path": "lib/search-policy/keyword-policy.js", "line": 315, "startLine": 313},
+  {"reviewSha": "5b0e6fd8", "path": "lib/jd-extraction/tech-families.js", "line": 49, "startLine": 46},
+  {"reviewSha": "5b0e6fd8", "path": "lib/search-policy/keyword-policy.js", "line": 311, "startLine": 309},
+  {"reviewSha": "561c92fd", "path": "lib/search-policy/keyword-policy.js", "line": 318, "startLine": 316},
+  {"reviewSha": "561c92fd", "path": "lib/jd-extraction/tech-families.js", "line": 44, "startLine": 41},
+  {"reviewSha": "561c92fd", "path": "lib/search-policy/keyword-policy.js", "line": 267, "startLine": 264},
+  {"reviewSha": "561c92fd", "path": "lib/candidate-discovery/fill-shortlist.ts", "line": 716, "startLine": 715},
+  {"reviewSha": "561c92fd", "path": "lib/build-provider-query.ts", "line": 98, "startLine": null},
+  {"reviewSha": "e4aaa78c", "path": "lib/search-policy/keyword-policy.js", "line": 304, "startLine": 302},
+  {"reviewSha": "e4aaa78c", "path": "lib/search-policy/keyword-policy.js", "line": 270, "startLine": 267},
+  {"reviewSha": "e4aaa78c", "path": "lib/jd-extraction/promote.js", "line": 73, "startLine": 71},
+  {"reviewSha": "e4aaa78c", "path": "lib/build-provider-query.ts", "line": 85, "startLine": 81}
+]

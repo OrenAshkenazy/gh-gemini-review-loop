@@ -182,13 +182,8 @@ def _severity(thread: Any) -> str:
 def _site(thread: dict[str, Any]) -> str:
     path = thread.get("path") or "?"
     line = thread.get("line")
-    if line is not None:
-        start = thread.get("startLine")
-    else:
+    if line is None:
         line = thread.get("originalLine")
-        start = thread.get("originalStartLine")
-    if start is not None and line is not None and start < line:
-        return f"{path}:{start}-{line}"
     return f"{path}:{line}" if line is not None else str(path)
 
 
