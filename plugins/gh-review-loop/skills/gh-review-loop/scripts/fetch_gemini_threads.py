@@ -204,7 +204,9 @@ query($owner:String!, $repo:String!, $number:Int!) {
           isOutdated
           path
           line
+          startLine
           originalLine
+          originalStartLine
           diffSide
           comments(first:50) {
             nodes {
@@ -216,7 +218,9 @@ query($owner:String!, $repo:String!, $number:Int!) {
               url
               path
               line
+              startLine
               originalLine
+              originalStartLine
               diffHunk
             }
           }
@@ -897,7 +901,9 @@ def review_body_findings(
             "isReviewBodyFinding": True,
             "path": path,
             "line": line,
+            "startLine": None,
             "originalLine": line,
+            "originalStartLine": None,
             "comments": [{
                 "id": f"{review_id}:{index + 1}",
                 "author": {"login": author},
@@ -907,7 +913,9 @@ def review_body_findings(
                 "url": latest.get("url"),
                 "path": path,
                 "line": line,
+                "startLine": None,
                 "originalLine": line,
+                "originalStartLine": None,
                 "diffHunk": "",
             }],
         })

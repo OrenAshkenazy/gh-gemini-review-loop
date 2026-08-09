@@ -150,6 +150,11 @@ def tokenize(line: str) -> set[str]:
     return tokens
 
 
+def is_significant_token(token: str) -> bool:
+    """Return whether a token contains identifier-like signal."""
+    return any(character.isalpha() for character in token)
+
+
 def _read_lines(path: Path) -> list[str]:
     """Read a text file, or return [] for anything unreadable or oversized."""
     try:
@@ -236,10 +241,11 @@ def sweep(
         return result
 
     common = invariant_tokens(flagged_lines)
-    if len(common) < MIN_INVARIANT_TOKENS:
+    significant_count = sum(is_significant_token(token) for token in common)
+    if significant_count < MIN_INVARIANT_TOKENS:
         result.status = "pattern_too_thin"
         result.reason = (
-            f"The flagged sites share only {len(common)} distinctive token(s) "
+            f"The flagged sites share only {significant_count} significant token(s) "
             f"(need {MIN_INVARIANT_TOKENS}). Too broad to sweep safely."
         )
         result.invariant_tokens = tuple(sorted(common))

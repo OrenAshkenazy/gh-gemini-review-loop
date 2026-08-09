@@ -108,8 +108,10 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
    deterministic pattern signature. Reason about patterns, not a flat finding list.
 
    Clustering runs with the repository root supplied, so findings anchored to
-   lines of the same code shape merge even when the reviewer worded them
-   differently. Those clusters carry a `shape:` signature. This matters because
+   spans of the same code shape merge even when the reviewer worded them
+   differently. It unions tokens from every code line in a review range, and
+   falls back to the end line when a reviewer supplies no range start. Those
+   clusters carry a `shape:` signature. This matters because
    a reviewer that says "exception-wrap" at one site and "add error checks" at
    another is describing one pattern, and without the merge each looks like a
    single-site finding and never reaches the sweep's two-site minimum.
@@ -127,7 +129,9 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
    Pass every site from the cluster and every file in the PR's diff. The script
    intersects the tokens of the flagged lines and reports only lines containing
    all of them, so a candidate has to match what the flagged sites have in
-   *common*. It reports; it never edits.
+   *common*. At least two shared tokens must contain letters; punctuation still
+   constrains candidates but cannot qualify a pattern by itself. It reports; it
+   never edits.
 
    Print the report, then fix the cluster plus the reported siblings in this
    cycle. Do not block on approval, but never edit unflagged code silently —

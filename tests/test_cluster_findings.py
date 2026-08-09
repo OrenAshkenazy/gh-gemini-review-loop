@@ -4,12 +4,20 @@ from pathlib import Path
 import pytest
 
 import cluster_findings
+import sweep_siblings
 from cluster_findings import cluster, pattern_signature, recurrence_stats
 
 
 _CORPUS = json.loads(
     (Path(__file__).parent / "fixtures" / "cluster_corpus_pr46.json").read_text()
 )
+_PR195_CORPUS = json.loads(
+    (Path(__file__).parent / "fixtures" / "cluster_corpus_pr195.json").read_text()
+)
+_PR195_ANCHORS = json.loads(
+    (Path(__file__).parent / "fixtures" / "cluster_corpus_pr195_anchors.json").read_text()
+)
+_PR195_SOURCES = Path(__file__).parent / "fixtures" / "cluster_corpus_pr195_sources"
 
 
 def _thread(body: str, path: str = "a.py") -> dict:
@@ -92,6 +100,17 @@ def _corpus_threads():
         {"path": f["path"], "line": f["line"], "comments": [{"body": f["body"]}]}
         for f in _CORPUS
     ]
+
+
+def _pr195_thread(index):
+    finding = _PR195_CORPUS[index]
+    anchor = _PR195_ANCHORS[index]
+    return {
+        "path": f"{anchor['reviewSha']}/{anchor['path']}",
+        "line": anchor["line"],
+        "startLine": anchor["startLine"],
+        "comments": [{"body": finding["body"]}],
+    }
 
 
 def test_real_corpus_clusters_into_intent_categories():
@@ -265,3 +284,49 @@ class TestShapeMerging:
         groups = cluster_findings.shape_groups(threads, repo)
         assert groups, "the shape is shared, so some merging must happen"
         assert all(len(g) <= 2 for g in groups)
+
+    def test_pr195_cycle_one_has_a_multi_site_shape_cluster(self):
+        clusters = cluster_findings.cluster(
+            [_pr195_thread(index) for index in range(7)],
+            root=_PR195_SOURCES,
+        )
+
+        assert max(cluster.count for cluster in clusters) >= 2
+
+    def test_pr195_captured_anchors_match_their_review_sources(self):
+        assert len(_PR195_ANCHORS) == len(_PR195_CORPUS) == 16
+        assert all(
+            cluster_findings._anchored_tokens(_pr195_thread(index), _PR195_SOURCES)
+            for index in range(len(_PR195_CORPUS))
+        )
+
+    def test_pr195_repeated_keyword_policy_range_is_one_cluster(self):
+        repeated = [_pr195_thread(index) for index in (2, 9, 13)]
+
+        clusters = cluster_findings.cluster(repeated, root=_PR195_SOURCES)
+
+        assert len(clusters) == 1
+        assert clusters[0].count == 3
+
+    def test_anchored_tokens_union_the_whole_span(self):
+        thread = _pr195_thread(13)
+
+        actual = cluster_findings._anchored_tokens(thread, _PR195_SOURCES)
+        source = (_PR195_SOURCES / thread["path"]).read_text().splitlines()
+        expected = set().union(*(
+            sweep_siblings.tokenize(line)
+            for line in source[266:270]
+            if sweep_siblings.is_code_line(line)
+        ), set())
+
+        assert actual == expected
+        assert actual != sweep_siblings.tokenize(source[269])
+
+    def test_anchored_tokens_fall_back_to_end_for_single_line(self, repo):
+        thread = self._thread("app/svc.py", 1, "wrap this in try/except")
+        thread["startLine"] = None
+        thread["originalStartLine"] = None
+
+        assert cluster_findings._anchored_tokens(thread, repo) == (
+            sweep_siblings.tokenize('data = json.loads(path.read_text(encoding="utf-8"))')
+        )

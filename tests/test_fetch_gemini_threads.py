@@ -69,6 +69,13 @@ from fetch_gemini_threads import (
 
 
 BOT = "gemini-code-assist"
+
+
+def test_review_query_fetches_range_start_fields_at_both_levels():
+    assert fgt.QUERY.count("startLine") == 2
+    assert fgt.QUERY.count("originalStartLine") == 2
+
+
 CODEX = "chatgpt-codex-connector"
 
 

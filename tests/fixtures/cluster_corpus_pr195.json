@@ -1,0 +1,130 @@
+[
+  {
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Split extraction and search-policy changes**\n\nThis commit combines JD extraction/parsing changes for alternative grouping with a separate search-policy change that introduces required language gates. These concerns need separate commits so extraction corpus effects and query-policy behavior can be reviewed and verified independently, as required by the repository workflow.\n\nAGENTS.md reference: [AGENTS.md:L31-L31](https://github.com/OrenAshkenazy/SignalScout/blob/5b0e6fd8c95b301fcbf97d8bc03198b2f83c8111/AGENTS.md#L31-L31)\n\nUseful? React with 👍 / 👎.",
+    "line": 1,
+    "originalStartLine": null,
+    "path": "lib/search-policy/keyword-policy.js",
+    "sev": "unknown",
+    "startLine": null
+  },
+  {
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Require every alternative to satisfy the language gate**\n\nWhen a required `anyOf` contains one development technology and one unclassified member, this `some` check treats the whole group as an existing language gate. For example, a Frontend Engineer criterion `React OR Figma` remains grouped because Figma has no known family, so an optional Python/TypeScript criterion is not promoted and a candidate matching only Figma passes the supposed development gate. Only count a group as the gate when every satisfying alternative provides development evidence, or promote a separate language criterion.\n\nUseful? React with 👍 / 👎.",
+    "line": 306,
+    "originalStartLine": null,
+    "path": "lib/search-policy/keyword-policy.js",
+    "sev": "unknown",
+    "startLine": null
+  },
+  {
+    "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Exclude management titles from code-delivery detection**\n\nTitles such as `Software Engineering Manager`, `Director of Software Engineering`, and `VP Software Engineering` match both patterns even though their deliverable may be management rather than code. If such a JD mentions a language as optional, this change silently promotes it to a hard gate and can exclude otherwise appropriate leaders; management/director-level qualifiers should be excluded unless the title explicitly identifies a hands-on lead role.\n\nUseful? React with 👍 / 👎.",
+    "line": 267,
+    "originalStartLine": 264,
+    "path": "lib/search-policy/keyword-policy.js",
+    "sev": "unknown",
+    "startLine": null
+  },
+  {
+    "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Honor a zero required-keyword cap**\n\nWhen `SIGNALSCOUT_RELIEVE_KEYWORDS_MAX_REQUIRED=0`, which the flag parser explicitly accepts, this unconditional return preserves the development gate instead of demoting all skill criteria. The configured cap therefore produces one required keyword rather than zero for software roles; reserve the gate only when `maxRequired` is at least one.\n\nUseful? React with 👍 / 👎.",
+    "line": 567,
+    "originalStartLine": null,
+    "path": "lib/search-policy/keyword-policy.js",
+    "sev": "unknown",
+    "startLine": null
+  },
+  {
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Enforce the development gate outside the match threshold**\n\nSetting `required: true` here does not make the selected development criterion mandatory when the extracted position has at least three required skill groups: `position-adapter.js` sets `minRequiredMatches` to 2, and `passesRequiredGate` accepts any two required non-title criteria. A candidate can therefore satisfy two tooling criteria, miss the marked language entirely, and still pass on complete profile evidence, defeating the core guarantee of this change. The development gate needs independent enforcement like the role-title gate rather than participation in the ordinary N-of-M threshold.\n\nUseful? React with 👍 / 👎.",
+    "line": 362,
+    "originalStartLine": 313,
+    "path": "lib/search-policy/keyword-policy.js",
+    "sev": "unknown",
+    "startLine": 360
+  },
+  {
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Preserve explicit alternatives across database models**\n\nSeparating relational and document databases into different substitutability families turns an explicit requirement such as `Experience with PostgreSQL or MongoDB` into two independent required criteria: each side has a different known family, the tie leaves only one member in `kept`, and `assignRun` consequently assigns no alternatives group. These technologies commonly answer the same generic database-experience need when the JD explicitly joins them with `or`, so requiring both can wrongly empty the shortlist; the family model or partitioning context needs to preserve that disjunction.\n\nUseful? React with 👍 / 👎.",
+    "line": 49,
+    "originalStartLine": 46,
+    "path": "lib/jd-extraction/tech-families.js",
+    "sev": "unknown",
+    "startLine": null
+  },
+  {
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Allow every recognized language to become the gate**\n\nThe additional gate-eligibility check rejects some terms that this change itself classifies as development languages. For example, `technologyFamily(\"Elixir\")` and `technologyFamily(\"Perl\")` return `language`, but neither term appears in `KEYWORD_SIGNALS` nor satisfies `looksLikeProductTerm`, so an optional Elixir/Perl criterion in a Backend Engineer brief is never promoted and the position remains without the promised language gate. A recognized development-family member should be eligible here without requiring a second, inconsistent vocabulary match.\n\nUseful? React with 👍 / 👎.",
+    "line": 311,
+    "originalStartLine": 309,
+    "path": "lib/search-policy/keyword-policy.js",
+    "sev": "unknown",
+    "startLine": null
+  },
+  {
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Mark an existing required language as the development gate**\n\nFresh evidence after the earlier threshold report is that the new independent check only recognizes `developmentLanguageGate`, while this early return leaves an already-required language unmarked. For a software brief with required Java, Kafka, and AWS, `minRequiredMatches` becomes 2 and a candidate satisfying only Kafka and AWS still passes because Java remains an ordinary threshold criterion; mark the existing required development criterion before returning so the new enforcement and cap reservation apply.\n\nUseful? React with 👍 / 👎.",
+    "line": 318,
+    "originalStartLine": 316,
+    "path": "lib/search-policy/keyword-policy.js",
+    "sev": "unknown",
+    "startLine": null
+  },
+  {
+    "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Classify Objective-C as a development language**\n\nWhen a mobile-software JD names Objective-C as its only language, `technologyFamily(\"Objective-C\")` returns `null`, so `ensureRequiredDevelopmentKeyword` leaves the brief without a language gate. Fresh evidence beyond the earlier Elixir/Perl report is the repository's existing Objective-C keyword coverage in `test/profile-signals-github-provider.test.js:139-173` and `test/fill-shortlist.test.js:1443`; include this already-supported language in the family used for gate selection.\n\nUseful? React with 👍 / 👎.",
+    "line": 56,
+    "originalStartLine": 41,
+    "path": "lib/jd-extraction/tech-families.js",
+    "sev": "unknown",
+    "startLine": 41
+  },
+  {
+    "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Treat bare software lead titles as code-delivery roles**\n\nA hands-on title such as `Mobile SDK Lead` or `Backend Lead` contains a recognized software discipline but fails this classifier because the noun pattern accepts only `team lead`, `tech lead`, or `group lead`. The repository explicitly emits `Mobile SDK Lead` as a target title in `lib/search-policy/target-title-expansion.js:276-284`, so a position using that title leaves an optional Swift or Kotlin criterion unpromoted and can shortlist candidates without development evidence; recognize bare `Lead`/`Team Leader` when it is paired with one of the software disciplines.\n\nUseful? React with 👍 / 👎.",
+    "line": 267,
+    "originalStartLine": 264,
+    "path": "lib/search-policy/keyword-policy.js",
+    "sev": "unknown",
+    "startLine": null
+  },
+  {
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Carry the independent language gate into retrieval**\n\nEven for a correctly marked promoted gate, this new independent enforcement is not mirrored by `keywordQuerySignals` in `lib/build-provider-query.ts:60-87` or `src/candidate-discovery/run-candidate-discovery.js:573-595`, which still place every non-title criterion into one broad OR when `minRequiredMatches` relaxes the threshold. With required Python, Kafka, and AWS and a threshold of 2, retrieval therefore admits Kafka-only or AWS-only profiles that are guaranteed to fail here; because provider results are capped, those profiles can consume the raw pool and starve valid Python candidates. Put the development gate in its own AND query part in both query implementations.\n\nUseful? React with 👍 / 👎.",
+    "line": 716,
+    "originalStartLine": 715,
+    "path": "lib/candidate-discovery/fill-shortlist.ts",
+    "sev": "unknown",
+    "startLine": 715
+  },
+  {
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Subtract the independent language gate from the threshold floor**\n\nFor adapter-generated briefs with exactly three required skill groups, `minRequiredMatches` is 2 and still counts the language gate, so `passesRequiredGate` accepts the language plus either of the two remaining criteria. After removing the language from `thresholdCriteria`, this calculation compares the unchanged floor of 2 against the two remaining criteria and emits all three as separate AND clauses. A Python/Kafka/AWS brief therefore retrieves only candidates matching all three even though Python plus either Kafka or AWS satisfies the downstream contract; reduce the retrieval floor by the independently ANDed gate before deciding whether to relax.\n\nUseful? React with 👍 / 👎.",
+    "line": 107,
+    "originalStartLine": null,
+    "path": "lib/build-provider-query.ts",
+    "sev": "unknown",
+    "startLine": null
+  },
+  {
+    "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Restrict framework gates to frontend roles**\n\nFor non-UI code roles, this accepts frontend frameworks as development-language evidence without considering the title. A Backend, Data, or ML Engineer brief that mentions React or Vue before its actual language—or names no language at all—will promote that framework to the independent gate, and the provider query will then require it, excluding otherwise valid candidates for the role. Only treat `frontend-framework` as gate-eligible when the title identifies a frontend/web/UI role; other software roles should require the `language` family.\n\nUseful? React with 👍 / 👎.",
+    "line": 304,
+    "originalStartLine": 302,
+    "path": "lib/search-policy/keyword-policy.js",
+    "sev": "unknown",
+    "startLine": null
+  },
+  {
+    "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Exclude product and analyst leads from code-delivery matching**\n\nWhen a non-engineering leadership title combines a bare `Lead` with one of the broad discipline words, this conjunction classifies it as software engineering. For example, `Mobile Product Lead`, `AI Product Lead`, and `Lead Data Analyst` all return true because `lead` matches the noun and mobile/AI/data matches the discipline, while the exclusions recognize only `product manager` and management titles such as manager/director. If such a JD mentions Python or another language as optional technical fluency, it is incorrectly promoted to a hard retrieval gate; bare-lead recognition needs an engineering qualifier or explicit exclusions for these role families.\n\nUseful? React with 👍 / 👎.",
+    "line": 270,
+    "originalStartLine": 267,
+    "path": "lib/search-policy/keyword-policy.js",
+    "sev": "unknown",
+    "startLine": null
+  },
+  {
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Preserve alternatives within every split technology family**\n\nWhen one alternatives run contains multiple members from more than one known family, only the dominant family's `kept` members receive a group and every minority-family member becomes a separate hard requirement. For example, `Kubernetes, OpenShift, Terraform, or Pulumi` produces a Kubernetes/OpenShift any-of group plus standalone required Terraform and Pulumi, even though Terraform and Pulumi are explicitly classified as substitutable IaC answers. Under the new cross-aspect policy this should become `(Kubernetes OR OpenShift) AND (Terraform OR Pulumi)`; assign a distinct alternatives group to each multi-member family partition instead of discarding grouping for all `split` members.\n\nUseful? React with 👍 / 👎.",
+    "line": 73,
+    "originalStartLine": 71,
+    "path": "lib/jd-extraction/promote.js",
+    "sev": "unknown",
+    "startLine": null
+  },
+  {
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Preserve the language marker in company-first retrieval**\n\nFresh evidence after the normal-query fix is the inspected company-first path: `buildCompanyFirstSearchPlan` replaces the position keywords with `broadRetrievalCriteria`, which collapses all required skills into one `{ term, anyOf, required }` criterion and drops `developmentLanguageGate`, and the discover route passes that result as `retrievalKeywordCriteria`. For required-domain software roles this filter therefore finds no development gate and emits language OR tooling rather than an independent language AND, allowing tool-only profiles to consume the capped company-batch results. Preserve the marked gate as its own retrieval criterion when broadening the remaining company-first skills.\n\nUseful? React with 👍 / 👎.",
+    "line": 85,
+    "originalStartLine": 81,
+    "path": "lib/build-provider-query.ts",
+    "sev": "unknown",
+    "startLine": 81
+  }
+]
