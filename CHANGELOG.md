@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Fixed
 
+- Sibling sweeps now fingerprint a single flagged multi-line range and search
+  only the PR's changed files for exact normalized copies. These hits are
+  reported as `mirror` candidates, distinct from token-intersection matches.
+  Closes #77.
 - Shape clustering now reads every code line in a reviewer's anchored range,
   with single-line fallback for reviewers that omit range starts. Token-based
   clustering and sibling sweeps require identifier-like shared tokens, so

@@ -91,6 +91,13 @@ def test_cluster_groups_and_picks_max_severity_and_sorts():
     assert "render_demo_ui.py:204" in clusters[1].sites
 
 
+def test_cluster_site_preserves_a_flagged_range():
+    thread = _thread_full("Duplicated threshold floor", "lib/query.ts", 98, "medium")
+    thread["startLine"] = 95
+
+    assert cluster([thread])[0].sites == ("lib/query.ts:95-98",)
+
+
 def test_cluster_ignores_non_dict_members():
     clusters = cluster([None, "nope", {}])
     assert clusters == []

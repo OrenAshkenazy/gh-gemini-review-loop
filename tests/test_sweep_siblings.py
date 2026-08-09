@@ -16,6 +16,9 @@ import sweep_siblings as sweeper
 
 
 PR195_SOURCES = Path(__file__).parent / "fixtures" / "cluster_corpus_pr195_sources"
+MIRROR_PR195 = json.loads(
+    (Path(__file__).parent / "fixtures" / "mirror_corpus_pr195.json").read_text()
+)
 
 
 UTF8 = '''\
@@ -81,6 +84,21 @@ class TestTokenize:
         assert not sweeper.is_significant_token(token)
 
 
+class TestNormalizeBlock:
+    def test_strips_comments_and_collapses_whitespace(self):
+        assert sweeper.normalize_block([
+            "  const   floor = value; // kept in sync",
+            "/* block comment",
+            "   continued */  return   floor;",
+        ]) == ("const floor = value;", "return floor;")
+
+    def test_preserves_comment_markers_in_strings_and_decrement_operators(self):
+        assert sweeper.normalize_block([
+            'const url = "https://example.test/a";',
+            "remaining--;",
+        ]) == ('const url = "https://example.test/a";', "remaining--;")
+
+
 class TestInvariantTokens:
     def test_keeps_only_what_every_site_shares(self):
         common = sweeper.invariant_tokens([
@@ -110,6 +128,24 @@ class TestParseSite:
         site = sweeper.parse_site(raw)
         assert (site.path, site.line) == (path, line)
 
+    def test_parses_a_flagged_range(self):
+        site = sweeper.parse_site("lib/build-provider-query.ts:95-98")
+
+        assert site.path == "lib/build-provider-query.ts"
+        assert site.start_line == 95
+        assert site.line == 98
+        assert str(site) == "lib/build-provider-query.ts:95-98"
+
+
+@pytest.fixture
+def mirror_pr195_repo(tmp_path):
+    for fixture in MIRROR_PR195:
+        target = tmp_path / fixture["path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        padding = [""] * (fixture["startLine"] - 1)
+        target.write_text("\n".join(padding + fixture["lines"]) + "\n")
+    return tmp_path
+
 
 class TestSweep:
     def _sweep(self, repo, **overrides):
@@ -134,6 +170,25 @@ class TestSweep:
         flagged = {"app/config.py:2", "app/config.py:6"}
         assert flagged.isdisjoint({c["site"] for c in result.candidates})
 
+    def test_token_sweep_does_not_report_lines_inside_flagged_ranges(self, tmp_path):
+        (tmp_path / "ranges.py").write_text(
+            "one = path.read_text().encode()\n"
+            "two = path.read_text().encode()\n"
+            "unrelated()\n"
+            "three = path.read_text().encode()\n"
+            "four = path.read_text().encode()\n"
+        )
+
+        result = sweeper.sweep(
+            signature="range-shape",
+            label="range shape",
+            sites=["ranges.py:1-2", "ranges.py:4-5"],
+            changed_files=["ranges.py"],
+            root=tmp_path,
+        )
+
+        assert result.candidates == []
+
     def test_never_leaves_the_changed_file_set(self, repo):
         """vendor.py contains the identical pattern but is not in the diff."""
         result = self._sweep(repo)
@@ -141,6 +196,24 @@ class TestSweep:
 
         widened = self._sweep(repo, changed_files=["app/config.py", "vendor.py"])
         assert any(c["path"] == "vendor.py" for c in widened.candidates)
+
+    def test_does_not_read_a_flagged_site_outside_changed_files(self, repo, monkeypatch):
+        original = sweeper._read_lines
+        reads = []
+
+        def recording_reader(path):
+            reads.append(path)
+            return original(path)
+
+        monkeypatch.setattr(sweeper, "_read_lines", recording_reader)
+        result = self._sweep(
+            repo,
+            sites=["vendor.py:2", "vendor.py:6"],
+            changed_files=["app/config.py"],
+        )
+
+        assert result.status == "too_few_sites"
+        assert all(path.name != "vendor.py" for path in reads)
 
     def test_a_single_flagged_site_is_not_a_pattern(self, repo):
         result = self._sweep(repo, sites=["app/config.py:2"])
@@ -178,6 +251,96 @@ class TestSweep:
         assert result.invariant_tokens == ("!", "&&")
         assert result.candidates == []
 
+    def test_pr195_flagged_range_finds_the_twin_implementation(self, mirror_pr195_repo):
+        result = sweeper.sweep(
+            signature="provider-floor",
+            label="threshold floor",
+            sites=["lib/build-provider-query.ts:95-98"],
+            changed_files=[fixture["path"] for fixture in MIRROR_PR195],
+            root=mirror_pr195_repo,
+        )
+
+        assert result.status == "ok"
+        assert len(result.candidates) == 1
+        assert result.candidates[0]["candidateClass"] == "mirror"
+        assert result.candidates[0]["site"] == (
+            "src/candidate-discovery/run-candidate-discovery.js:596-599"
+        )
+        assert result.candidates[0]["fingerprint"]
+
+    def test_mirror_never_searches_outside_changed_files(self, mirror_pr195_repo):
+        result = sweeper.sweep(
+            signature="provider-floor",
+            label="threshold floor",
+            sites=["lib/build-provider-query.ts:95-98"],
+            changed_files=["lib/build-provider-query.ts"],
+            root=mirror_pr195_repo,
+        )
+
+        assert result.status == "too_few_sites"
+        assert result.candidates == []
+
+    def test_mirror_does_not_re_report_another_flagged_range(self, mirror_pr195_repo):
+        result = sweeper.sweep(
+            signature="provider-floor",
+            label="threshold floor",
+            sites=[
+                "lib/build-provider-query.ts:95-98",
+                "src/candidate-discovery/run-candidate-discovery.js:596-599",
+            ],
+            changed_files=[fixture["path"] for fixture in MIRROR_PR195],
+            root=mirror_pr195_repo,
+        )
+
+        assert all(
+            candidate["candidateClass"] != "mirror"
+            for candidate in result.candidates
+        )
+
+    def test_mirror_does_not_re_report_seed_after_comment_stripping(self, tmp_path):
+        (tmp_path / "query.js").write_text(
+            "// flagged range includes this comment\n"
+            "const floor =\n"
+            "  minimum != null\n"
+            "    ? minimum\n"
+            "    : criteria.length;\n"
+            "\n"
+            "const floor =\n"
+            "  minimum != null\n"
+            "    ? minimum\n"
+            "    : criteria.length;\n"
+        )
+
+        result = sweeper.sweep(
+            signature="provider-floor",
+            label="threshold floor",
+            sites=["query.js:1-5"],
+            changed_files=["query.js"],
+            root=tmp_path,
+        )
+
+        assert [candidate["site"] for candidate in result.candidates] == [
+            "query.js:7-10"
+        ]
+
+    def test_mirror_does_not_report_windows_overlapping_the_seed(self, tmp_path):
+        (tmp_path / "repeat.js").write_text("x();\n" * 5)
+
+        result = sweeper.sweep(
+            signature="repeated-block",
+            label="repeated block",
+            sites=["repeat.js:2-4"],
+            changed_files=["repeat.js"],
+            root=tmp_path,
+        )
+
+        assert result.candidates == []
+
+    def test_token_candidates_are_distinct_from_mirrors(self, repo):
+        result = self._sweep(repo)
+
+        assert {candidate["candidateClass"] for candidate in result.candidates} == {"token"}
+
     def test_a_line_matching_only_some_invariant_tokens_is_not_a_sibling(self, repo):
         """Containment is all-or-nothing; partial overlap is not a match."""
         (repo / "app" / "partial.py").write_text(
@@ -195,7 +358,11 @@ class TestSweep:
         assert result.candidates == []
 
     def test_stops_when_the_flagged_lines_cannot_be_read(self, repo):
-        result = self._sweep(repo, sites=["app/missing.py:2", "app/gone.py:4"])
+        result = self._sweep(
+            repo,
+            sites=["app/missing.py:2", "app/gone.py:4"],
+            changed_files=["app/missing.py", "app/gone.py"],
+        )
         assert result.status == "no_source"
         assert result.candidates == []
 
@@ -261,6 +428,17 @@ class TestReport:
             sites=["app/config.py:2"], changed_files=["app/config.py"], root=repo,
         )
         assert "skipped:" in sweeper.render_report(result)
+
+    def test_report_labels_a_mirror_candidate(self, mirror_pr195_repo):
+        result = sweeper.sweep(
+            signature="provider-floor",
+            label="threshold floor",
+            sites=["lib/build-provider-query.ts:95-98"],
+            changed_files=[fixture["path"] for fixture in MIRROR_PR195],
+            root=mirror_pr195_repo,
+        )
+
+        assert "[mirror]" in sweeper.render_report(result)
 
 
 class TestCli:
