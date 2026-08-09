@@ -98,6 +98,14 @@ class TestNormalizeBlock:
             "remaining--;",
         ]) == ('const url = "https://example.test/a";', "remaining--;")
 
+    def test_preserves_hash_syntax_unless_the_file_uses_hash_comments(self):
+        lines = ["#ifdef WINDOWS", "color: #fff;"]
+
+        assert sweeper.normalize_block(lines) == tuple(lines)
+        assert sweeper.normalize_block(
+            ["# explanation", "value = 1"], hash_comments=True
+        ) == ("value = 1",)
+
 
 class TestInvariantTokens:
     def test_keeps_only_what_every_site_shares(self):
@@ -268,6 +276,22 @@ class TestSweep:
         )
         assert result.candidates[0]["fingerprint"]
 
+    def test_mirror_rejects_a_structural_only_seed(self, tmp_path):
+        (tmp_path / "generic.js").write_text(
+            "return;\n}\n\nreturn;\n}\n"
+        )
+
+        result = sweeper.sweep(
+            signature="generic-ending",
+            label="generic ending",
+            sites=["generic.js:1-2"],
+            changed_files=["generic.js"],
+            root=tmp_path,
+        )
+
+        assert result.status == "too_few_sites"
+        assert result.candidates == []
+
     def test_mirror_never_searches_outside_changed_files(self, mirror_pr195_repo):
         result = sweeper.sweep(
             signature="provider-floor",
@@ -340,6 +364,28 @@ class TestSweep:
         result = self._sweep(repo)
 
         assert {candidate["candidateClass"] for candidate in result.candidates} == {"token"}
+
+    def test_token_hit_inside_a_mirror_is_not_double_counted(self, tmp_path):
+        block = (
+            "prepare();\n"
+            "value = path.read_text().encode();\n"
+        )
+        (tmp_path / "copies.js").write_text(
+            block + "unrelated();\n" + block + "unrelated();\n" + block
+        )
+
+        result = sweeper.sweep(
+            signature="copied-block",
+            label="copied block",
+            sites=["copies.js:1-2", "copies.js:4-5"],
+            changed_files=["copies.js"],
+            root=tmp_path,
+        )
+
+        assert [(candidate["candidateClass"], candidate["site"])
+                for candidate in result.candidates] == [
+            ("mirror", "copies.js:7-8")
+        ]
 
     def test_a_line_matching_only_some_invariant_tokens_is_not_a_sibling(self, repo):
         """Containment is all-or-nothing; partial overlap is not a match."""

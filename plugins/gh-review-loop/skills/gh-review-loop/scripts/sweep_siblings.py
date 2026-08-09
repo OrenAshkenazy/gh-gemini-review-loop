@@ -52,6 +52,10 @@ MIN_FLAGGED_SITES = 2
 # call anything a sibling -- `self` and `=` are common to half a file.
 MIN_INVARIANT_TOKENS = 2
 
+# Exact equality alone is unsafe for ubiquitous structural endings such as
+# ``return;`` plus ``}``. A mirror block must carry identifier-like signal too.
+MIN_MIRROR_SIGNIFICANT_TOKENS = 2
+
 # Reporting cap. A sweep that proposes fifty sites is not a sweep, it is a
 # refactor, and it should go back to the human.
 DEFAULT_MAX_CANDIDATES = 20
@@ -69,6 +73,11 @@ _COMMENT_ONLY_RE = re.compile(r"^\s*(#|//|/\*|\*|--|;)")
 _STRING_RE = re.compile(r"""(['"])(?:\\.|(?!\1).)*\1""", re.DOTALL)
 _NUMBER_RE = re.compile(r"\b\d[\d_.]*\b")
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z_0-9]*|[(){}\[\].,;:=<>!+\-*/%&|^~@]+")
+
+_HASH_COMMENT_SUFFIXES = frozenset({
+    ".py", ".rb", ".sh", ".bash", ".zsh", ".fish",
+    ".yaml", ".yml", ".toml", ".ini", ".cfg",
+})
 
 # Tokens too common to carry signal. Keeping them would let a candidate match on
 # `self` alone. This is a stopword list, not a language model: an unknown
@@ -141,7 +150,11 @@ def parse_site(raw: str) -> Site:
     return Site(raw, None)
 
 
-def _strip_comments(lines: Iterable[str]) -> list[str]:
+def _strip_comments(
+    lines: Iterable[str],
+    *,
+    hash_comments: bool = False,
+) -> list[str]:
     """Strip common line/block comments while preserving quoted markers."""
     stripped: list[str] = []
     in_block = False
@@ -183,7 +196,11 @@ def _strip_comments(lines: Iterable[str]) -> list[str]:
                 break
             if pair == "--" and (index == 0 or line[index - 1].isspace()):
                 break
-            if character == "#" and (index == 0 or line[index - 1].isspace()):
+            if (
+                hash_comments
+                and character == "#"
+                and (index == 0 or line[index - 1].isspace())
+            ):
                 break
             output.append(character)
             index += 1
@@ -191,11 +208,15 @@ def _strip_comments(lines: Iterable[str]) -> list[str]:
     return stripped
 
 
-def normalize_block(lines: Iterable[str]) -> tuple[str, ...]:
+def normalize_block(
+    lines: Iterable[str],
+    *,
+    hash_comments: bool = False,
+) -> tuple[str, ...]:
     """Normalize a code block for exact mirror comparison."""
     return tuple(
         normalized
-        for line in _strip_comments(lines)
+        for line in _strip_comments(lines, hash_comments=hash_comments)
         if (normalized := re.sub(r"\s+", " ", line).strip())
     )
 
@@ -204,10 +225,20 @@ def _block_fingerprint(block: tuple[str, ...]) -> str:
     return hashlib.sha256("\n".join(block).encode("utf-8")).hexdigest()
 
 
-def _normalized_code_lines(lines: list[str]) -> list[tuple[int, str]]:
+def _uses_hash_comments(path: str) -> bool:
+    return Path(path).suffix.lower() in _HASH_COMMENT_SUFFIXES
+
+
+def _normalized_code_lines(
+    lines: list[str],
+    *,
+    hash_comments: bool,
+) -> list[tuple[int, str]]:
     return [
         (number, normalized)
-        for number, line in enumerate(_strip_comments(lines), start=1)
+        for number, line in enumerate(
+            _strip_comments(lines, hash_comments=hash_comments), start=1
+        )
         if (normalized := re.sub(r"\s+", " ", line).strip())
     ]
 
@@ -231,8 +262,13 @@ def _mirror_candidates(
         lines = lines_of(site.path)
         if site.line > len(lines):
             continue
-        block = normalize_block(lines[site.start_line - 1:site.line])
-        if len(block) < 2:
+        block = normalize_block(
+            lines[site.start_line - 1:site.line],
+            hash_comments=_uses_hash_comments(site.path),
+        )
+        block_tokens = set().union(*(tokenize(line) for line in block), set())
+        significant_count = sum(is_significant_token(token) for token in block_tokens)
+        if len(block) < 2 or significant_count < MIN_MIRROR_SIGNIFICANT_TOKENS:
             continue
         seeds.append((block, _block_fingerprint(block)))
 
@@ -247,7 +283,10 @@ def _mirror_candidates(
         width = len(block)
         for rel in changed_files:
             if rel not in normalized_files:
-                normalized_files[rel] = _normalized_code_lines(lines_of(rel))
+                normalized_files[rel] = _normalized_code_lines(
+                    lines_of(rel),
+                    hash_comments=_uses_hash_comments(rel),
+                )
             entries = normalized_files[rel]
             for offset in range(len(entries) - width + 1):
                 window = entries[offset:offset + width]
@@ -450,9 +489,18 @@ def sweep(
     }
 
     candidates = list(mirror_candidates)
+    mirror_ranges = [
+        (candidate["path"], candidate["line"], candidate["endLine"])
+        for candidate in mirror_candidates
+    ]
     for rel in changed_files:
         for index, text in enumerate(lines_of(rel), start=1):
             if (rel, index) in already:
+                continue
+            if any(
+                rel == mirror_path and mirror_start <= index <= mirror_end
+                for mirror_path, mirror_start, mirror_end in mirror_ranges
+            ):
                 continue
             if not is_code_line(text):
                 continue
