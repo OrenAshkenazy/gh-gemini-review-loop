@@ -115,8 +115,7 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
    a reviewer that says "exception-wrap" at one site and "add error checks" at
    another is describing one pattern, and without the merge each looks like a
    single-site finding and never reaches the sweep's two-site minimum.
-2. **Sweep (report-then-go).** For each multi-site pattern (`count >= 2`), and
-   for each single finding anchored to a multi-line range, run
+2. **Sweep (report-then-go).** For each multi-site pattern (`count >= 2`), run
    `sweep_siblings.py` to find instances of the same shape the reviewer has not
    flagged yet, restricted to the PR's changed files:
 
@@ -127,15 +126,6 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
      --changed-file <path> [--changed-file <path> ...] --json
    ```
 
-   A single multi-line finding uses its range from the receipt:
-
-   ```bash
-   python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/sweep_siblings.py" \
-     --signature <sig> --label "<label>" \
-     --site <path:start-end> \
-     --changed-file <path> [--changed-file <path> ...] --json
-   ```
-
    Pass every site from the cluster and every file in the PR's diff. The script
    intersects the tokens of the flagged lines and reports only lines containing
    all of them, so a candidate has to match what the flagged sites have in
@@ -143,21 +133,12 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
    constrains candidates but cannot qualify a pattern by itself. It reports; it
    never edits.
 
-   Multi-line ranges also enable an exact duplicate-block sweep from one flagged
-   site. The script strips comments, collapses whitespace, fingerprints the
-   normalized code-line sequence, and searches the changed files for the same
-   sequence. It reports these as `mirror` candidates; ordinary intersection
-   hits are `token` candidates. `mirror` describes the evidence source, not a
-   path relationship, and does not infer filename twins.
-
    Print the report, then fix the cluster plus the reported siblings in this
    cycle. Do not block on approval, but never edit unflagged code silently —
    the report must appear first.
 
    Honor the script's `status`. `too_few_sites`, `pattern_too_thin`, and
-   `no_source` all mean **do not sweep**: fix the flagged sites only. A mirror
-   can return `ok` from one ranged site; token candidates still require two
-   sites. When
+   `no_source` all mean **do not sweep**: fix the flagged sites only. When
    `truncated` is true the pattern is wider than a sweep should be — show the
    report and ask the user before touching unflagged code.
 3. **Mark.** Pass `--swept-pattern <sig>` (the `sig:` token from the Patterns

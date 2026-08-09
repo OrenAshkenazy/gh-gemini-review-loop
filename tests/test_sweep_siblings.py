@@ -15,9 +15,7 @@ import pytest
 import sweep_siblings as sweeper
 
 
-MIRROR_CORPUS = json.loads(
-    (Path(__file__).parent / "fixtures" / "mirror_corpus.json").read_text()
-)
+PR195_SOURCES = Path(__file__).parent / "fixtures" / "cluster_corpus_pr195_sources"
 
 
 UTF8 = '''\
@@ -83,29 +81,6 @@ class TestTokenize:
         assert not sweeper.is_significant_token(token)
 
 
-class TestNormalizeBlock:
-    def test_strips_comments_and_collapses_whitespace(self):
-        assert sweeper.normalize_block([
-            "  const   options = values; // kept in sync",
-            "/* block comment",
-            "   continued */  return   options;",
-        ]) == ("const options = values;", "return options;")
-
-    def test_preserves_comment_markers_in_strings_and_decrement_operators(self):
-        assert sweeper.normalize_block([
-            'const url = "https://example.test/a";',
-            "remaining--;",
-        ]) == ('const url = "https://example.test/a";', "remaining--;")
-
-    def test_preserves_hash_syntax_unless_the_file_uses_hash_comments(self):
-        lines = ["#ifdef WINDOWS", "color: #fff;"]
-
-        assert sweeper.normalize_block(lines) == tuple(lines)
-        assert sweeper.normalize_block(
-            ["# explanation", "value = 1"], hash_comments=True
-        ) == ("value = 1",)
-
-
 class TestInvariantTokens:
     def test_keeps_only_what_every_site_shares(self):
         common = sweeper.invariant_tokens([
@@ -135,24 +110,6 @@ class TestParseSite:
         site = sweeper.parse_site(raw)
         assert (site.path, site.line) == (path, line)
 
-    def test_parses_a_flagged_range(self):
-        site = sweeper.parse_site("lib/options.ts:5-8")
-
-        assert site.path == "lib/options.ts"
-        assert site.start_line == 5
-        assert site.line == 8
-        assert str(site) == "lib/options.ts:5-8"
-
-
-@pytest.fixture
-def mirror_repo(tmp_path):
-    for fixture in MIRROR_CORPUS:
-        target = tmp_path / fixture["path"]
-        target.parent.mkdir(parents=True, exist_ok=True)
-        padding = [""] * (fixture["startLine"] - 1)
-        target.write_text("\n".join(padding + fixture["lines"]) + "\n")
-    return tmp_path
-
 
 class TestSweep:
     def _sweep(self, repo, **overrides):
@@ -177,25 +134,6 @@ class TestSweep:
         flagged = {"app/config.py:2", "app/config.py:6"}
         assert flagged.isdisjoint({c["site"] for c in result.candidates})
 
-    def test_token_sweep_does_not_report_lines_inside_flagged_ranges(self, tmp_path):
-        (tmp_path / "ranges.py").write_text(
-            "one = path.read_text().encode()\n"
-            "two = path.read_text().encode()\n"
-            "unrelated()\n"
-            "three = path.read_text().encode()\n"
-            "four = path.read_text().encode()\n"
-        )
-
-        result = sweeper.sweep(
-            signature="range-shape",
-            label="range shape",
-            sites=["ranges.py:1-2", "ranges.py:4-5"],
-            changed_files=["ranges.py"],
-            root=tmp_path,
-        )
-
-        assert result.candidates == []
-
     def test_never_leaves_the_changed_file_set(self, repo):
         """vendor.py contains the identical pattern but is not in the diff."""
         result = self._sweep(repo)
@@ -203,24 +141,6 @@ class TestSweep:
 
         widened = self._sweep(repo, changed_files=["app/config.py", "vendor.py"])
         assert any(c["path"] == "vendor.py" for c in widened.candidates)
-
-    def test_does_not_read_a_flagged_site_outside_changed_files(self, repo, monkeypatch):
-        original = sweeper._read_lines
-        reads = []
-
-        def recording_reader(path):
-            reads.append(path)
-            return original(path)
-
-        monkeypatch.setattr(sweeper, "_read_lines", recording_reader)
-        result = self._sweep(
-            repo,
-            sites=["vendor.py:2", "vendor.py:6"],
-            changed_files=["app/config.py"],
-        )
-
-        assert result.status == "too_few_sites"
-        assert all(path.name != "vendor.py" for path in reads)
 
     def test_a_single_flagged_site_is_not_a_pattern(self, repo):
         result = self._sweep(repo, sites=["app/config.py:2"])
@@ -239,153 +159,24 @@ class TestSweep:
         assert result.candidates == []
         assert "Too broad to sweep safely" in result.reason
 
-    def test_punctuation_only_intersection_is_too_thin(self, tmp_path):
-        (tmp_path / "conditions.js").write_text(
-            "!alpha && beta\n"
-            "!gamma && delta\n"
-        )
+    def test_pr195_pattern_a_punctuation_intersection_is_too_thin(self):
         result = sweeper.sweep(
-            signature="conditional-gate",
-            label="independent conditional gate",
+            signature="pattern-a",
+            label="independent development gate",
             sites=[
-                "conditions.js:1",
-                "conditions.js:2",
+                "561c92fd/lib/candidate-discovery/fill-shortlist.ts:716",
+                "e4aaa78c/lib/build-provider-query.ts:85",
             ],
-            changed_files=["conditions.js"],
-            root=tmp_path,
+            changed_files=[
+                "561c92fd/lib/candidate-discovery/fill-shortlist.ts",
+                "e4aaa78c/lib/build-provider-query.ts",
+            ],
+            root=PR195_SOURCES,
         )
 
         assert result.status == "pattern_too_thin"
         assert result.invariant_tokens == ("!", "&&")
         assert result.candidates == []
-
-    def test_flagged_range_finds_the_twin_implementation(self, mirror_repo):
-        result = sweeper.sweep(
-            signature="option-normalization",
-            label="option normalization",
-            sites=["lib/options.ts:5-8"],
-            changed_files=[fixture["path"] for fixture in MIRROR_CORPUS],
-            root=mirror_repo,
-        )
-
-        assert result.status == "ok"
-        assert len(result.candidates) == 1
-        assert result.candidates[0]["candidateClass"] == "mirror"
-        assert result.candidates[0]["site"] == (
-            "src/options.js:12-15"
-        )
-        assert result.candidates[0]["fingerprint"]
-
-    def test_mirror_rejects_a_structural_only_seed(self, tmp_path):
-        (tmp_path / "generic.js").write_text(
-            "return;\n}\n\nreturn;\n}\n"
-        )
-
-        result = sweeper.sweep(
-            signature="generic-ending",
-            label="generic ending",
-            sites=["generic.js:1-2"],
-            changed_files=["generic.js"],
-            root=tmp_path,
-        )
-
-        assert result.status == "too_few_sites"
-        assert result.candidates == []
-
-    def test_mirror_never_searches_outside_changed_files(self, mirror_repo):
-        result = sweeper.sweep(
-            signature="option-normalization",
-            label="option normalization",
-            sites=["lib/options.ts:5-8"],
-            changed_files=["lib/options.ts"],
-            root=mirror_repo,
-        )
-
-        assert result.status == "too_few_sites"
-        assert result.candidates == []
-
-    def test_mirror_does_not_re_report_another_flagged_range(self, mirror_repo):
-        result = sweeper.sweep(
-            signature="option-normalization",
-            label="option normalization",
-            sites=[
-                "lib/options.ts:5-8",
-                "src/options.js:12-15",
-            ],
-            changed_files=[fixture["path"] for fixture in MIRROR_CORPUS],
-            root=mirror_repo,
-        )
-
-        assert all(
-            candidate["candidateClass"] != "mirror"
-            for candidate in result.candidates
-        )
-
-    def test_mirror_does_not_re_report_seed_after_comment_stripping(self, tmp_path):
-        (tmp_path / "query.js").write_text(
-            "// flagged range includes this comment\n"
-            "const normalizedOptions = rawOptions\n"
-            "  .filter((option) => option.enabled)\n"
-            "  .map((option) => option.name.trim())\n"
-            "  .sort();\n"
-            "\n"
-            "const normalizedOptions = rawOptions\n"
-            "  .filter((option) => option.enabled)\n"
-            "  .map((option) => option.name.trim())\n"
-            "  .sort();\n"
-        )
-
-        result = sweeper.sweep(
-            signature="option-normalization",
-            label="option normalization",
-            sites=["query.js:1-5"],
-            changed_files=["query.js"],
-            root=tmp_path,
-        )
-
-        assert [candidate["site"] for candidate in result.candidates] == [
-            "query.js:7-10"
-        ]
-
-    def test_mirror_does_not_report_windows_overlapping_the_seed(self, tmp_path):
-        (tmp_path / "repeat.js").write_text("x();\n" * 5)
-
-        result = sweeper.sweep(
-            signature="repeated-block",
-            label="repeated block",
-            sites=["repeat.js:2-4"],
-            changed_files=["repeat.js"],
-            root=tmp_path,
-        )
-
-        assert result.candidates == []
-
-    def test_token_candidates_are_distinct_from_mirrors(self, repo):
-        result = self._sweep(repo)
-
-        assert {candidate["candidateClass"] for candidate in result.candidates} == {"token"}
-
-    def test_token_hit_inside_a_mirror_is_not_double_counted(self, tmp_path):
-        block = (
-            "prepare();\n"
-            "value = path.read_text().encode();\n"
-        )
-        (tmp_path / "copies.js").write_text(
-            block + "unrelated();\n" + block + "unrelated();\n" + block
-        )
-
-        result = sweeper.sweep(
-            signature="copied-block",
-            label="copied block",
-            sites=["copies.js:1-2", "copies.js:4-5"],
-            changed_files=["copies.js"],
-            root=tmp_path,
-        )
-
-        assert [(candidate["candidateClass"], candidate["site"])
-                for candidate in result.candidates] == [
-            ("mirror", "copies.js:7-8")
-        ]
 
     def test_a_line_matching_only_some_invariant_tokens_is_not_a_sibling(self, repo):
         """Containment is all-or-nothing; partial overlap is not a match."""
@@ -404,11 +195,7 @@ class TestSweep:
         assert result.candidates == []
 
     def test_stops_when_the_flagged_lines_cannot_be_read(self, repo):
-        result = self._sweep(
-            repo,
-            sites=["app/missing.py:2", "app/gone.py:4"],
-            changed_files=["app/missing.py", "app/gone.py"],
-        )
+        result = self._sweep(repo, sites=["app/missing.py:2", "app/gone.py:4"])
         assert result.status == "no_source"
         assert result.candidates == []
 
@@ -474,17 +261,6 @@ class TestReport:
             sites=["app/config.py:2"], changed_files=["app/config.py"], root=repo,
         )
         assert "skipped:" in sweeper.render_report(result)
-
-    def test_report_labels_a_mirror_candidate(self, mirror_repo):
-        result = sweeper.sweep(
-            signature="option-normalization",
-            label="option normalization",
-            sites=["lib/options.ts:5-8"],
-            changed_files=[fixture["path"] for fixture in MIRROR_CORPUS],
-            root=mirror_repo,
-        )
-
-        assert "[mirror]" in sweeper.render_report(result)
 
 
 class TestCli:

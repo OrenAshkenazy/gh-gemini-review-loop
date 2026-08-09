@@ -3,8 +3,9 @@
 
 A bot reviewer flags a pattern at the sites it happened to look at. Fixing only
 those teaches it to flag the rest next cycle, which is where the round-three
-problem comes from. This module answers one question deterministically: which
-*other* locations in the PR's changed files match what the reviewer flagged?
+problem comes from. This module answers one question deterministically: given
+two or more sites the reviewer flagged, which *other* lines in the PR's changed
+files look like the same thing?
 
 The method is deliberately dumb and explainable, because a sweep that edits code
 the reviewer never mentioned has to justify itself:
@@ -21,11 +22,6 @@ shares a token look like a sibling; requiring agreement across sites means a
 candidate has to match what the flagged sites have in common, not what any one
 of them happens to contain.
 
-A separate exact-block shape handles a multi-line range from one flagged site:
-comments are stripped, whitespace is collapsed, and the normalized sequence is
-fingerprinted and searched across the changed files. These candidates are
-reported as ``mirror`` rather than token-intersection matches.
-
 This reports. It never edits, and it never reads a file outside the changed set,
 so the blast radius cannot leave the PR's own diff.
 
@@ -37,12 +33,11 @@ guessing.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Iterable
 
 # A pattern flagged at exactly one site is not yet a pattern. Two is the minimum
 # that lets us intersect, and the intersection is the safety property.
@@ -51,10 +46,6 @@ MIN_FLAGGED_SITES = 2
 # Below this many invariant tokens, the intersection is not specific enough to
 # call anything a sibling -- `self` and `=` are common to half a file.
 MIN_INVARIANT_TOKENS = 2
-
-# Exact equality alone is unsafe for ubiquitous structural endings such as
-# ``return;`` plus ``}``. A mirror block must carry identifier-like signal too.
-MIN_MIRROR_SIGNIFICANT_TOKENS = 2
 
 # Reporting cap. A sweep that proposes fifty sites is not a sweep, it is a
 # refactor, and it should go back to the human.
@@ -73,11 +64,6 @@ _COMMENT_ONLY_RE = re.compile(r"^\s*(#|//|/\*|\*|--|;)")
 _STRING_RE = re.compile(r"""(['"])(?:\\.|(?!\1).)*\1""", re.DOTALL)
 _NUMBER_RE = re.compile(r"\b\d[\d_.]*\b")
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z_0-9]*|[(){}\[\].,;:=<>!+\-*/%&|^~@]+")
-
-_HASH_COMMENT_SUFFIXES = frozenset({
-    ".py", ".rb", ".sh", ".bash", ".zsh", ".fish",
-    ".yaml", ".yml", ".toml", ".ini", ".cfg",
-})
 
 # Tokens too common to carry signal. Keeping them would let a candidate match on
 # `self` alone. This is a stopword list, not a language model: an unknown
@@ -98,11 +84,8 @@ class Site:
 
     path: str
     line: int | None
-    start_line: int | None = None
 
     def __str__(self) -> str:
-        if self.start_line is not None and self.line is not None:
-            return f"{self.path}:{self.start_line}-{self.line}"
         return f"{self.path}:{self.line}" if self.line is not None else self.path
 
 
@@ -140,180 +123,9 @@ def parse_site(raw: str) -> Site:
     if not raw:
         return Site("", None)
     head, sep, tail = raw.rpartition(":")
-    range_match = re.fullmatch(r"(\d+)-(\d+)", tail) if sep else None
-    if range_match:
-        start, end = (int(value) for value in range_match.groups())
-        if start <= end:
-            return Site(head, end, start)
     if sep and tail.isdigit():
         return Site(head, int(tail))
     return Site(raw, None)
-
-
-def _strip_comments(
-    lines: Iterable[str],
-    *,
-    hash_comments: bool = False,
-) -> list[str]:
-    """Strip common line/block comments while preserving quoted markers."""
-    stripped: list[str] = []
-    in_block = False
-    for line in lines:
-        output: list[str] = []
-        quote: str | None = None
-        escaped = False
-        index = 0
-        while index < len(line):
-            pair = line[index:index + 2]
-            if in_block:
-                if pair == "*/":
-                    in_block = False
-                    index += 2
-                else:
-                    index += 1
-                continue
-            character = line[index]
-            if quote is not None:
-                output.append(character)
-                if escaped:
-                    escaped = False
-                elif character == "\\":
-                    escaped = True
-                elif character == quote:
-                    quote = None
-                index += 1
-                continue
-            if character in {'"', "'", "`"}:
-                quote = character
-                output.append(character)
-                index += 1
-                continue
-            if pair == "/*":
-                in_block = True
-                index += 2
-                continue
-            if pair == "//":
-                break
-            if pair == "--" and (index == 0 or line[index - 1].isspace()):
-                break
-            if (
-                hash_comments
-                and character == "#"
-                and (index == 0 or line[index - 1].isspace())
-            ):
-                break
-            output.append(character)
-            index += 1
-        stripped.append("".join(output))
-    return stripped
-
-
-def normalize_block(
-    lines: Iterable[str],
-    *,
-    hash_comments: bool = False,
-) -> tuple[str, ...]:
-    """Normalize a code block for exact mirror comparison."""
-    return tuple(
-        normalized
-        for line in _strip_comments(lines, hash_comments=hash_comments)
-        if (normalized := re.sub(r"\s+", " ", line).strip())
-    )
-
-
-def _block_fingerprint(block: tuple[str, ...]) -> str:
-    return hashlib.sha256("\n".join(block).encode("utf-8")).hexdigest()
-
-
-def _uses_hash_comments(path: str) -> bool:
-    return Path(path).suffix.lower() in _HASH_COMMENT_SUFFIXES
-
-
-def _normalized_code_lines(
-    lines: list[str],
-    *,
-    hash_comments: bool,
-) -> list[tuple[int, str]]:
-    return [
-        (number, normalized)
-        for number, line in enumerate(
-            _strip_comments(lines, hash_comments=hash_comments), start=1
-        )
-        if (normalized := re.sub(r"\s+", " ", line).strip())
-    ]
-
-
-def _mirror_candidates(
-    sites: list[Site],
-    changed_files: list[str],
-    lines_of: Callable[[str], list[str]],
-) -> list[dict[str, Any]]:
-    """Find exact normalized copies of flagged multi-line ranges."""
-    changed = set(changed_files)
-    seeds: list[tuple[tuple[str, ...], str]] = []
-    for site in sites:
-        if (
-            site.path not in changed
-            or site.start_line is None
-            or site.line is None
-            or site.start_line >= site.line
-        ):
-            continue
-        lines = lines_of(site.path)
-        if site.line > len(lines):
-            continue
-        block = normalize_block(
-            lines[site.start_line - 1:site.line],
-            hash_comments=_uses_hash_comments(site.path),
-        )
-        block_tokens = set().union(*(tokenize(line) for line in block), set())
-        significant_count = sum(is_significant_token(token) for token in block_tokens)
-        if len(block) < 2 or significant_count < MIN_MIRROR_SIGNIFICANT_TOKENS:
-            continue
-        seeds.append((block, _block_fingerprint(block)))
-
-    flagged_ranges = {
-        (site.path, site.start_line, site.line)
-        for site in sites
-        if site.start_line is not None and site.line is not None
-    }
-    candidates: dict[tuple[str, int, int], dict[str, Any]] = {}
-    normalized_files: dict[str, list[tuple[int, str]]] = {}
-    for block, fingerprint in seeds:
-        width = len(block)
-        for rel in changed_files:
-            if rel not in normalized_files:
-                normalized_files[rel] = _normalized_code_lines(
-                    lines_of(rel),
-                    hash_comments=_uses_hash_comments(rel),
-                )
-            entries = normalized_files[rel]
-            for offset in range(len(entries) - width + 1):
-                window = entries[offset:offset + width]
-                candidate_block = tuple(text for _, text in window)
-                if (
-                    _block_fingerprint(candidate_block) != fingerprint
-                    or candidate_block != block
-                ):
-                    continue
-                start, end = window[0][0], window[-1][0]
-                if any(
-                    rel == flagged_path
-                    and start <= flagged_end
-                    and flagged_start <= end
-                    for flagged_path, flagged_start, flagged_end in flagged_ranges
-                ):
-                    continue
-                candidates[(rel, start, end)] = {
-                    "candidateClass": "mirror",
-                    "path": rel,
-                    "line": start,
-                    "endLine": end,
-                    "site": f"{rel}:{start}-{end}",
-                    "text": " ".join(text for _, text in window)[:200],
-                    "fingerprint": fingerprint,
-                }
-    return list(candidates.values())
 
 
 def _strip_literals(line: str) -> str:
@@ -380,28 +192,6 @@ def invariant_tokens(flagged_lines: Iterable[str]) -> set[str]:
     return common
 
 
-def _set_candidates(
-    result: SweepResult,
-    candidates: list[dict[str, Any]],
-    max_candidates: int,
-) -> None:
-    candidates.sort(key=lambda candidate: (
-        candidate["path"],
-        candidate["line"],
-        candidate.get("endLine", candidate["line"]),
-        candidate["candidateClass"],
-    ))
-    if len(candidates) > max_candidates:
-        result.truncated = True
-        result.reason = (
-            f"{len(candidates)} candidates found; reporting the first "
-            f"{max_candidates}. A pattern this wide is a refactor, not a sweep "
-            "-- confirm the shape before fixing."
-        )
-        candidates = candidates[:max_candidates]
-    result.candidates = candidates
-
-
 def sweep(
     *,
     signature: str,
@@ -415,7 +205,7 @@ def sweep(
 
     Returns a result with ``status`` of:
       ``ok``               candidates found (possibly zero)
-      ``too_few_sites``    no mirror and fewer than two sites to intersect
+      ``too_few_sites``    fewer than two flagged sites, nothing to intersect
       ``no_source``        the flagged lines could not be read
       ``pattern_too_thin`` the intersection was not specific enough to search
     """
@@ -424,12 +214,14 @@ def sweep(
                          flagged=tuple(str(parse_site(s)) for s in sites))
 
     parsed = [parse_site(s) for s in sites]
-    changed = set(changed_files)
-    located = [
-        site
-        for site in parsed
-        if site.line is not None and site.path in changed
-    ]
+    located = [s for s in parsed if s.line is not None and s.path]
+    if len(located) < MIN_FLAGGED_SITES:
+        result.status = "too_few_sites"
+        result.reason = (
+            f"{len(located)} located site(s); a sweep needs at least "
+            f"{MIN_FLAGGED_SITES} so the shared shape can be intersected."
+        )
+        return result
 
     file_cache: dict[str, list[str]] = {}
 
@@ -438,24 +230,9 @@ def sweep(
             file_cache[rel] = _read_lines(root / rel)
         return file_cache[rel]
 
-    mirror_candidates = _mirror_candidates(located, changed_files, lines_of)
-    if len(located) < MIN_FLAGGED_SITES:
-        if mirror_candidates:
-            _set_candidates(result, mirror_candidates, max_candidates)
-            return result
-        result.status = "too_few_sites"
-        result.reason = (
-            f"{len(located)} located site(s); a token sweep needs at least "
-            f"{MIN_FLAGGED_SITES}, and no exact multi-line mirror was found."
-        )
-        return result
-
     flagged_lines = [_line_at(lines_of(s.path), s.line) for s in located]
     flagged_lines = [line for line in flagged_lines if is_code_line(line)]
     if len(flagged_lines) < MIN_FLAGGED_SITES:
-        if mirror_candidates:
-            _set_candidates(result, mirror_candidates, max_candidates)
-            return result
         result.status = "no_source"
         result.reason = (
             f"Fewer than {MIN_FLAGGED_SITES} flagged sites resolved to readable "
@@ -466,13 +243,6 @@ def sweep(
     common = invariant_tokens(flagged_lines)
     significant_count = sum(is_significant_token(token) for token in common)
     if significant_count < MIN_INVARIANT_TOKENS:
-        if mirror_candidates:
-            result.reason = (
-                "Token intersection was too thin; reporting exact mirror "
-                "candidate(s) instead."
-            )
-            _set_candidates(result, mirror_candidates, max_candidates)
-            return result
         result.status = "pattern_too_thin"
         result.reason = (
             f"The flagged sites share only {significant_count} significant token(s) "
@@ -482,31 +252,17 @@ def sweep(
         return result
 
     result.invariant_tokens = tuple(sorted(common))
-    already = {
-        (site.path, line_number)
-        for site in located
-        for line_number in range(site.start_line or site.line, site.line + 1)
-    }
+    already = {(s.path, s.line) for s in located}
 
-    candidates = list(mirror_candidates)
-    mirror_ranges = [
-        (candidate["path"], candidate["line"], candidate["endLine"])
-        for candidate in mirror_candidates
-    ]
+    candidates: list[dict[str, Any]] = []
     for rel in changed_files:
         for index, text in enumerate(lines_of(rel), start=1):
             if (rel, index) in already:
-                continue
-            if any(
-                rel == mirror_path and mirror_start <= index <= mirror_end
-                for mirror_path, mirror_start, mirror_end in mirror_ranges
-            ):
                 continue
             if not is_code_line(text):
                 continue
             if common <= tokenize(text):
                 candidates.append({
-                    "candidateClass": "token",
                     "path": rel,
                     "line": index,
                     "site": f"{rel}:{index}",
@@ -514,7 +270,17 @@ def sweep(
                     "matchedTokens": sorted(common),
                 })
 
-    _set_candidates(result, candidates, max_candidates)
+    candidates.sort(key=lambda c: (c["path"], c["line"]))
+    if len(candidates) > max_candidates:
+        result.truncated = True
+        result.reason = (
+            f"{len(candidates)} candidates found; reporting the first "
+            f"{max_candidates}. A pattern this wide is a refactor, not a sweep "
+            "-- confirm the shape before fixing."
+        )
+        candidates = candidates[:max_candidates]
+
+    result.candidates = candidates
     return result
 
 
@@ -527,21 +293,16 @@ def render_report(result: SweepResult) -> str:
     lines = [
         head,
         f"  flagged:   {', '.join(result.flagged)}",
+        f"  shared:    {' '.join(result.invariant_tokens)}",
     ]
-    if result.invariant_tokens:
-        lines.append(f"  shared:    {' '.join(result.invariant_tokens)}")
     if not result.candidates:
         lines.append("  siblings:  none — the reviewer caught every instance in this diff")
         return "\n".join(lines)
 
     lines.append(f"  siblings:  {len(result.candidates)} unflagged site(s) match the same shape")
     for candidate in result.candidates:
-        candidate_class = candidate["candidateClass"]
-        class_label = f"[{candidate_class}] " if candidate_class == "mirror" else ""
-        lines.append(
-            f"    + {class_label}{candidate['site']}  {candidate['text']}"
-        )
-    if result.reason:
+        lines.append(f"    + {candidate['site']}  {candidate['text']}")
+    if result.truncated:
         lines.append(f"  note:      {result.reason}")
     return "\n".join(lines)
 
@@ -557,11 +318,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Cluster signature from the Patterns receipt.")
     parser.add_argument("--label", default="", help="Human label for the cluster.")
     parser.add_argument("--site", action="append", default=[], dest="sites",
-                        metavar="PATH:LINE|PATH:START-END",
-                        help=(
-                            "A flagged site or range. Repeat for token sweeps; "
-                            "one multi-line range can find exact mirrors."
-                        ))
+                        metavar="PATH:LINE",
+                        help="A flagged site. Repeat; at least two are required.")
     parser.add_argument("--changed-file", action="append", default=[],
                         dest="changed_files", metavar="PATH",
                         help="A file changed by this PR. Repeat. The search never leaves this set.")
