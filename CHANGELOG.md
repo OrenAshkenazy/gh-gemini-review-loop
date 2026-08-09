@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- Degenerate review clustering now emits an explicit advisory when three or
+  more findings all become singleton patterns, making prose-hash fallback
+  failures visible before fixes begin in both Markdown and structured JSON
+  output and in automatic snapshots. Shape clustering now reads source only
+  when the current checkout matches the selected PR repository and head. The
+  skill documents a safe manual recovery scoped to the explicitly selected PR.
+  Closes #73.
+
 ### Changed
 
 - **Bulletproof judge eval.** The `--judge-mode` path no longer depends on the `openai` SDK or on `OPENAI_API_KEY` being exported in a shell rc file — the two failure modes that wasted the most setup time (broken Homebrew Python, GUI-launched Claude Code not inheriting `~/.zshenv`, `pip install openai` blocked by externally-managed-environment).

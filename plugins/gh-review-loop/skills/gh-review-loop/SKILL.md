@@ -142,10 +142,36 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
    markers, so the convergence advisory can detect recurrence.
 4. **Verify** (the repo profile) and **re-review** as usual.
 
-The receipt's `Convergence:` line is advisory only. When a swept pattern reappears
-("⚠ … RECURRED after sweep"), the sweep missed a variant or the reviewer keeps
-re-flagging — decide whether to refine the sweep, stop, or continue. It never
-changes control flow; the re-review cap remains the only hard stop.
+The receipt's `Clustering:` and `Convergence:` lines are advisory only. When
+three or more findings all form singleton clusters, `Clustering:` warns that
+their signatures are likely prose-hash fallbacks and requires a manual sweep
+before fixing. This warning appears on the initial thread fetch, then repeats in
+the cycle receipt as an audit trail; the Stop-hook's one-line automatic snapshot
+also appends a compact warning. JSON fetches expose the same guard under
+`clustering` as `clusterCount`, `maxClusterSize`, and `advisory`. A manual sweep
+means this changed-files-only recovery, run before editing:
+
+```bash
+# Use the same selected PR URL passed to --pr, even from another checkout.
+PR_URL='https://github.com/OWNER/REPO/pull/123'
+
+# Establish the complete, reviewable scope for that PR.
+gh pr diff "$PR_URL" --name-only
+
+# For each singleton, choose one stable identifier or code fragment from its
+# body/anchor, then pass only paths printed by the command above.
+rg -n --fixed-strings -e '<stable identifier or code fragment>' -- \
+  path/from/changed-list another/path/from/changed-list
+```
+
+Repeat the `rg` search for every singleton and report (a) the complete changed
+file list inspected, (b) each fragment searched, and (c) every suspected
+sibling before editing. Do not combine unrelated singleton sites as inputs to
+`sweep_siblings.py`; its two-site intersection remains reserved for an actual
+multi-site cluster. When a swept pattern reappears ("⚠ … RECURRED after
+sweep"), `Convergence:` says the sweep missed a variant or the reviewer keeps
+re-flagging — decide whether to refine the sweep, stop, or continue. Neither
+line changes control flow; the re-review cap remains the only hard stop.
 
 Sweep scope is **changed files only** — that is both safe (blast radius = the PR's
 own diff) and sufficient (bot reviewers only review changed files).

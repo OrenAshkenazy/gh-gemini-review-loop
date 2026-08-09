@@ -4,6 +4,7 @@ from metrics import (
     RECORD_SCHEMA_VERSION,
     build_record,
     format_convergence_line,
+    format_degenerate_clustering_advisory,
     format_patterns_block,
     pattern_history_for_pr,
 )
@@ -487,6 +488,16 @@ class TestFormatAutoSnapshot:
             "7 seen, 4 resolved, 1 open · cycles 2/3"
         )
 
+    def test_auto_snapshot_appends_degenerate_clustering_warning(self):
+        out = metrics.format_auto_snapshot(self._rec(patterns={
+            "distinct_patterns": 3,
+            "max_cluster_size": 1,
+        }))
+
+        assert "likely prose-hash fallbacks" in out
+        assert "manual sweep required before fixing" in out
+        assert "\n" not in out
+
     def test_auto_snapshot_hides_agent_only_fields(self):
         out = metrics.format_auto_snapshot(self._rec())
         for jargon in ("Fixed:", "Observed fixed", "Verification:", "Outcome:"):
@@ -831,6 +842,42 @@ def test_format_patterns_block_orders_and_lists_sites():
 
 def test_format_patterns_block_empty():
     assert format_patterns_block([]) == ""
+
+
+def test_degenerate_clustering_advisory_fires_for_three_singletons():
+    clusters = [
+        Cluster(signature=f"sig-{i}", label=f"finding {i}", severity="medium",
+                sites=[f"src/file{i}.py:1"], count=1)
+        for i in range(3)
+    ]
+
+    advisory = format_degenerate_clustering_advisory(clusters)
+
+    assert "prose-hash fallbacks" in advisory
+    assert "manual sweep is required before fixing" in advisory
+
+
+def test_degenerate_clustering_advisory_omitted_for_multi_site_cluster():
+    clusters = [
+        Cluster(signature="shared", label="shared finding", severity="medium",
+                sites=["src/a.py:1", "src/b.py:1"], count=2),
+        Cluster(signature="single", label="single finding", severity="low",
+                sites=["src/c.py:1"], count=1),
+        Cluster(signature="another", label="another finding", severity="low",
+                sites=["src/d.py:1"], count=1),
+    ]
+
+    assert format_degenerate_clustering_advisory(clusters) == ""
+
+
+def test_degenerate_clustering_advisory_omitted_below_three_findings():
+    clusters = [
+        Cluster(signature=f"sig-{i}", label=f"finding {i}", severity="medium",
+                sites=[f"src/file{i}.py:1"], count=1)
+        for i in range(2)
+    ]
+
+    assert format_degenerate_clustering_advisory(clusters) == ""
 
 
 def test_format_convergence_line_plain():

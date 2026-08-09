@@ -254,13 +254,23 @@ def format_auto_snapshot(record: dict[str, Any]) -> str:
     # One line on purpose: Claude Code collapses multi-line hook output behind
     # "ctrl+o to expand", so a multi-line backstop summary wouldn't actually be
     # visible to someone watching the chat.
-    return (
+    snapshot = (
         "[loop] Summary (auto, agent didn't post one): "
         f"{record['findings_fetched']} seen, "
         f"{record.get('observed_fixed_count', 0)} resolved, "
         f"{record['remaining_actionable']} open · "
         f"cycles {record['cycles_used']}/{record['cycle_cap']}"
     )
+    patterns = record.get("patterns")
+    if (
+        isinstance(patterns, dict)
+        and patterns.get("distinct_patterns", 0) >= 3
+        and patterns.get("max_cluster_size") == 1
+    ):
+        snapshot += (
+            " · ⚠ likely prose-hash fallbacks; manual sweep required before fixing"
+        )
+    return snapshot
 
 
 def _count(value: Any) -> int:
@@ -621,6 +631,18 @@ def format_patterns_block(clusters: list[Any]) -> str:
         suffix = f", +{len(c.sites) - 4} more" if len(c.sites) > 4 else ""
         lines.append(f"           {', '.join(shown)}{suffix}")
     return "\n".join(lines)
+
+
+def format_degenerate_clustering_advisory(clusters: list[Any]) -> str:
+    """Warn when every finding became its own pattern, or return ``''``."""
+    valid = [cluster for cluster in clusters if cluster is not None]
+    if len(valid) < 3 or max(cluster.count for cluster in valid) != 1:
+        return ""
+    return (
+        "Clustering: ⚠ every finding produced a singleton pattern. "
+        "Signatures are likely prose-hash fallbacks; a manual sweep is required "
+        "before fixing."
+    )
 
 
 def format_convergence_line(stats: dict[str, Any], *, swept_count: int) -> str:

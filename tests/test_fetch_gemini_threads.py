@@ -571,6 +571,110 @@ class TestReviewerSelectionCli:
         assert "Do not wait on an unconfirmed reviewer" in selection["message"]
         assert [thread["id"] for thread in payload["threads"]] == ["T_default"]
 
+    def test_markdown_fetch_warns_before_fixing_degenerate_clusters(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._patch_common(monkeypatch, tmp_path)
+        pull_request = self._pull_request()
+        pull_request["reviewThreads"]["nodes"] = [
+            {
+                **self._thread("chatgpt-codex-connector", f"T{i}"),
+                "path": f"src/file{i}.py",
+                "comments": {
+                    "nodes": [{
+                        "author": {
+                            "login": "chatgpt-codex-connector",
+                            "__typename": "Bot",
+                        },
+                        "body": body,
+                        "createdAt": "2026-06-28T12:00:00Z",
+                    }]
+                },
+            }
+            for i, body in enumerate([
+                "Validate the configuration before use",
+                "Document the public return value",
+                "Avoid rebuilding this cache repeatedly",
+            ])
+        ]
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: pull_request)
+        monkeypatch.setattr(fgt, "repo_root", lambda: None)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr", "https://github.com/o/r/pull/5",
+                "--author", "chatgpt-codex-connector",
+                "--judge-mode", "off",
+                "--no-agent-filter",
+                "--no-resolve-outdated",
+                "--no-resolve-addressed-by-reply",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        out = capsys.readouterr().out
+        assert "# Codex Threads for PR #5" in out
+        assert "Patterns (3):" in out
+        assert "manual sweep is required before fixing" in out
+        assert out.index("manual sweep is required before fixing") > out.index(
+            "Avoid rebuilding this cache repeatedly"
+        )
+        assert "[loop] Cycle receipt" not in out
+        assert "Verification:" not in out
+
+    def test_json_fetch_serializes_degenerate_clustering_guard(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._patch_common(monkeypatch, tmp_path)
+        pull_request = self._pull_request()
+        pull_request["reviewThreads"]["nodes"] = [
+            {
+                **self._thread("chatgpt-codex-connector", f"T{i}"),
+                "path": f"src/file{i}.py",
+                "comments": {
+                    "nodes": [{
+                        "author": {
+                            "login": "chatgpt-codex-connector",
+                            "__typename": "Bot",
+                        },
+                        "body": body,
+                        "createdAt": "2026-06-28T12:00:00Z",
+                    }]
+                },
+            }
+            for i, body in enumerate([
+                "Validate the configuration before use",
+                "Document the public return value",
+                "Avoid rebuilding this cache repeatedly",
+            ])
+        ]
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: pull_request)
+        monkeypatch.setattr(fgt, "repo_root", lambda: None)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "fetch_gemini_threads.py",
+                "--pr", "https://github.com/o/r/pull/5",
+                "--author", "chatgpt-codex-connector",
+                "--format", "json",
+                "--judge-mode", "off",
+                "--no-agent-filter",
+                "--no-resolve-outdated",
+                "--no-resolve-addressed-by-reply",
+            ],
+        )
+
+        assert fgt.main() == 0
+
+        clustering = json.loads(capsys.readouterr().out)["clustering"]
+        assert clustering["clusterCount"] == 3
+        assert clustering["maxClusterSize"] == 1
+        assert "manual sweep is required before fixing" in clustering["advisory"]
+
     def test_persisted_reviewer_is_reused_without_prompt(
         self, tmp_path, monkeypatch, capsys
     ):
@@ -3161,6 +3265,100 @@ class TestRepoRoot:
 
         with mock.patch.object(subprocess, "run", blank):
             assert fgt.repo_root() is None
+
+
+class TestRepoRootForPr:
+    PR = PullRequest(owner="acme", repo="widget", number=7)
+    ROOT = Path("/srv/acme/widget")
+
+    def _runner(
+        self,
+        head="abc123",
+        remote="git@github.com:acme/widget.git",
+        worktree_status="",
+    ):
+        def run(cmd, **kwargs):
+            if cmd == ["git", "rev-parse", "HEAD"]:
+                return subprocess.CompletedProcess(cmd, 0, f"{head}\n", "")
+            if cmd == ["git", "remote", "get-url", "origin"]:
+                return subprocess.CompletedProcess(cmd, 0, f"{remote}\n", "")
+            if cmd == ["git", "status", "--porcelain", "--untracked-files=all"]:
+                return subprocess.CompletedProcess(cmd, 0, worktree_status, "")
+            raise AssertionError(cmd)
+        return run
+
+    @staticmethod
+    def _pr_data(head_repo="acme/widget", base_repo="acme/widget"):
+        return {
+            "headRefOid": "abc123",
+            "headRepository": {"nameWithOwner": head_repo},
+            "baseRepository": {"nameWithOwner": base_repo},
+        }
+
+    def test_returns_root_only_when_repo_and_head_match(self, monkeypatch):
+        monkeypatch.setattr(fgt, "repo_root", lambda cwd=None: self.ROOT)
+        monkeypatch.setattr(subprocess, "run", self._runner())
+
+        assert fgt.repo_root_for_pr(self._pr_data()) == self.ROOT
+
+    def test_rejects_checkout_at_another_revision(self, monkeypatch):
+        monkeypatch.setattr(fgt, "repo_root", lambda cwd=None: self.ROOT)
+        monkeypatch.setattr(subprocess, "run", self._runner(head="stale456"))
+
+        assert fgt.repo_root_for_pr(self._pr_data()) is None
+
+    def test_rejects_checkout_of_another_repository(self, monkeypatch):
+        monkeypatch.setattr(fgt, "repo_root", lambda cwd=None: self.ROOT)
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            self._runner(remote="https://github.com/acme/another-repo.git"),
+        )
+
+        assert fgt.repo_root_for_pr(self._pr_data()) is None
+
+    def test_rejects_dirty_tracked_worktree(self, monkeypatch):
+        monkeypatch.setattr(fgt, "repo_root", lambda cwd=None: self.ROOT)
+        monkeypatch.setattr(subprocess, "run", self._runner(worktree_status=" M src/file.py\n"))
+
+        assert fgt.repo_root_for_pr(self._pr_data()) is None
+
+    def test_rejects_untracked_worktree_content(self, monkeypatch):
+        monkeypatch.setattr(fgt, "repo_root", lambda cwd=None: self.ROOT)
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            self._runner(worktree_status="?? src/replacement.py\n"),
+        )
+
+        assert fgt.repo_root_for_pr(self._pr_data()) is None
+
+    def test_accepts_canonical_repository_after_redirect(self, monkeypatch):
+        monkeypatch.setattr(fgt, "repo_root", lambda cwd=None: self.ROOT)
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            self._runner(remote="https://github.com/acme/new-widget.git"),
+        )
+
+        data = self._pr_data(head_repo="acme/new-widget", base_repo="acme/new-widget")
+        assert fgt.repo_root_for_pr(data) == self.ROOT
+
+    def test_accepts_fork_head_repository(self, monkeypatch):
+        monkeypatch.setattr(fgt, "repo_root", lambda cwd=None: self.ROOT)
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            self._runner(remote="git@github.com:contributor/widget.git"),
+        )
+
+        data = self._pr_data(head_repo="contributor/widget")
+        assert fgt.repo_root_for_pr(data) == self.ROOT
+
+    def test_missing_pr_head_falls_back_to_prose_only(self, monkeypatch):
+        monkeypatch.setattr(fgt, "repo_root", lambda cwd=None: self.ROOT)
+
+        assert fgt.repo_root_for_pr({}) is None
 
 
 class TestSweptPatternLifecycle:
