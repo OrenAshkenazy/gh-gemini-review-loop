@@ -152,12 +152,15 @@ also appends a compact warning. JSON fetches expose the same guard under
 means this changed-files-only recovery, run before editing:
 
 ```bash
-# Establish the complete, reviewable scope.
-gh pr diff --name-only
+# Use the same selected PR URL passed to --pr, even from another checkout.
+PR_URL='https://github.com/OWNER/REPO/pull/123'
+
+# Establish the complete, reviewable scope for that PR.
+gh pr diff "$PR_URL" --name-only
 
 # For each singleton, choose one stable identifier or code fragment from its
 # body/anchor, then pass only paths printed by the command above.
-rg -n --fixed-strings '<stable identifier or code fragment>' -- \
+rg -n --fixed-strings -e '<stable identifier or code fragment>' -- \
   path/from/changed-list another/path/from/changed-list
 ```
 

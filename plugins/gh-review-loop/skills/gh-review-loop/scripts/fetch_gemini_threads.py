@@ -175,6 +175,9 @@ query($owner:String!, $repo:String!, $number:Int!) {
       number
       url
       title
+      headRefOid
+      baseRepository { nameWithOwner }
+      headRepository { nameWithOwner }
       comments(last:100) {
         nodes {
           id
@@ -1639,16 +1642,12 @@ def build_convergence(
     }
 
 
-def repo_root(cwd: str | None = None) -> Path | None:
-    """Return the working tree root, or None when it cannot be resolved.
-
-    Clustering reads the source lines findings anchor to, and thread paths are
-    repo-relative. Fails OPEN: any git error yields None, and the caller falls
-    back to prose-only clustering rather than reading the wrong files.
-    """
+def _run_git(
+    args: list[str], *, cwd: str | Path | None = None
+) -> subprocess.CompletedProcess[str] | None:
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+        return subprocess.run(
+            ["git", *args],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -1658,10 +1657,71 @@ def repo_root(cwd: str | None = None) -> Path | None:
         )
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
-    if result.returncode != 0:
+
+
+def _git_stdout(args: list[str], *, cwd: str | Path | None = None) -> str | None:
+    result = _run_git(args, cwd=cwd)
+    if result is None or result.returncode != 0:
         return None
-    top = (result.stdout or "").strip()
+    value = (result.stdout or "").strip()
+    return value or None
+
+
+def repo_root(cwd: str | None = None) -> Path | None:
+    """Return the working tree root, or None when it cannot be resolved.
+
+    Clustering reads the source lines findings anchor to, and thread paths are
+    repo-relative. Fails OPEN: any git error yields None, and the caller falls
+    back to prose-only clustering rather than reading the wrong files.
+    """
+    top = _git_stdout(["rev-parse", "--show-toplevel"], cwd=cwd)
     return Path(top) if top else None
+
+
+def _canonical_pr_repositories(pull_request: dict[str, Any]) -> set[str]:
+    repositories = set()
+    for key in ("baseRepository", "headRepository"):
+        repository = pull_request.get(key)
+        name = repository.get("nameWithOwner") if isinstance(repository, dict) else None
+        if isinstance(name, str) and name:
+            repositories.add(name.casefold())
+    return repositories
+
+
+def _checkout_repository(root: Path) -> str | None:
+    remote = _git_stdout(["remote", "get-url", "origin"], cwd=root)
+    if remote is None:
+        return None
+    match = re.search(r"github\.com(?::|/)([^/]+)/([^/#]+?)(?:\.git)?/?$", remote)
+    if match is None:
+        return None
+    return f"{match.group(1)}/{match.group(2)}".casefold()
+
+
+def _worktree_is_clean(root: Path) -> bool:
+    result = _run_git(["status", "--porcelain", "--untracked-files=all"], cwd=root)
+    return (
+        result is not None
+        and result.returncode == 0
+        and not (result.stdout or "").strip()
+    )
+
+
+def repo_root_for_pr(
+    pull_request: dict[str, Any], *, cwd: str | None = None
+) -> Path | None:
+    """Return the root only when this checkout is the selected PR head."""
+    expected_head = pull_request.get("headRefOid")
+    if not isinstance(expected_head, str) or not expected_head:
+        return None
+    root = repo_root(cwd)
+    if root is None or _git_stdout(["rev-parse", "HEAD"], cwd=root) != expected_head:
+        return None
+    if not _worktree_is_clean(root):
+        return None
+    checkout_repo = _checkout_repository(root)
+    selected_repositories = _canonical_pr_repositories(pull_request)
+    return root if checkout_repo in selected_repositories else None
 
 
 def changed_files_in_range(
@@ -3488,7 +3548,7 @@ def main() -> int:
             # back to prose-only clustering when the root cannot be resolved.
             clusters = cluster_findings.cluster(
                 [t for t in threads if isinstance(t, dict)],
-                root=repo_root(),
+                root=repo_root_for_pr(pull_request),
             )
             # Cross-run history: --record-run clears the live accumulator, so a
             # resumed loop folds in pattern signatures recorded by prior runs of
@@ -3624,7 +3684,7 @@ def main() -> int:
     # pre-fix ordering guard, so JSON automation must receive it too.
     fetch_clusters = cluster_findings.cluster(
         [thread for thread in threads if isinstance(thread, dict)],
-        root=repo_root(),
+        root=repo_root_for_pr(pull_request),
     )
     clustering_advisory = metrics.format_degenerate_clustering_advisory(fetch_clusters)
 

@@ -3267,6 +3267,100 @@ class TestRepoRoot:
             assert fgt.repo_root() is None
 
 
+class TestRepoRootForPr:
+    PR = PullRequest(owner="acme", repo="widget", number=7)
+    ROOT = Path("/srv/acme/widget")
+
+    def _runner(
+        self,
+        head="abc123",
+        remote="git@github.com:acme/widget.git",
+        worktree_status="",
+    ):
+        def run(cmd, **kwargs):
+            if cmd == ["git", "rev-parse", "HEAD"]:
+                return subprocess.CompletedProcess(cmd, 0, f"{head}\n", "")
+            if cmd == ["git", "remote", "get-url", "origin"]:
+                return subprocess.CompletedProcess(cmd, 0, f"{remote}\n", "")
+            if cmd == ["git", "status", "--porcelain", "--untracked-files=all"]:
+                return subprocess.CompletedProcess(cmd, 0, worktree_status, "")
+            raise AssertionError(cmd)
+        return run
+
+    @staticmethod
+    def _pr_data(head_repo="acme/widget", base_repo="acme/widget"):
+        return {
+            "headRefOid": "abc123",
+            "headRepository": {"nameWithOwner": head_repo},
+            "baseRepository": {"nameWithOwner": base_repo},
+        }
+
+    def test_returns_root_only_when_repo_and_head_match(self, monkeypatch):
+        monkeypatch.setattr(fgt, "repo_root", lambda cwd=None: self.ROOT)
+        monkeypatch.setattr(subprocess, "run", self._runner())
+
+        assert fgt.repo_root_for_pr(self._pr_data()) == self.ROOT
+
+    def test_rejects_checkout_at_another_revision(self, monkeypatch):
+        monkeypatch.setattr(fgt, "repo_root", lambda cwd=None: self.ROOT)
+        monkeypatch.setattr(subprocess, "run", self._runner(head="stale456"))
+
+        assert fgt.repo_root_for_pr(self._pr_data()) is None
+
+    def test_rejects_checkout_of_another_repository(self, monkeypatch):
+        monkeypatch.setattr(fgt, "repo_root", lambda cwd=None: self.ROOT)
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            self._runner(remote="https://github.com/acme/another-repo.git"),
+        )
+
+        assert fgt.repo_root_for_pr(self._pr_data()) is None
+
+    def test_rejects_dirty_tracked_worktree(self, monkeypatch):
+        monkeypatch.setattr(fgt, "repo_root", lambda cwd=None: self.ROOT)
+        monkeypatch.setattr(subprocess, "run", self._runner(worktree_status=" M src/file.py\n"))
+
+        assert fgt.repo_root_for_pr(self._pr_data()) is None
+
+    def test_rejects_untracked_worktree_content(self, monkeypatch):
+        monkeypatch.setattr(fgt, "repo_root", lambda cwd=None: self.ROOT)
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            self._runner(worktree_status="?? src/replacement.py\n"),
+        )
+
+        assert fgt.repo_root_for_pr(self._pr_data()) is None
+
+    def test_accepts_canonical_repository_after_redirect(self, monkeypatch):
+        monkeypatch.setattr(fgt, "repo_root", lambda cwd=None: self.ROOT)
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            self._runner(remote="https://github.com/acme/new-widget.git"),
+        )
+
+        data = self._pr_data(head_repo="acme/new-widget", base_repo="acme/new-widget")
+        assert fgt.repo_root_for_pr(data) == self.ROOT
+
+    def test_accepts_fork_head_repository(self, monkeypatch):
+        monkeypatch.setattr(fgt, "repo_root", lambda cwd=None: self.ROOT)
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            self._runner(remote="git@github.com:contributor/widget.git"),
+        )
+
+        data = self._pr_data(head_repo="contributor/widget")
+        assert fgt.repo_root_for_pr(data) == self.ROOT
+
+    def test_missing_pr_head_falls_back_to_prose_only(self, monkeypatch):
+        monkeypatch.setattr(fgt, "repo_root", lambda cwd=None: self.ROOT)
+
+        assert fgt.repo_root_for_pr({}) is None
+
+
 class TestSweptPatternLifecycle:
     """The receipt's "Swept N patterns" must describe THIS run, not history.
 

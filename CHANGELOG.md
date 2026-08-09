@@ -9,7 +9,9 @@ All notable changes to this project will be documented in this file. The format 
 - Degenerate review clustering now emits an explicit advisory when three or
   more findings all become singleton patterns, making prose-hash fallback
   failures visible before fixes begin in both Markdown and structured JSON
-  output. The skill documents the safe manual recovery for singleton clusters.
+  output and in automatic snapshots. Shape clustering now reads source only
+  when the current checkout matches the selected PR repository and head. The
+  skill documents a safe manual recovery scoped to the explicitly selected PR.
   Closes #73.
 
 ### Changed
