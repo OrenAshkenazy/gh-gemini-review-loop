@@ -705,6 +705,152 @@ class TestMirrorNormalizationGuards:
         assert sweeper._is_lossy_text(path) is True
         assert sweeper._read_lines(path) == ['value = "caf�".read_text().encode()']
 
+    def test_a_heredoc_terminator_with_trailing_blanks_is_still_payload(self, tmp_path):
+        """Bash ends a heredoc only on a line that is exactly the delimiter, so
+        ``EOF   `` must not expose the lines after it to comment stripping."""
+        block = (
+            "cat <<EOF\n"
+            "alpha_data\n"
+            "EOF   \n"
+            "# PAYLOAD\n"
+            "EOF\n"
+        )
+        (tmp_path / "fake_end.sh").write_text(
+            block.replace("PAYLOAD", "FIRST_DATA")
+            + block.replace("PAYLOAD", "SECOND_DATA")
+        )
+
+        result = self._sweep(tmp_path, ["fake_end.sh:1-5"], ["fake_end.sh"])
+
+        assert result.candidates == []
+
+    def test_heredoc_payload_trailing_whitespace_is_significant(self, tmp_path):
+        (tmp_path / "trailing.sh").write_text(
+            "cat <<EOF\n"
+            "alpha_one \n"
+            "EOF\n"
+            "cat <<EOF\n"
+            "alpha_one  \n"
+            "EOF\n"
+        )
+
+        result = self._sweep(tmp_path, ["trailing.sh:1-3"], ["trailing.sh"])
+
+        assert result.candidates == []
+
+    def test_removing_a_block_comment_does_not_weld_two_tokens(self, tmp_path):
+        """``account/**/display_name`` is two tokens; ``accountdisplay_name``
+        is one. Dropping the comment without a separator conflates them."""
+        (tmp_path / "report.sql").write_text(
+            "SELECT account/**/display_name FROM records\n"
+            "WHERE archived_at IS NULL\n"
+            "SELECT accountdisplay_name FROM records\n"
+            "WHERE archived_at IS NULL\n"
+        )
+
+        result = self._sweep(tmp_path, ["report.sql:1-2"], ["report.sql"])
+
+        assert result.candidates == []
+
+    def test_a_block_comment_between_lines_still_mirrors(self, tmp_path):
+        """The separator must not stop genuinely identical SQL from matching."""
+        (tmp_path / "same.sql").write_text(
+            "SELECT account/**/display_name FROM records\n"
+            "WHERE archived_at IS NULL\n"
+            "SELECT account /* note */ display_name FROM records\n"
+            "WHERE archived_at IS NULL\n"
+        )
+
+        result = self._sweep(tmp_path, ["same.sql:1-2"], ["same.sql"])
+
+        assert [c["site"] for c in result.candidates] == ["same.sql:3-4"]
+
+    def test_a_hash_inside_a_yaml_block_scalar_is_scalar_data(self, tmp_path):
+        (tmp_path / "messages.yaml").write_text(
+            "first:\n"
+            "  message: |\n"
+            "    # alpha_payload\n"
+            "    body_line\n"
+            "second:\n"
+            "  message: |\n"
+            "    # beta_payload\n"
+            "    body_line\n"
+        )
+
+        result = self._sweep(tmp_path, ["messages.yaml:2-4"], ["messages.yaml"])
+
+        assert result.candidates == []
+
+    def test_a_real_yaml_comment_is_still_stripped(self, tmp_path):
+        """The scalar guard is scoped to block-scalar bodies, not all of YAML."""
+        (tmp_path / "commented.yaml").write_text(
+            "first:\n"
+            "  # alpha note\n"
+            "  image: alpine_base\n"
+            "  command: serve_http\n"
+            "second:\n"
+            "  # beta note\n"
+            "  image: alpine_base\n"
+            "  command: serve_http\n"
+        )
+
+        result = self._sweep(tmp_path, ["commented.yaml:2-4"], ["commented.yaml"])
+
+        assert [c["site"] for c in result.candidates] == ["commented.yaml:7-8"]
+
+    def test_markdown_urls_are_not_truncated_as_slash_comments(self, tmp_path):
+        """``//`` in ``https://`` is not a comment marker in prose."""
+        (tmp_path / "docs.md").write_text(
+            "Docs at https://alpha.example/path\n"
+            "Shared trailing sentence here\n"
+            "Docs at https://beta.example/path\n"
+            "Shared trailing sentence here\n"
+        )
+
+        result = self._sweep(tmp_path, ["docs.md:1-2"], ["docs.md"])
+
+        assert result.candidates == []
+
+    def test_slash_comments_still_apply_to_c_family_files(self, tmp_path):
+        (tmp_path / "handler.ts").write_text(
+            "const handler = buildHandler(); // alpha note\n"
+            "registerHandler(handler);\n"
+            "const handler = buildHandler(); // beta note\n"
+            "registerHandler(handler);\n"
+        )
+
+        result = self._sweep(tmp_path, ["handler.ts:1-2"], ["handler.ts"])
+
+        assert [c["site"] for c in result.candidates] == ["handler.ts:3-4"]
+
+    def test_lines_inside_a_literal_do_not_mirror_executable_code(self, tmp_path):
+        """Same text, different lexical state: fixing the call site cannot
+        imply editing the template that merely spells it out."""
+        (tmp_path / "runner.js").write_text(
+            "const template = `\n"
+            "alpha_task()\n"
+            "beta_task()\n"
+            "`;\n"
+            "alpha_task()\n"
+            "beta_task()\n"
+        )
+
+        result = self._sweep(tmp_path, ["runner.js:2-3"], ["runner.js"])
+
+        assert result.candidates == []
+
+    def test_executable_code_still_mirrors_executable_code(self, tmp_path):
+        (tmp_path / "calls.js").write_text(
+            "alpha_task();\n"
+            "beta_task();\n"
+            "alpha_task();\n"
+            "beta_task();\n"
+        )
+
+        result = self._sweep(tmp_path, ["calls.js:1-2"], ["calls.js"])
+
+        assert [c["site"] for c in result.candidates] == ["calls.js:3-4"]
+
 
 class TestReport:
     def test_report_names_the_sites_and_the_shared_shape(self, repo):

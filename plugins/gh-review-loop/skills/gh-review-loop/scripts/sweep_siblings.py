@@ -94,6 +94,23 @@ _HASH_COMMENT_SUFFIXES = frozenset({
 _DASH_COMMENT_SUFFIXES = frozenset({".sql"})
 _HASH_COMMENT_NO_SPACE_SUFFIXES = frozenset({".py", ".rb", ".toml"})
 
+# ``//`` and ``/* */`` are allowlisted, never assumed. Treating every unknown
+# suffix as C-family truncates a bare URL in prose at the ``//`` of ``https://``,
+# which makes two documents that differ only in their links compare equal.
+_SLASH_LINE_COMMENT_SUFFIXES = frozenset({
+    ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh",
+    ".cs", ".java", ".kt", ".kts", ".scala", ".swift",
+    ".go", ".rs", ".dart", ".php", ".m", ".mm", ".zig",
+    ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts",
+    ".json5", ".jsonc", ".proto", ".gradle", ".groovy",
+    ".scss", ".less",
+})
+# CSS and SQL have ``/* */`` but no ``//``: in both, ``url(https://x)`` and
+# ``'https://x'`` are values, not comments.
+_BLOCK_COMMENT_SUFFIXES = _SLASH_LINE_COMMENT_SUFFIXES | {".css", ".sql"}
+
+_YAML_SUFFIXES = frozenset({".yaml", ".yml"})
+
 # Shells where ``<<WORD`` opens a heredoc. Inside the payload a leading ``#`` is
 # data and the spacing is significant, so those lines bypass normalization
 # entirely. (fish has no heredocs, so it is deliberately absent.)
@@ -117,6 +134,12 @@ _INDENTATION_SENSITIVE_SUFFIXES = frozenset({
 # requiring an identifier keeps arithmetic shifts such as ``x << 2`` out.
 _HEREDOC_OPEN_RE = re.compile(
     r"<<(?!<)(-?)\s*(?:(['\"])(?P<quoted>[^'\"]*)\2|\\?(?P<bare>[A-Za-z_][A-Za-z_0-9]*))"
+)
+
+# A YAML block scalar header: ``key: |``, ``- >-``, ``key: |2+``, optionally
+# followed by a comment. Its body is data, so a ``#`` line in it is content.
+_YAML_BLOCK_SCALAR_RE = re.compile(
+    r"(?:^|[:\-])[ \t]*[|>](?:[0-9][+-]?|[+-][0-9]?)?[ \t]*(?:#.*)?$"
 )
 
 # Tokens too common to carry signal. Keeping them would let a candidate match on
@@ -217,7 +240,11 @@ def _heredoc_body_flags(lines: list[str]) -> list[bool]:
             flags[index] = True
             delimiter, strip_tabs = active
             candidate = line.lstrip("\t") if strip_tabs else line
-            if candidate.rstrip() == delimiter:
+            # Bash ends a heredoc only on a line containing the delimiter and
+            # nothing else -- ``EOF   `` is payload, not a terminator. Matching
+            # it loosely would end the heredoc early and expose the rest of the
+            # payload to comment stripping.
+            if candidate == delimiter:
                 active = pending.pop(0) if pending else None
             continue
         for match in _HEREDOC_OPEN_RE.finditer(line):
@@ -231,6 +258,46 @@ def _heredoc_body_flags(lines: list[str]) -> list[bool]:
     return flags
 
 
+def _yaml_block_scalar_flags(lines: list[str]) -> list[bool]:
+    """Mark the lines that are YAML block-scalar body rather than YAML syntax.
+
+    Under ``message: |`` an indented ``# ...`` line is scalar content, not a
+    comment. The body runs until the first non-blank line indented no further
+    than the header, which is the same rule the YAML spec uses.
+    """
+    flags = [False] * len(lines)
+    header_indent: int | None = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if header_indent is not None:
+            if not stripped:
+                flags[index] = True
+                continue
+            if len(line) - len(line.lstrip(" \t")) > header_indent:
+                flags[index] = True
+                continue
+            header_indent = None
+        if not stripped or stripped.startswith("#"):
+            continue
+        if _YAML_BLOCK_SCALAR_RE.search(line):
+            header_indent = len(line) - len(line.lstrip(" \t"))
+    return flags
+
+
+def _verbatim_flags(
+    lines: list[str], *, heredocs: bool = False, yaml_scalars: bool = False
+) -> list[bool] | None:
+    """Lines that carry data rather than code, from every enabled source."""
+    sources = []
+    if heredocs:
+        sources.append(_heredoc_body_flags(lines))
+    if yaml_scalars:
+        sources.append(_yaml_block_scalar_flags(lines))
+    if not sources:
+        return None
+    return [any(flags[index] for flags in sources) for index in range(len(lines))]
+
+
 def _strip_comments(
     lines: Iterable[str],
     *,
@@ -238,20 +305,30 @@ def _strip_comments(
     hash_comments_no_space: bool = True,
     slash_comments: bool = True,
     dash_comments: bool = False,
+    block_comments: bool = True,
     verbatim_flags: list[bool] | None = None,
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     """Strip common line/block comments while preserving quoted markers.
 
-    Lines marked in ``verbatim_flags`` (heredoc payload) pass through untouched.
+    Returns ``(stripped, states)``. ``states[i]`` is the lexical state the line
+    *began* in -- ``""`` for code, ``"block"`` inside a block comment,
+    ``"str:<delim>"`` inside an unterminated literal, ``"verbatim"`` for data.
+    Two lines with identical text but different states are not the same code,
+    so mirror matching compares the pair rather than the text alone.
+
+    Lines marked in ``verbatim_flags`` pass through untouched.
     """
     stripped: list[str] = []
+    states: list[str] = []
     in_block = False
     quote: str | None = None
     escaped = False
     for line_number, line in enumerate(lines):
         if _is_verbatim(verbatim_flags, line_number):
             stripped.append(line)
+            states.append("verbatim")
             continue
+        states.append("block" if in_block else (f"str:{quote}" if quote else ""))
         output: list[str] = []
         index = 0
         while index < len(line):
@@ -259,6 +336,10 @@ def _strip_comments(
             if in_block:
                 if pair == "*/":
                     in_block = False
+                    # A removed block comment separated two tokens. Without a
+                    # replacement, ``account/**/name`` becomes ``accountname``
+                    # and collides with an unrelated single identifier.
+                    output.append(" ")
                     index += 2
                 else:
                     index += 1
@@ -294,7 +375,7 @@ def _strip_comments(
                 output.append(delimiter)
                 index += len(delimiter)
                 continue
-            if pair == "/*":
+            if block_comments and pair == "/*":
                 in_block = True
                 index += 2
                 continue
@@ -315,7 +396,7 @@ def _strip_comments(
             output.append(character)
             index += 1
         stripped.append("".join(output))
-    return stripped
+    return stripped, states
 
 
 def _collapse_whitespace(
@@ -326,7 +407,9 @@ def _collapse_whitespace(
 ) -> list[str]:
     """Collapse formatting whitespace without changing quoted text.
 
-    Lines marked in ``verbatim_flags`` (heredoc payload) keep their spacing.
+    Lines marked in ``verbatim_flags`` are data and pass through byte for byte
+    -- including trailing spaces, which a heredoc emits verbatim, so two
+    payloads differing only there must not compare equal.
     """
     normalized_lines: list[str] = []
     quote: str | None = None
@@ -334,7 +417,7 @@ def _collapse_whitespace(
 
     for line_number, line in enumerate(lines):
         if _is_verbatim(verbatim_flags, line_number):
-            normalized_lines.append(line.rstrip())
+            normalized_lines.append(line)
             continue
 
         leading = ""
@@ -403,28 +486,36 @@ def normalize_block(
     hash_comments_no_space: bool = True,
     slash_comments: bool = True,
     dash_comments: bool = False,
+    block_comments: bool = True,
     preserve_indentation: bool = False,
     heredocs: bool = False,
+    yaml_scalars: bool = False,
 ) -> tuple[str, ...]:
     """Normalize a code block for exact mirror comparison."""
     lines = list(lines)
-    verbatim_flags = _heredoc_body_flags(lines) if heredocs else None
-    stripped = _strip_comments(
+    verbatim_flags = _verbatim_flags(
+        lines, heredocs=heredocs, yaml_scalars=yaml_scalars
+    )
+    stripped, states = _strip_comments(
         lines,
         hash_comments=hash_comments,
         hash_comments_no_space=hash_comments_no_space,
         slash_comments=slash_comments,
         dash_comments=dash_comments,
+        block_comments=block_comments,
         verbatim_flags=verbatim_flags,
     )
+    collapsed = _collapse_whitespace(
+        stripped,
+        preserve_indentation=preserve_indentation,
+        verbatim_flags=verbatim_flags,
+    )
+    # A blank line is formatting and drops out, but a blank line inside a
+    # heredoc or block scalar is part of the payload and must survive.
     return tuple(
         line
-        for line in _collapse_whitespace(
-            stripped,
-            preserve_indentation=preserve_indentation,
-            verbatim_flags=verbatim_flags,
-        )
-        if line
+        for line, state in zip(collapsed, states)
+        if line or state == "verbatim"
     )
 
 
@@ -433,15 +524,19 @@ def _block_fingerprint(block: tuple[str, ...]) -> str:
 
 
 def _comment_options(path: str) -> dict[str, bool]:
+    """Per-suffix normalization switches. Every comment style is allowlisted:
+    an unrecognized format gets none of them, which costs mirrors on languages
+    we have not enumerated but never invents one."""
     suffix = Path(path).suffix.lower()
-    hash_comments = suffix in _HASH_COMMENT_SUFFIXES
     return {
-        "hash_comments": hash_comments,
+        "hash_comments": suffix in _HASH_COMMENT_SUFFIXES,
         "hash_comments_no_space": suffix in _HASH_COMMENT_NO_SPACE_SUFFIXES,
-        "slash_comments": not hash_comments and suffix not in _DASH_COMMENT_SUFFIXES,
+        "slash_comments": suffix in _SLASH_LINE_COMMENT_SUFFIXES,
         "dash_comments": suffix in _DASH_COMMENT_SUFFIXES,
+        "block_comments": suffix in _BLOCK_COMMENT_SUFFIXES,
         "preserve_indentation": suffix in _INDENTATION_SENSITIVE_SUFFIXES,
         "heredocs": suffix in _HEREDOC_SUFFIXES,
+        "yaml_scalars": suffix in _YAML_SUFFIXES,
     }
 
 
@@ -449,28 +544,32 @@ def _normalized_code_lines(
     lines: list[str],
     *,
     path: str,
-) -> list[tuple[int, str]]:
+) -> list[tuple[int, str, str]]:
+    """``(line number, normalized text, lexical state)`` for each kept line."""
     options = _comment_options(path)
-    verbatim_flags = _heredoc_body_flags(lines) if options["heredocs"] else None
-    stripped = _strip_comments(
+    verbatim_flags = _verbatim_flags(
+        lines,
+        heredocs=options["heredocs"],
+        yaml_scalars=options["yaml_scalars"],
+    )
+    stripped, states = _strip_comments(
         lines,
         hash_comments=options["hash_comments"],
         hash_comments_no_space=options["hash_comments_no_space"],
         slash_comments=options["slash_comments"],
         dash_comments=options["dash_comments"],
+        block_comments=options["block_comments"],
+        verbatim_flags=verbatim_flags,
+    )
+    collapsed = _collapse_whitespace(
+        stripped,
+        preserve_indentation=options["preserve_indentation"],
         verbatim_flags=verbatim_flags,
     )
     return [
-        (number, normalized)
-        for number, normalized in enumerate(
-            _collapse_whitespace(
-                stripped,
-                preserve_indentation=options["preserve_indentation"],
-                verbatim_flags=verbatim_flags,
-            ),
-            start=1,
-        )
-        if normalized
+        (number, normalized, state)
+        for number, (normalized, state) in enumerate(zip(collapsed, states), start=1)
+        if normalized or state == "verbatim"
     ]
 
 
@@ -483,7 +582,7 @@ def _mirror_candidates(
     """Find exact normalized copies of flagged multi-line ranges."""
     changed = set(changed_files)
     is_lossy = lossy_of if lossy_of is not None else (lambda _rel: False)
-    seeds: list[tuple[tuple[str, ...], str]] = []
+    seeds: list[tuple[tuple[tuple[str, str], ...], str]] = []
     for site in sites:
         if (
             site.path not in changed
@@ -499,17 +598,19 @@ def _mirror_candidates(
             continue
         normalized_source = _normalized_code_lines(lines, path=site.path)
         block = tuple(
-            text
-            for number, text in normalized_source
+            (text, state)
+            for number, text, state in normalized_source
             if site.start_line <= number <= site.line
         )
         if len(block) < 2 or len(block) > MAX_MIRROR_BLOCK_LINES:
             continue
-        block_tokens = set().union(*(tokenize(line) for line in block), set())
+        block_tokens = set().union(*(tokenize(text) for text, _ in block), set())
         significant_count = sum(is_significant_token(token) for token in block_tokens)
         if significant_count < MIN_MIRROR_SIGNIFICANT_TOKENS:
             continue
-        seeds.append((block, _block_fingerprint(block)))
+        seeds.append((block, _block_fingerprint(tuple(
+            f"{state}\x00{text}" for text, state in block
+        ))))
 
     flagged_ranges = {
         (site.path, site.start_line or site.line, site.line)
@@ -517,11 +618,12 @@ def _mirror_candidates(
         if site.line is not None
     }
     candidates: dict[tuple[str, int, int], dict[str, Any]] = {}
-    normalized_files: dict[str, list[tuple[int, str]]] = {}
-    # normalized first line -> ascending offsets. A window can only match if its
-    # first line does, so this replaces the per-offset hash of the whole block
-    # with one dict lookup, and the element-wise compare below short-circuits.
-    head_offsets: dict[str, dict[str, list[int]]] = {}
+    normalized_files: dict[str, list[tuple[int, str, str]]] = {}
+    # normalized (text, lexical state) of the first line -> ascending offsets. A
+    # window can only match if its first line does, so this replaces the
+    # per-offset hash of the whole block with one dict lookup, and the
+    # element-wise compare below short-circuits on the first difference.
+    head_offsets: dict[str, dict[tuple[str, str], list[int]]] = {}
     for block, fingerprint in seeds:
         width = len(block)
         head = block[0]
@@ -531,9 +633,9 @@ def _mirror_candidates(
             if rel not in normalized_files:
                 entries = _normalized_code_lines(lines_of(rel), path=rel)
                 normalized_files[rel] = entries
-                offsets: dict[str, list[int]] = {}
-                for offset, (_number, text) in enumerate(entries):
-                    offsets.setdefault(text, []).append(offset)
+                offsets: dict[tuple[str, str], list[int]] = {}
+                for offset, (_number, text, state) in enumerate(entries):
+                    offsets.setdefault((text, state), []).append(offset)
                 head_offsets[rel] = offsets
             entries = normalized_files[rel]
             last_offset = len(entries) - width
@@ -541,7 +643,7 @@ def _mirror_candidates(
                 if offset > last_offset:
                     break
                 if any(
-                    entries[offset + index][1] != block[index]
+                    entries[offset + index][1:] != block[index]
                     for index in range(1, width)
                 ):
                     continue
@@ -560,7 +662,7 @@ def _mirror_candidates(
                     "line": start,
                     "endLine": end,
                     "site": f"{rel}:{start}-{end}",
-                    "text": " ".join(text for _, text in window)[:200],
+                    "text": " ".join(text for _, text, _state in window)[:200],
                     "fingerprint": fingerprint,
                 }
     return list(candidates.values())
