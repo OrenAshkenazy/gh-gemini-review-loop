@@ -158,11 +158,20 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
      **Python alone**. Comments are removed with Python's own `tokenize`
      module, so two blocks differing only in their comments still match.
      Whitespace is *not* collapsed, because indentation is semantic in Python.
-     Tool directives (`# type:`, `# noqa`, `# nosec`, `# pragma:`, `# pylint:`,
-     …) are *kept*: they change what mypy, flake8, bandit and coverage do, so
-     blocks differing only in a directive are not duplicates. `tokenize` cannot
-     identify these — Python has no notion of a directive — so that is a short
-     explicit prefix list, erring toward preserving.
+     Tool directives are *kept*: they change what mypy, flake8, bandit, Cython
+     or coverage do, so blocks differing only in a directive are not duplicates.
+     `tokenize` cannot identify these — Python has no notion of a directive —
+     so they are matched by **shape, not by a list of tools**: a lowercase
+     leading word followed by `:` or `=` (`# cython: boundscheck=False`,
+     `# type: ignore[arg-type]`), plus a few bare ones like `# noqa`.
+
+     Matching the shape is what makes this converge — it covers `doctest:`,
+     `numba:`, `distutils:` and any tool nobody has named yet, instead of
+     needing a new entry per ecosystem. Case is what separates a directive
+     from prose: tools write lowercase, English capitalizes, so `# Note: …`
+     stays an ordinary comment. The accepted cost is lowercase prose shaped
+     like a directive (`# invariant: …`, a bare URL) being treated as
+     meaningful — which loses a duplicate rather than inventing one.
 
    The modes never mix, and a block is only ever compared against files of its
    own language family (`.ts` against `.js`, `.yml` against `.yaml`; never

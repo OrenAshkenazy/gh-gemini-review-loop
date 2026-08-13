@@ -133,17 +133,25 @@ del _name, _type
 # them makes two unrelated blocks look identical.
 #
 # This cannot come from the tokenizer: `tokenize` reports that a token is a
-# COMMENT, and Python itself has no notion of a directive -- these are
-# conventions of mypy, flake8, bandit and the formatters. So it is a closed list
-# of ecosystem prefixes, matched on the comment's leading word. It errs toward
-# preserving: a comment kept by mistake costs one mirror, while a directive
-# dropped by mistake invents one.
-_PY_DIRECTIVE_PREFIXES = (
-    "type:", "noqa", "nosec", "nocover",
-    "pragma:", "coverage:",
-    "pylint:", "mypy:", "ruff:", "flake8:", "pyright:", "pytype:",
-    "fmt:", "isort:", "yapf:", "black:", "codespell",
-)
+# COMMENT, and Python itself has no notion of a directive -- they are
+# conventions of mypy, flake8, bandit, Cython and the formatters.
+#
+# It is matched by *shape* rather than by a list of tools, because the list has
+# no end: type, noqa, pragma, coding, cython, distutils, doctest, numba, and
+# whatever ships next year. A directive is written `tool: setting` or
+# `tool=value`, so a lowercase leading word followed by `:` or `=` is the rule.
+#
+# Lowercase is what separates a directive from prose. Directives are lowercase
+# by convention and, for Cython and PEP 263, by requirement; English comments
+# capitalize, so `# Defensive: ...` stays an ordinary comment. The rule still
+# errs toward preserving -- a comment kept by mistake costs one mirror, while a
+# directive dropped by mistake invents one -- and the known cost is prose that
+# leads with a lowercase `word:`, including bare URLs.
+_PY_DIRECTIVE_RE = re.compile(r"^[a-z][a-z0-9_.\-]*\s*[:=]")
+
+# The few directives with no `:` or `=` to key on. Short and closed, unlike a
+# list of tools would be.
+_PY_BARE_DIRECTIVES = ("noqa", "nosec", "nocover", "nolint", "nosonar")
 
 # A PEP 263 source-encoding cookie decides how the interpreter reads the rest
 # of the bytes, so the same bytes under `coding: utf-8` and `coding: latin-1`
@@ -265,15 +273,18 @@ def _raw_block_lines(lines: list[str]) -> list[tuple[int, str, str]]:
 def _is_python_directive(comment: str) -> bool:
     """Whether a Python comment is read by a tool rather than by a human.
 
-    Such a comment is content: dropping it changes what mypy, flake8, bandit or
-    coverage do, so two blocks whose only difference is a directive are not
-    duplicates. See ``_PY_DIRECTIVE_PREFIXES`` for why this is a list and not
-    something the tokenizer can answer.
+    Such a comment is content: dropping it changes what mypy, flake8, bandit,
+    Cython or coverage do, so two blocks whose only difference is a directive
+    are not duplicates. See ``_PY_DIRECTIVE_RE`` for why this matches a shape
+    rather than a list of tools, and why the case matters.
 
     Encoding cookies are handled by ``_python_encoding`` instead, because they
     govern the whole file rather than the block they appear in.
     """
-    return comment.lstrip("#").strip().lower().startswith(_PY_DIRECTIVE_PREFIXES)
+    body = comment.lstrip("#").strip()
+    if _PY_DIRECTIVE_RE.match(body):
+        return True
+    return body.lower().startswith(_PY_BARE_DIRECTIVES)
 
 
 def _python_encoding(lines: list[str]) -> str:

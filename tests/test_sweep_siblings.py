@@ -904,6 +904,11 @@ class TestPythonNormalizedMatching:
         ("# noqa: F821", "# nosec"),
         ("# pragma: no cover", "# pragma: no branch"),
         ("# pylint: disable=no-member", "# pylint: disable=protected-access"),
+        # Families no vendor list ever named -- matched by shape, not by name.
+        ("# cython: boundscheck=False", "# cython: boundscheck=True"),
+        ("# distutils: language=c++", "# distutils: language=c"),
+        ("# doctest: +SKIP", "# doctest: +ELLIPSIS"),
+        ("# numba: nopython=True", "# numba: nopython=False"),
     ])
     def test_differing_tool_directives_are_not_duplicates(
         self, tmp_path, first, second
@@ -978,6 +983,43 @@ class TestPythonNormalizedMatching:
         result = self._sweep(tmp_path, ["prose.py:1-2"], ["prose.py"])
 
         assert [c["site"] for c in result.candidates] == ["prose.py:3-4"]
+
+    @pytest.mark.parametrize("first,second", [
+        ("# Defensive: guards a future plumbing path", "# Defensive: guards bad input"),
+        ("# Default: every reader returns None", "# Default: readers may raise"),
+        ("# TODO: revisit once cached", "# TODO: revisit after the refactor"),
+        ("# Note: this path is hot", "# Note: this path is cold"),
+    ])
+    def test_capitalized_prose_is_still_an_ordinary_comment(
+        self, tmp_path, first, second
+    ):
+        """Case is what separates a directive from prose: tools write
+        `# cython:` lowercase, English capitalizes. Without that, every
+        `# Note: ...` would be treated as meaningful."""
+        (tmp_path / "prose.py").write_text(
+            f"payload = read_source()  {first}\n"
+            "emit(payload)\n"
+            f"payload = read_source()  {second}\n"
+            "emit(payload)\n"
+        )
+
+        result = self._sweep(tmp_path, ["prose.py:1-2"], ["prose.py"])
+
+        assert [c["site"] for c in result.candidates] == ["prose.py:3-4"]
+
+    def test_lowercase_prose_with_a_colon_costs_a_mirror(self, tmp_path):
+        """The accepted cost of matching by shape. `# invariant: ...` is prose,
+        but it is shaped exactly like a directive, so it is kept and the two
+        blocks no longer match. Erring this way loses a duplicate rather than
+        inventing one."""
+        (tmp_path / "shape.py").write_text(
+            "payload = read_source()  # invariant: count == len(sites)\n"
+            "emit(payload)\n"
+            "payload = read_source()  # invariant: count == len(rows)\n"
+            "emit(payload)\n"
+        )
+
+        assert self._sweep(tmp_path, ["shape.py:1-2"], ["shape.py"]).candidates == []
 
     def test_a_parseable_file_is_never_compared_against_an_unparseable_one(
         self, tmp_path
