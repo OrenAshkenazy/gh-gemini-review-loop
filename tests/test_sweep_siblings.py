@@ -851,6 +851,99 @@ class TestMirrorNormalizationGuards:
 
         assert [c["site"] for c in result.candidates] == ["calls.js:3-4"]
 
+    @pytest.mark.parametrize("name", ["Makefile", "build.mk", "Makefile.common"])
+    def test_makefile_recipe_tabs_are_significant(self, tmp_path, name):
+        """A leading tab is what makes a line a recipe rather than a directive."""
+        (tmp_path / name).write_text(
+            "target_one:\n"
+            "\texport build_mode=enabled\n"
+            "\trun_step_two\n"
+            "export build_mode=enabled\n"
+            "run_step_two\n"
+        )
+
+        result = self._sweep(tmp_path, [f"{name}:2-3"], [name])
+
+        assert result.candidates == []
+
+    def test_a_non_identifier_heredoc_delimiter_is_recognized(self, tmp_path):
+        """Bash applies quote removal but no expansion, so ``<<$EOF`` ends on a
+        line reading ``$EOF``."""
+        block = (
+            "cat <<$EOF\n"
+            "# PAYLOAD\n"
+            "shared_body\n"
+            "$EOF\n"
+        )
+        (tmp_path / "dollar.sh").write_text(
+            block.replace("PAYLOAD", "alpha_data")
+            + block.replace("PAYLOAD", "beta_data")
+        )
+
+        result = self._sweep(tmp_path, ["dollar.sh:1-4"], ["dollar.sh"])
+
+        assert result.candidates == []
+
+    @pytest.mark.parametrize("opener,terminator", [
+        ("cat <<'EOF'", "EOF"),
+        ("cat <<\\EOF", "EOF"),
+        ("cat <<-EOF", "\tEOF"),
+    ])
+    def test_quoted_and_escaped_heredoc_delimiters_terminate(
+        self, tmp_path, opener, terminator
+    ):
+        """Quote removal means all these forms close on a plain ``EOF``."""
+        block = f"{opener}\n# PAYLOAD\nshared_body\n{terminator}\n"
+        (tmp_path / "forms.sh").write_text(
+            block.replace("PAYLOAD", "alpha_data")
+            + block.replace("PAYLOAD", "beta_data")
+        )
+
+        result = self._sweep(tmp_path, ["forms.sh:1-4"], ["forms.sh"])
+
+        assert result.candidates == []
+
+    def test_an_unclassifiable_heredoc_opener_declines_the_rest_of_the_file(
+        self, tmp_path
+    ):
+        """If we cannot find where the payload ends, nothing after it is code."""
+        flags = sweeper._heredoc_body_flags([
+            "cat <<;",
+            "# alpha_data",
+            "EOF",
+        ])
+
+        assert flags == [False, True, True]
+
+    def test_a_postgres_dollar_quoted_body_is_string_data(self, tmp_path):
+        """``--`` inside ``$body$ ... $body$`` is content, not a SQL comment."""
+        block = (
+            "SELECT $body$\n"
+            "-- PAYLOAD\n"
+            "shared_statement\n"
+            "$body$ FROM records\n"
+        )
+        (tmp_path / "fn.sql").write_text(
+            block.replace("PAYLOAD", "alpha_payload")
+            + block.replace("PAYLOAD", "beta_payload")
+        )
+
+        result = self._sweep(tmp_path, ["fn.sql:1-4"], ["fn.sql"])
+
+        assert result.candidates == []
+
+    def test_a_real_sql_comment_is_still_stripped(self, tmp_path):
+        (tmp_path / "plain.sql").write_text(
+            "SELECT account_id FROM records -- alpha note\n"
+            "WHERE archived_at IS NULL\n"
+            "SELECT account_id FROM records -- beta note\n"
+            "WHERE archived_at IS NULL\n"
+        )
+
+        result = self._sweep(tmp_path, ["plain.sql:1-2"], ["plain.sql"])
+
+        assert [c["site"] for c in result.candidates] == ["plain.sql:3-4"]
+
 
 class TestReport:
     def test_report_names_the_sites_and_the_shared_shape(self, repo):

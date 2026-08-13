@@ -111,6 +111,16 @@ _BLOCK_COMMENT_SUFFIXES = _SLASH_LINE_COMMENT_SUFFIXES | {".css", ".sql"}
 
 _YAML_SUFFIXES = frozenset({".yaml", ".yml"})
 
+# Make distinguishes a recipe line from a directive by a single leading tab, so
+# a Makefile is indentation-sensitive. It is usually named rather than suffixed,
+# which is why _comment_options looks at the file name too.
+_MAKEFILE_NAMES = frozenset({"makefile", "gnumakefile", "bsdmakefile"})
+_MAKEFILE_SUFFIXES = frozenset({".mk", ".make"})
+
+# PostgreSQL dollar quoting: ``$$ ... $$`` or ``$tag$ ... $tag$``. The body is
+# string data, so the SQL ``--`` handler must not reach inside it.
+_DOLLAR_QUOTE_RE = re.compile(r"\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$")
+
 # Shells where ``<<WORD`` opens a heredoc. Inside the payload a leading ``#`` is
 # data and the spacing is significant, so those lines bypass normalization
 # entirely. (fish has no heredocs, so it is deliberately absent.)
@@ -129,11 +139,17 @@ _INDENTATION_SENSITIVE_SUFFIXES = frozenset({
     ".md", ".markdown", ".rst",
 })
 
-# ``<<WORD``, ``<<-WORD``, ``<<'WORD'``, ``<<"WORD"``, ``<<\WORD``. The negative
-# lookahead keeps ``<<<`` (a here-string, which has no payload lines) out, and
-# requiring an identifier keeps arithmetic shifts such as ``x << 2`` out.
+# Any heredoc-looking redirect. The lookbehind and lookahead exclude ``<<<``
+# (a here-string, which has no payload lines) and ``<<=``.
+_HEREDOC_ANY_RE = re.compile(r"(?<!<)<<(?![<=])")
+
+# The same redirect with its delimiter word captured. Bash performs quote
+# removal but no expansion on the word, so the delimiter can be any shell word:
+# ``EOF``, ``'EOF'``, ``$EOF``, ``\EOF``. Anything _HEREDOC_ANY_RE matches but
+# this does not is an opener we cannot classify, and the caller declines.
 _HEREDOC_OPEN_RE = re.compile(
-    r"<<(?!<)(-?)\s*(?:(['\"])(?P<quoted>[^'\"]*)\2|\\?(?P<bare>[A-Za-z_][A-Za-z_0-9]*))"
+    r"(?<!<)<<(?![<=])(?P<indicator>[-~]?)[ \t]*"
+    r"(?P<word>(?:'[^']*'|\"[^\"]*\"|\\.|[^\s;&|<>()'\"`])+)"
 )
 
 # A YAML block scalar header: ``key: |``, ``- >-``, ``key: |2+``, optionally
@@ -218,6 +234,51 @@ def _is_verbatim(flags: list[bool] | None, line_number: int) -> bool:
     return flags is not None and line_number < len(flags) and flags[line_number]
 
 
+def _opening_delimiter(
+    line: str, index: int, *, dollar_quotes: bool = False
+) -> str | None:
+    """The string delimiter opening at ``index``, if one does.
+
+    Both scanners track quote state independently, so both consult this -- a
+    delimiter one of them fails to recognize would let the other treat string
+    data as code.
+    """
+    for candidate in ('"""', "'''", '"', "'", "`"):
+        if line.startswith(candidate, index):
+            return candidate
+    if dollar_quotes:
+        match = _DOLLAR_QUOTE_RE.match(line, index)
+        if match:
+            return match.group(0)
+    return None
+
+
+def _heredoc_delimiter(word: str) -> str:
+    """Quote removal on a heredoc delimiter word, the way the shell does it.
+
+    No expansion is performed, so ``<<$EOF`` terminates on a line reading
+    ``$EOF``; ``<<'EOF'`` and ``<<\\EOF`` both terminate on ``EOF``.
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(word):
+        character = word[index]
+        if character == "\\" and index + 1 < len(word):
+            out.append(word[index + 1])
+            index += 2
+        elif character in "'\"":
+            close = word.find(character, index + 1)
+            if close == -1:
+                out.append(word[index + 1:])
+                break
+            out.append(word[index + 1:close])
+            index = close + 1
+        else:
+            out.append(character)
+            index += 1
+    return "".join(out)
+
+
 def _heredoc_body_flags(lines: list[str]) -> list[bool]:
     """Mark the lines that are heredoc payload rather than shell code.
 
@@ -233,13 +294,18 @@ def _heredoc_body_flags(lines: list[str]) -> list[bool]:
     has to err in.
     """
     flags = [False] * len(lines)
-    pending: list[tuple[str, bool]] = []
-    active: tuple[str, bool] | None = None
+    pending: list[tuple[str, str]] = []
+    active: tuple[str, str] | None = None
     for index, line in enumerate(lines):
         if active is not None:
             flags[index] = True
-            delimiter, strip_tabs = active
-            candidate = line.lstrip("\t") if strip_tabs else line
+            delimiter, indicator = active
+            if indicator == "~":
+                candidate = line.strip()
+            elif indicator == "-":
+                candidate = line.lstrip("\t")
+            else:
+                candidate = line
             # Bash ends a heredoc only on a line containing the delimiter and
             # nothing else -- ``EOF   `` is payload, not a terminator. Matching
             # it loosely would end the heredoc early and expose the rest of the
@@ -247,11 +313,18 @@ def _heredoc_body_flags(lines: list[str]) -> list[bool]:
             if candidate == delimiter:
                 active = pending.pop(0) if pending else None
             continue
-        for match in _HEREDOC_OPEN_RE.finditer(line):
-            quoted = match.group("quoted")
+        openers = list(_HEREDOC_OPEN_RE.finditer(line))
+        if len(openers) < len(_HEREDOC_ANY_RE.findall(line)):
+            # A heredoc opens here but its delimiter word is not one we can
+            # classify, so we cannot know where the payload ends. Refuse the
+            # rest of the file rather than normalize data as code.
+            for rest in range(index + 1, len(lines)):
+                flags[rest] = True
+            return flags
+        for match in openers:
             pending.append((
-                quoted if quoted is not None else match.group("bare"),
-                bool(match.group(1)),
+                _heredoc_delimiter(match.group("word")),
+                match.group("indicator"),
             ))
         if pending:
             active = pending.pop(0)
@@ -306,6 +379,7 @@ def _strip_comments(
     slash_comments: bool = True,
     dash_comments: bool = False,
     block_comments: bool = True,
+    dollar_quotes: bool = False,
     verbatim_flags: list[bool] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Strip common line/block comments while preserving quoted markers.
@@ -362,14 +436,7 @@ def _strip_comments(
                     escaped = True
                 index += 1
                 continue
-            delimiter = next(
-                (
-                    candidate
-                    for candidate in ('"""', "'''", '"', "'", "`")
-                    if line.startswith(candidate, index)
-                ),
-                None,
-            )
+            delimiter = _opening_delimiter(line, index, dollar_quotes=dollar_quotes)
             if delimiter is not None:
                 quote = delimiter
                 output.append(delimiter)
@@ -403,6 +470,7 @@ def _collapse_whitespace(
     lines: Iterable[str],
     *,
     preserve_indentation: bool = False,
+    dollar_quotes: bool = False,
     verbatim_flags: list[bool] | None = None,
 ) -> list[str]:
     """Collapse formatting whitespace without changing quoted text.
@@ -449,14 +517,7 @@ def _collapse_whitespace(
                 index += 1
                 continue
 
-            delimiter = next(
-                (
-                    candidate
-                    for candidate in ('"""', "'''", '"', "'", "`")
-                    if line.startswith(candidate, index)
-                ),
-                None,
-            )
+            delimiter = _opening_delimiter(line, index, dollar_quotes=dollar_quotes)
             if delimiter is not None:
                 if whitespace and output:
                     output.append(" ")
@@ -487,6 +548,7 @@ def normalize_block(
     slash_comments: bool = True,
     dash_comments: bool = False,
     block_comments: bool = True,
+    dollar_quotes: bool = False,
     preserve_indentation: bool = False,
     heredocs: bool = False,
     yaml_scalars: bool = False,
@@ -503,11 +565,13 @@ def normalize_block(
         slash_comments=slash_comments,
         dash_comments=dash_comments,
         block_comments=block_comments,
+        dollar_quotes=dollar_quotes,
         verbatim_flags=verbatim_flags,
     )
     collapsed = _collapse_whitespace(
         stripped,
         preserve_indentation=preserve_indentation,
+        dollar_quotes=dollar_quotes,
         verbatim_flags=verbatim_flags,
     )
     # A blank line is formatting and drops out, but a blank line inside a
@@ -527,14 +591,23 @@ def _comment_options(path: str) -> dict[str, bool]:
     """Per-suffix normalization switches. Every comment style is allowlisted:
     an unrecognized format gets none of them, which costs mirrors on languages
     we have not enumerated but never invents one."""
+    name = Path(path).name.lower()
     suffix = Path(path).suffix.lower()
+    is_makefile = (
+        name in _MAKEFILE_NAMES
+        or name.startswith("makefile.")
+        or suffix in _MAKEFILE_SUFFIXES
+    )
     return {
         "hash_comments": suffix in _HASH_COMMENT_SUFFIXES,
         "hash_comments_no_space": suffix in _HASH_COMMENT_NO_SPACE_SUFFIXES,
         "slash_comments": suffix in _SLASH_LINE_COMMENT_SUFFIXES,
         "dash_comments": suffix in _DASH_COMMENT_SUFFIXES,
         "block_comments": suffix in _BLOCK_COMMENT_SUFFIXES,
-        "preserve_indentation": suffix in _INDENTATION_SENSITIVE_SUFFIXES,
+        "dollar_quotes": suffix in _DASH_COMMENT_SUFFIXES,
+        "preserve_indentation": (
+            suffix in _INDENTATION_SENSITIVE_SUFFIXES or is_makefile
+        ),
         "heredocs": suffix in _HEREDOC_SUFFIXES,
         "yaml_scalars": suffix in _YAML_SUFFIXES,
     }
@@ -559,11 +632,13 @@ def _normalized_code_lines(
         slash_comments=options["slash_comments"],
         dash_comments=options["dash_comments"],
         block_comments=options["block_comments"],
+        dollar_quotes=options["dollar_quotes"],
         verbatim_flags=verbatim_flags,
     )
     collapsed = _collapse_whitespace(
         stripped,
         preserve_indentation=options["preserve_indentation"],
+        dollar_quotes=options["dollar_quotes"],
         verbatim_flags=verbatim_flags,
     )
     return [
