@@ -158,6 +158,11 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
      **Python alone**. Comments are removed with Python's own `tokenize`
      module, so two blocks differing only in their comments still match.
      Whitespace is *not* collapsed, because indentation is semantic in Python.
+     Tool directives (`# type:`, `# noqa`, `# nosec`, `# pragma:`, `# pylint:`,
+     …) are *kept*: they change what mypy, flake8, bandit and coverage do, so
+     blocks differing only in a directive are not duplicates. `tokenize` cannot
+     identify these — Python has no notion of a directive — so that is a short
+     explicit prefix list, erring toward preserving.
 
    The modes never mix, and a block is only ever compared against files of its
    own language family (`.ts` against `.js`, `.yml` against `.yaml`; never

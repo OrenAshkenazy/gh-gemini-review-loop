@@ -899,6 +899,61 @@ class TestPythonNormalizedMatching:
 
         assert [c["site"] for c in result.candidates] == ["same.py:6-7"]
 
+    @pytest.mark.parametrize("first,second", [
+        ("# type: ignore[arg-type]", "# type: ignore[return-value]"),
+        ("# noqa: F821", "# nosec"),
+        ("# pragma: no cover", "# pragma: no branch"),
+        ("# pylint: disable=no-member", "# pylint: disable=protected-access"),
+    ])
+    def test_differing_tool_directives_are_not_duplicates(
+        self, tmp_path, first, second
+    ):
+        """A directive is read by mypy/flake8/bandit/coverage, so removing it
+        changes behavior. tokenize cannot tell us that -- Python has no notion
+        of a directive -- hence the explicit prefix list."""
+        (tmp_path / "d.py").write_text(
+            f"result = compute(payload)  {first}\n"
+            "emit_result(result)\n"
+            f"result = compute(payload)  {second}\n"
+            "emit_result(result)\n"
+        )
+
+        assert self._sweep(tmp_path, ["d.py:1-2"], ["d.py"]).candidates == []
+
+    def test_identical_directives_still_mirror(self, tmp_path):
+        (tmp_path / "same.py").write_text(
+            "result = compute(payload)  # type: ignore[arg-type]\n"
+            "emit_result(result)\n"
+            "result = compute(payload)  # type: ignore[arg-type]\n"
+            "emit_result(result)\n"
+        )
+
+        result = self._sweep(tmp_path, ["same.py:1-2"], ["same.py"])
+
+        assert [c["site"] for c in result.candidates] == ["same.py:3-4"]
+
+    def test_a_directive_only_line_is_content(self, tmp_path):
+        """Ordinary comment-only lines drop out; a directive-only line does
+        not, because its presence changes what the tools do."""
+        (tmp_path / "only.py").write_text(
+            "# pragma: no cover\npayload = read_source()\nemit(payload)\n"
+            "payload = read_source()\nemit(payload)\n"
+        )
+
+        assert self._sweep(tmp_path, ["only.py:1-3"], ["only.py"]).candidates == []
+
+    def test_an_ordinary_comment_is_not_mistaken_for_a_directive(self, tmp_path):
+        (tmp_path / "prose.py").write_text(
+            "payload = read_source()  # typically cached\n"
+            "emit(payload)\n"
+            "payload = read_source()  # typically not\n"
+            "emit(payload)\n"
+        )
+
+        result = self._sweep(tmp_path, ["prose.py:1-2"], ["prose.py"])
+
+        assert [c["site"] for c in result.candidates] == ["prose.py:3-4"]
+
     def test_a_parseable_file_is_never_compared_against_an_unparseable_one(
         self, tmp_path
     ):
@@ -909,6 +964,72 @@ class TestPythonNormalizedMatching:
 
         result = self._sweep(tmp_path, ["good.py:1-2"], ["good.py", "bad.py"])
         assert result.candidates == []
+
+
+class TestMirrorTokenInteraction:
+    """The token phase skips lines already covered by a mirror. It walks the
+    mirror ranges with a moving pointer, so the pointer must stay in step with
+    the line number across several disjoint ranges."""
+
+    @staticmethod
+    def _repo(tmp_path):
+        (tmp_path / "f.py").write_text(
+            "value = path.read_text().encode()\nemit(value)\nspacer_one()\n"     # 1-3
+            "value = path.read_text().encode()\nemit(value)\nspacer_two()\n"     # 4-6
+            "value = path.read_text().encode()\nemit(value)\nspacer_three()\n"   # 7-9
+            "value = path.read_text().encode()\nemit(value)\nspacer_four()\n"    # 10-12
+            "emit(value)\n"                                                      # 13
+        )
+        return sweeper.sweep(
+            signature="x", label="x",
+            sites=["f.py:1-2", "f.py:4-5"],
+            changed_files=["f.py"], root=tmp_path,
+        )
+
+    def test_token_hits_inside_any_mirror_range_are_suppressed(self, tmp_path):
+        result = self._repo(tmp_path)
+        mirrors = [
+            (c["line"], c["endLine"])
+            for c in result.candidates if c["candidateClass"] == "mirror"
+        ]
+        tokens = [c["line"] for c in result.candidates if c["candidateClass"] == "token"]
+
+        assert len(mirrors) > 1, "need several ranges to exercise the pointer"
+        assert not [
+            line for line in tokens
+            if any(start <= line <= end for start, end in mirrors)
+        ]
+
+    def test_token_hits_outside_every_mirror_range_survive(self, tmp_path):
+        """The pointer must not over-suppress: line 13 follows the last mirror
+        and is a genuine token sibling."""
+        result = self._repo(tmp_path)
+
+        assert [c["site"] for c in result.candidates] == [
+            "f.py:7-8", "f.py:10-11", "f.py:13",
+        ]
+
+    def test_suppression_stays_linear_in_file_length(self, tmp_path):
+        """Scanning every mirror range per line was quadratic: a file of
+        repeated blocks produces a mirror hit per block. The bound is loose --
+        it is here to catch a return to quadratic, not to measure speed."""
+        import time
+
+        blocks = 25_000
+        (tmp_path / "rep.py").write_text(
+            "value = path.read_text().encode()\nemit(value)\n" * blocks
+        )
+
+        started = time.perf_counter()
+        result = sweeper.sweep(
+            signature="x", label="x",
+            sites=["rep.py:1-2", "rep.py:3-4"],
+            changed_files=["rep.py"], root=tmp_path,
+        )
+        elapsed = time.perf_counter() - started
+
+        assert result.status == "ok"
+        assert elapsed < 10, f"{blocks} blocks took {elapsed:.1f}s — quadratic again?"
 
 
 class TestReport:

@@ -128,6 +128,23 @@ for _name in ("FSTRING_START", "FSTRING_MIDDLE", "FSTRING_END"):
         _STRING_TOKEN_TYPES.add(_type)
 del _name, _type
 
+# Comments a tool reads rather than a human. `# type: ignore[arg-type]` and
+# `# type: ignore[return-value]` suppress different diagnostics, so removing
+# them makes two unrelated blocks look identical.
+#
+# This cannot come from the tokenizer: `tokenize` reports that a token is a
+# COMMENT, and Python itself has no notion of a directive -- these are
+# conventions of mypy, flake8, bandit and the formatters. So it is a closed list
+# of ecosystem prefixes, matched on the comment's leading word. It errs toward
+# preserving: a comment kept by mistake costs one mirror, while a directive
+# dropped by mistake invents one.
+_PY_DIRECTIVE_PREFIXES = (
+    "type:", "noqa", "nosec", "nocover",
+    "pragma:", "coverage:",
+    "pylint:", "mypy:", "ruff:", "flake8:", "pyright:", "pytype:",
+    "fmt:", "isort:", "yapf:", "black:", "codespell",
+)
+
 # Suffixes that are the same language for copy-paste purposes. This is file
 # extension aliasing, not language modeling: it exists so a block copied from a
 # .ts file into a .js file still reads as a duplicate, while identical text in
@@ -237,6 +254,17 @@ def _raw_block_lines(lines: list[str]) -> list[tuple[int, str, str]]:
     return [(number, text, "") for number, text in enumerate(lines, start=1)]
 
 
+def _is_python_directive(comment: str) -> bool:
+    """Whether a Python comment is read by a tool rather than by a human.
+
+    Such a comment is content: dropping it changes what mypy, flake8, bandit or
+    coverage do, so two blocks whose only difference is a directive are not
+    duplicates. See ``_PY_DIRECTIVE_PREFIXES`` for why this is a list and not
+    something the tokenizer can answer.
+    """
+    return comment.lstrip("#").strip().lower().startswith(_PY_DIRECTIVE_PREFIXES)
+
+
 def _python_block_lines(lines: list[str]) -> list[tuple[int, str, str]] | None:
     """Comment-free Python lines, via Python's own tokenizer.
 
@@ -259,6 +287,8 @@ def _python_block_lines(lines: list[str]) -> list[tuple[int, str, str]] | None:
 
     for token in tokens:
         if token.type == _pytokenize.COMMENT:
+            if _is_python_directive(token.string):
+                continue
             comment_spans.setdefault(token.start[0], []).append(
                 (token.start[1], token.end[1])
             )
@@ -646,18 +676,28 @@ def sweep(
     }
 
     candidates = list(mirror_candidates)
-    mirror_ranges = [
-        (candidate["path"], candidate["line"], candidate["endLine"])
-        for candidate in mirror_candidates
-    ]
+    # Mirror ranges, grouped per file and sorted. _merge_overlapping already
+    # returns them disjoint, so a line can be tested against them with one
+    # moving pointer instead of a scan of every range -- the difference between
+    # linear and quadratic once a file holds thousands of repeated blocks.
+    mirror_spans: dict[str, list[tuple[int, int]]] = {}
+    for candidate in mirror_candidates:
+        mirror_spans.setdefault(candidate["path"], []).append(
+            (candidate["line"], candidate["endLine"])
+        )
+    for spans in mirror_spans.values():
+        spans.sort()
+
     for rel in changed_files:
+        spans = mirror_spans.get(rel, [])
+        cursor = 0
         for index, text in enumerate(lines_of(rel), start=1):
-            if (rel, index) in already:
+            # Advance before any skip, or the pointer desyncs from the line.
+            while cursor < len(spans) and spans[cursor][1] < index:
+                cursor += 1
+            if cursor < len(spans) and spans[cursor][0] <= index:
                 continue
-            if any(
-                rel == mirror_path and mirror_start <= index <= mirror_end
-                for mirror_path, mirror_start, mirror_end in mirror_ranges
-            ):
+            if (rel, index) in already:
                 continue
             if not is_code_line(text):
                 continue
