@@ -45,8 +45,14 @@ against another, ``from __future__`` enabled against not. That list has no end,
 because it is the semantics of the language and its whole toolchain -- so
 instead of enumerating it, normalized matching stays inside one file, where
 every such property is equal by construction and the question cannot arise.
-Cross-file duplicates are still reported by raw matching, which claims only
-that the bytes repeat.
+
+Cross-file duplicates in those same files are still reported, by raw matching,
+which claims only that the bytes repeat -- a claim no file-level declaration
+can falsify. So a tokenizable file carries *two* indexes: comment-blind within
+itself, byte-exact across its family. The raw one still carries the tokenizer's
+string tags, so it cannot match a docstring's body against the code that
+docstring quotes; a file that does not tokenize keeps its own key, because
+there a string cannot be told from a statement.
 
 The two modes never mix. Raw blocks are compared within a language family
 (``.ts`` against ``.js``, ``.yml`` against ``.yaml``) so that identical text in
@@ -303,17 +309,28 @@ def _is_python_directive(comment: str) -> bool:
     return body.lower().startswith(_PY_BARE_DIRECTIVES)
 
 
-def _python_block_lines(lines: list[str]) -> list[tuple[int, str, str]] | None:
-    """Comment-free Python lines, via Python's own tokenizer.
+def _python_block_lines(
+    lines: list[str],
+) -> tuple[list[tuple[int, str, str]], list[tuple[int, str, str]]] | None:
+    """Both Python line indexes, from one pass of Python's own tokenizer.
 
-    Returns ``None`` when the source does not tokenize -- a syntax error, or a
-    dialect this interpreter predates -- and the caller falls back to raw
-    matching rather than guessing at the source.
+    Returns ``(normalized, verbatim)``, or ``None`` when the source does not
+    tokenize -- a syntax error, or a dialect this interpreter predates -- and
+    the caller falls back to raw matching rather than guessing at the source.
 
-    Indentation and internal spacing survive untouched, because both are
-    semantic in Python; only comments and the trailing whitespace their removal
-    strands are dropped. Lines interior to a multi-line string are tagged, so a
-    block quoted inside a docstring never mirrors the code it quotes.
+    ``normalized`` has comments removed. Indentation and internal spacing
+    survive untouched, because both are semantic in Python; only comments and
+    the trailing whitespace their removal strands are dropped.
+
+    ``verbatim`` keeps every line exactly as written, comments included. It
+    exists so byte-identical blocks stay findable across files, where the
+    comment-blind index deliberately will not go.
+
+    Both carry the same lexical tags, and that is the point of building them
+    together: a line interior to a multi-line string is marked in *both*, so a
+    block quoted inside a docstring never mirrors the code it quotes -- in
+    either mode. Without the tag, the verbatim index would reintroduce exactly
+    the string-versus-code false positive the tokenizer is here to prevent.
     """
     source = "\n".join(lines) + "\n"
     comment_spans: dict[int, list[tuple[int, int]]] = {}
@@ -334,12 +351,15 @@ def _python_block_lines(lines: list[str]) -> list[tuple[int, str, str]] | None:
             string_interior.update(range(token.start[0] + 1, token.end[0] + 1))
 
     entries: list[tuple[int, str, str]] = []
+    verbatim: list[tuple[int, str, str]] = []
     for number, line in enumerate(lines, start=1):
-        if number in string_interior:
+        state = "string" if number in string_interior else ""
+        verbatim.append((number, line, state))
+        if state:
             # Inside a multi-line string every byte is the value, including
             # trailing spaces and blank lines. Nothing here is formatting, so
             # nothing here may be normalized away.
-            entries.append((number, line, "string"))
+            entries.append((number, line, state))
             continue
         text = line
         for start, end in sorted(comment_spans.get(number, ()), reverse=True):
@@ -350,33 +370,54 @@ def _python_block_lines(lines: list[str]) -> list[tuple[int, str, str]] | None:
         if not text:
             continue
         entries.append((number, text, ""))
-    return entries
+    return entries, verbatim
 
 
 def _block_index(
     lines: list[str], *, path: str
-) -> tuple[list[tuple[int, str, str]], str]:
-    """The comparable line index for a file, plus the key it matches under.
+) -> list[tuple[list[tuple[int, str, str]], str]]:
+    """Every comparable line index for a file, each with the key it matches on.
 
-    Two files are compared only when their keys are equal, so normalized Python
-    never meets raw text, and raw text never crosses a language family.
+    Two files are compared only where their keys are equal, so normalized
+    Python never meets raw text, and raw text never crosses a language family.
 
-    The normalized key is scoped to the file, so a Python block is only ever
-    compared against other blocks of the *same* file. That is the boundary, not
-    a limitation: normalized matching drops comments, and once comments are
-    gone, identical text can still mean different things in two different files
-    -- a stub against a runtime module, one interpreter against another, one
-    source encoding against another, `from __future__` enabled against not.
-    Enumerating those is unbounded, because it is the whole semantics of the
-    language and its toolchain. Within one file every such property is equal by
-    construction, so the question cannot arise. Cross-file duplicates are still
-    found by raw exact matching, which claims only that the bytes repeat.
+    Most files get one index: their raw text, keyed by language family. A file
+    we can tokenize gets *two*, because the two answer different questions.
+
+    - **Raw, keyed by family.** Byte-identical blocks, found across files. This
+      claims only that the bytes repeat, which is true regardless of what the
+      files mean, so it is safe to compare anywhere in the family.
+    - **Normalized, keyed by the file itself.** Comments removed, so blocks
+      differing only in their comments still match -- but only within one file.
+
+    The scope on the second is the boundary, not a limitation. Once comments
+    are dropped, identical text can still mean different things in two
+    different files: a stub against a runtime module, one interpreter against
+    another, one source encoding against another, `from __future__` enabled
+    against not. Enumerating those does not converge, because it is the
+    semantics of the language and its whole toolchain. Within one file every
+    such property is equal by construction, so the question cannot arise.
+
+    Keeping both is what makes that scope affordable: the strong claim stays
+    file-local, while the weak claim -- these bytes repeat -- still travels.
+
+    A tokenizable file's raw index is *not* the plain-text one. It keeps every
+    byte, but carries the tokenizer's string tags, so the verbatim pass cannot
+    match a docstring's body against the code it quotes. That makes it a
+    different index from untokenizable text, and it is keyed accordingly: a
+    file we could not parse is never compared against one we could, because
+    there we cannot tell a string from a statement.
     """
-    if Path(path).suffix.lower() in _PYTHON_SUFFIXES:
-        entries = _python_block_lines(lines)
-        if entries is not None:
-            return entries, f"python:{path}"
-    return _raw_block_lines(lines), _family_key(path)
+    suffix = Path(path).suffix.lower()
+    if suffix in _PYTHON_SUFFIXES:
+        parsed = _python_block_lines(lines)
+        if parsed is not None:
+            normalized, verbatim = parsed
+            return [
+                (verbatim, f"python-verbatim:{suffix}"),
+                (normalized, f"python:{path}"),
+            ]
+    return [(_raw_block_lines(lines), _family_key(path))]
 
 
 def _mirror_candidates(
@@ -387,15 +428,16 @@ def _mirror_candidates(
 ) -> list[dict[str, Any]]:
     """Find exact copies of flagged multi-line ranges.
 
-    Python ranges are compared with comments removed; everything else is
-    compared as raw text. A seed only ever meets files sharing its key, so the
-    two modes never mix.
+    A seed only ever meets indexes sharing its key, so raw and normalized never
+    mix. A tokenizable file carries one of each, so the same flagged range is
+    searched twice: byte-identically across its family, and comment-blind
+    within its own file.
     """
     changed = set(changed_files)
     is_lossy = lossy_of if lossy_of is not None else (lambda _rel: False)
-    index_cache: dict[str, tuple[list[tuple[int, str, str]], str]] = {}
+    index_cache: dict[str, list[tuple[list[tuple[int, str, str]], str]]] = {}
 
-    def index_of(rel: str) -> tuple[list[tuple[int, str, str]], str]:
+    def indexes_of(rel: str) -> list[tuple[list[tuple[int, str, str]], str]]:
         if rel not in index_cache:
             index_cache[rel] = _block_index(lines_of(rel), path=rel)
         return index_cache[rel]
@@ -414,25 +456,27 @@ def _mirror_candidates(
         lines = lines_of(site.path)
         if site.line > len(lines):
             continue
-        entries, key = index_of(site.path)
-        block = tuple(
-            (text, state)
-            for number, text, state in entries
-            if site.start_line <= number <= site.line
-        )
-        if len(block) < 2 or len(block) > MAX_MIRROR_BLOCK_LINES:
-            continue
-        block_tokens = set().union(*(tokenize(text) for text, _ in block), set())
-        significant_count = sum(is_significant_token(token) for token in block_tokens)
-        if significant_count < MIN_MIRROR_SIGNIFICANT_TOKENS:
-            continue
-        seeds.append((
-            block,
-            _block_fingerprint(tuple(
-                f"{state}\x00{text}" for text, state in block
-            )),
-            key,
-        ))
+        for entries, key in indexes_of(site.path):
+            block = tuple(
+                (text, state)
+                for number, text, state in entries
+                if site.start_line <= number <= site.line
+            )
+            if len(block) < 2 or len(block) > MAX_MIRROR_BLOCK_LINES:
+                continue
+            block_tokens = set().union(*(tokenize(text) for text, _ in block), set())
+            significant_count = sum(
+                is_significant_token(token) for token in block_tokens
+            )
+            if significant_count < MIN_MIRROR_SIGNIFICANT_TOKENS:
+                continue
+            seeds.append((
+                block,
+                _block_fingerprint(tuple(
+                    f"{state}\x00{text}" for text, state in block
+                )),
+                key,
+            ))
 
     flagged_ranges = {
         (site.path, site.start_line or site.line, site.line)
@@ -444,51 +488,59 @@ def _mirror_candidates(
     # only match if its first line does, so this replaces the per-offset hash of
     # the whole block with one dict lookup, and the element-wise compare below
     # short-circuits on the first difference.
-    head_offsets: dict[str, dict[tuple[str, str], list[int]]] = {}
+    head_offsets: dict[tuple[str, str], dict[tuple[str, str], list[int]]] = {}
     for block, fingerprint, key in seeds:
         width = len(block)
         head = block[0]
         for rel in changed_files:
             if is_lossy(rel):
                 continue
-            entries, rel_key = index_of(rel)
-            if rel_key != key:
-                continue
-            if rel not in head_offsets:
-                offsets: dict[tuple[str, str], list[int]] = {}
-                for offset, (_number, text, state) in enumerate(entries):
-                    offsets.setdefault((text, state), []).append(offset)
-                head_offsets[rel] = offsets
-            last_offset = len(entries) - width
-            for offset in head_offsets[rel].get(head, ()):
-                if offset > last_offset:
-                    break
-                if any(
-                    entries[offset + index][1:] != block[index]
-                    for index in range(1, width)
-                ):
+            for entries, rel_key in indexes_of(rel):
+                if rel_key != key:
                     continue
-                start, end = entries[offset][0], entries[offset + width - 1][0]
-                if any(
-                    rel == flagged_path
-                    and start <= flagged_end
-                    and flagged_start <= end
-                    for flagged_path, flagged_start, flagged_end in flagged_ranges
-                ):
-                    continue
-                window = entries[offset:offset + width]
-                candidates[(rel, start, end)] = {
-                    "candidateClass": "mirror",
-                    "matchMode": (
-                        "normalized" if key.startswith("python:") else "exact"
-                    ),
-                    "path": rel,
-                    "line": start,
-                    "endLine": end,
-                    "site": f"{rel}:{start}-{end}",
-                    "text": " ".join(text for _, text, _state in window)[:200],
-                    "fingerprint": fingerprint,
-                }
+                # Keyed by index, not just by file: a tokenizable file has a
+                # raw and a normalized index whose offsets do not line up.
+                if (rel, rel_key) not in head_offsets:
+                    offsets: dict[tuple[str, str], list[int]] = {}
+                    for offset, (_number, text, state) in enumerate(entries):
+                        offsets.setdefault((text, state), []).append(offset)
+                    head_offsets[(rel, rel_key)] = offsets
+                last_offset = len(entries) - width
+                for offset in head_offsets[(rel, rel_key)].get(head, ()):
+                    if offset > last_offset:
+                        break
+                    if any(
+                        entries[offset + index][1:] != block[index]
+                        for index in range(1, width)
+                    ):
+                        continue
+                    start = entries[offset][0]
+                    end = entries[offset + width - 1][0]
+                    if any(
+                        rel == flagged_path
+                        and start <= flagged_end
+                        and flagged_start <= end
+                        for flagged_path, flagged_start, flagged_end in flagged_ranges
+                    ):
+                        continue
+                    mode = "normalized" if key.startswith("python:") else "exact"
+                    existing = candidates.get((rel, start, end))
+                    # A same-file byte-identical block is found by both indexes.
+                    # `exact` is the stronger claim -- the bytes really do
+                    # repeat -- so it must not be overwritten by `normalized`.
+                    if existing is not None and existing["matchMode"] == "exact":
+                        continue
+                    window = entries[offset:offset + width]
+                    candidates[(rel, start, end)] = {
+                        "candidateClass": "mirror",
+                        "matchMode": mode,
+                        "path": rel,
+                        "line": start,
+                        "endLine": end,
+                        "site": f"{rel}:{start}-{end}",
+                        "text": " ".join(text for _, text, _state in window)[:200],
+                        "fingerprint": fingerprint,
+                    }
     return _merge_overlapping(list(candidates.values()))
 
 

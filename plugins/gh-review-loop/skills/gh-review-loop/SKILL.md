@@ -190,8 +190,17 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
    surfaces the next member. Within one file every such property is equal by
    construction, so the question cannot arise at all.
 
-   Cross-file duplicates are still reported — by raw matching, which claims
-   only that the bytes repeat and so is not exposed to any of this.
+   Cross-file duplicates in those same files are still reported — by raw
+   matching, which claims only that the bytes repeat, a claim no file-level
+   declaration can falsify. So a Python file carries **two** indexes:
+   comment-blind within itself (`normalized`), byte-exact across its family
+   (`exact`). Two `.py` files with a byte-identical block are still reported;
+   two differing only in a comment are not.
+
+   The raw index for a Python file still carries the tokenizer's string tags,
+   so it cannot match a docstring's body against the code that docstring
+   quotes. A `.py` file that does not tokenize is never compared against one
+   that does, because there a string cannot be told from a statement.
 
    This is a deliberate precision-over-recall trade: an advisory report that
    fires falsely stops being read, whereas a missed duplicate costs one

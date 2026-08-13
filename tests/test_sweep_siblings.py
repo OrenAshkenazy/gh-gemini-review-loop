@@ -391,7 +391,16 @@ class TestSweep:
         )
 
         assert [c["site"] for c in result.candidates] == ["template.py:6-7"]
-        assert result.candidates[0]["matchMode"] == "normalized"
+
+        # The block is byte-identical, so `exact` is the stronger and honest
+        # label. What proves the `#` was read as string data is the tag on it:
+        # a comment would have been stripped from the normalized index, and
+        # both indexes agree it is string content.
+        normalized, verbatim = sweeper._python_block_lines(
+            (tmp_path / "template.py").read_text().splitlines()
+        )
+        assert (2, "  # keep this", "string") in normalized
+        assert (2, "  # keep this", "string") in verbatim
 
     def test_mirror_does_not_re_report_seed_after_comment_stripping(self, tmp_path):
         """Only normalized mode drops lines, so only there can the reported
@@ -952,18 +961,30 @@ class TestPythonNormalizedMatching:
 
         assert result.candidates == []
 
-    def test_identical_python_files_still_do_not_cross(self, tmp_path):
-        """Not even when the two files are byte-identical -- the rule is
-        structural, so there is no case left for a semantic difference to hide
-        in. A byte-identical copy is raw mode's job, and it is a `.py` file, so
-        normalized mode owns it and declines."""
+    def test_byte_identical_python_files_still_mirror_as_exact(self, tmp_path):
+        """Scoping *normalized* matching to one file must not cost raw matching
+        its reach. A Python file carries both indexes, so a byte-identical copy
+        in another file is still reported -- as `exact`, which claims only that
+        the bytes repeat and so is safe across files."""
         body = "payload = read_source()\nemit_payload(payload)\n"
         (tmp_path / "a.py").write_text(body)
         (tmp_path / "b.py").write_text(body)
 
         result = self._sweep(tmp_path, ["a.py:1-2"], ["a.py", "b.py"])
 
-        assert result.candidates == []
+        assert [c["site"] for c in result.candidates] == ["b.py:1-2"]
+        assert result.candidates[0]["matchMode"] == "exact"
+
+    def test_a_same_file_byte_identical_block_is_reported_as_exact(self, tmp_path):
+        """Both indexes find it. `exact` is the stronger claim, so it wins --
+        otherwise the weaker label would depend on seed ordering."""
+        body = "payload = read_source()\nemit_payload(payload)\n"
+        (tmp_path / "a.py").write_text(body + "spacer()\n" + body)
+
+        result = self._sweep(tmp_path, ["a.py:1-2"], ["a.py"])
+
+        assert [c["site"] for c in result.candidates] == ["a.py:4-5"]
+        assert result.candidates[0]["matchMode"] == "exact"
 
     @pytest.mark.parametrize("name,a_text,b_text", [
         (
@@ -982,19 +1003,42 @@ class TestPythonNormalizedMatching:
             "import os\n",
         ),
     ])
-    def test_file_level_semantics_cannot_produce_a_cross_file_mirror(
+    def test_file_level_semantics_never_produce_a_normalized_cross_file_mirror(
         self, tmp_path, name, a_text, b_text
     ):
-        """Each of these was once its own patch to the match key. The scope
-        rule retires the whole class, including the members nobody has named
-        yet, so none of them needs its own rule any more."""
+        """Each of these was once its own patch to the match key. Scoping the
+        normalized index to one file retires the whole class, including the
+        members nobody has named yet.
+
+        The bodies here are byte-identical, so raw matching still reports them
+        -- and that is the intended split. `exact` claims only that the bytes
+        repeat, which stays true whatever the shebang or encoding says; it is
+        `normalized`, the claim that survives an edit to the comments, that
+        must never cross a file boundary."""
         body = "payload = read_source()\nemit_payload(payload)\n"
         (tmp_path / "a.py").write_text(a_text + body)
         (tmp_path / "b.py").write_text(b_text + body)
 
         result = self._sweep(tmp_path, ["a.py:2-3"], ["a.py", "b.py"])
 
-        assert result.candidates == [], name
+        assert [c["matchMode"] for c in result.candidates] == ["exact"], name
+
+    @pytest.mark.parametrize("a_comment,b_comment", [
+        ("  # cached", "  # uncached"),
+        ("  # see ticket 41", "  # see ticket 92"),
+    ])
+    def test_comment_differences_never_cross_a_file_boundary(
+        self, tmp_path, a_comment, b_comment
+    ):
+        """The other half of the split: once the bytes differ, only the
+        normalized index could match these, and it does not leave the file."""
+        body = "payload = read_source(){}\nemit_payload(payload)\n"
+        (tmp_path / "a.py").write_text(body.format(a_comment))
+        (tmp_path / "b.py").write_text(body.format(b_comment))
+
+        result = self._sweep(tmp_path, ["a.py:1-2"], ["a.py", "b.py"])
+
+        assert result.candidates == []
 
     def test_a_stub_is_not_a_mirror_of_a_runtime_module(self, tmp_path):
         """`def parse(...) -> str: ...` declares in a `.pyi` and returns
