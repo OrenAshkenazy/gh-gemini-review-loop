@@ -48,12 +48,18 @@ This report is advisory: a missed duplicate costs one informational finding,
 while a false one makes the whole report untrustworthy. Adding a language means
 adding a real tokenizer for it, not another pile of pattern rules.
 
-Known limitation, accepted rather than fixed: in raw mode a block whose text is
-identical to another can still be reported even when the two sit in different
-lexical contexts -- lines inside a JavaScript template literal that spell out
-the same calls made elsewhere. Detecting that needs a parser per language, which
-is the complexity boundary this module deliberately stays behind. Python does
-not have this gap, because ``tokenize`` tells us which lines are string bodies.
+Two limitations are accepted rather than fixed, both in raw mode:
+
+- **Lexical context is invisible.** A block can match text that is identical but
+  sits somewhere else entirely -- lines inside a JavaScript template literal
+  that spell out the same calls made elsewhere. Detecting that needs a parser
+  per language, which is the boundary this module deliberately stays behind.
+  Python does not have this gap, because ``tokenize`` identifies string bodies.
+- **Line endings are not compared.** ``splitlines()`` drops the terminator, so
+  an LF block and a CRLF block with the same content match and are labelled
+  ``exact``. Retaining terminators would have to run through the reader shared
+  with the token sweep, for a case -- mixed line endings within one language
+  family in one PR -- where reporting the duplicate is arguably still right.
 
 This reports. It never edits, and it never reads a file outside the changed set,
 so the blast radius cannot leave the PR's own diff.
@@ -196,7 +202,11 @@ def parse_site(raw: str) -> Site:
     range_match = re.fullmatch(r"(\d+)-(\d+)", tail) if sep else None
     if range_match:
         start, end = (int(value) for value in range_match.groups())
-        if start <= end:
+        # Line numbers are 1-based. A 0 start is malformed, and accepting it
+        # makes ``start_line or line`` fall through to the end line, which
+        # narrows the self-overlap guard until a seed reports its own location
+        # as a mirror of itself.
+        if 1 <= start <= end:
             return Site(head, end, start)
     if sep and tail.isdigit():
         return Site(head, int(tail))
@@ -257,15 +267,21 @@ def _python_block_lines(lines: list[str]) -> list[tuple[int, str, str]] | None:
 
     entries: list[tuple[int, str, str]] = []
     for number, line in enumerate(lines, start=1):
+        if number in string_interior:
+            # Inside a multi-line string every byte is the value, including
+            # trailing spaces and blank lines. Nothing here is formatting, so
+            # nothing here may be normalized away.
+            entries.append((number, line, "string"))
+            continue
         text = line
         for start, end in sorted(comment_spans.get(number, ()), reverse=True):
             text = text[:start] + text[end:]
+        # Only whitespace stranded by removing a comment, or already trailing
+        # code, is dropped -- never string data.
         text = text.rstrip()
         if not text:
             continue
-        entries.append(
-            (number, text, "string" if number in string_interior else "")
-        )
+        entries.append((number, text, ""))
     return entries
 
 
@@ -401,7 +417,15 @@ def _merge_overlapping(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]
     Seeds of different lengths sharing a prefix each match the same copy, and
     the range end is part of the candidate key, so one copy would otherwise be
     reported once per seed length. That overstates how many sites there are and
-    can burn the candidate cap on a single edit. The widest range wins.
+    can burn the candidate cap on a single edit.
+
+    Overlapping hits are *unioned*, not deduplicated: seeds at ``1-3`` and
+    ``2-4`` match at ``6-8`` and ``7-9``, and the duplicated region is ``6-9``.
+    Keeping only the first would silently under-report it by a line.
+
+    ``text`` and ``fingerprint`` stay those of the hit that opened the range --
+    they are evidence of the match, while ``line``/``endLine`` describe how far
+    the duplication reaches.
     """
     merged: list[dict[str, Any]] = []
     for candidate in sorted(
@@ -414,8 +438,11 @@ def _merge_overlapping(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]
                 kept["path"] == candidate["path"]
                 and candidate["line"] <= kept["endLine"]
             ):
+                if candidate["endLine"] > kept["endLine"]:
+                    kept["endLine"] = candidate["endLine"]
+                    kept["site"] = f"{kept['path']}:{kept['line']}-{kept['endLine']}"
                 continue
-        merged.append(candidate)
+        merged.append(dict(candidate))
     return merged
 
 

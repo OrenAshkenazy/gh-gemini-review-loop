@@ -122,6 +122,32 @@ class TestParseSite:
         assert site.line == 8
         assert str(site) == "lib/options.ts:5-8"
 
+    def test_a_range_starting_below_line_one_is_not_a_range(self):
+        """Line numbers are 1-based. A 0 start would make ``start_line or line``
+        fall through to the end line, narrowing the self-overlap guard until a
+        seed reports its own location as a mirror of itself."""
+        site = sweeper.parse_site("lib/options.ts:0-8")
+
+        assert site.start_line is None
+        assert site.line is None
+        assert site.path == "lib/options.ts:0-8"
+
+    def test_a_malformed_zero_start_cannot_self_mirror(self, tmp_path):
+        (tmp_path / "f.py").write_text(
+            "# leading note\n"
+            "alpha_step()\nbeta_step()\ngamma_step()\n"
+            "# trailing note\n"
+            "unrelated()\n"
+            "alpha_step()\nbeta_step()\ngamma_step()\n"
+        )
+
+        result = sweeper.sweep(
+            signature="zero", label="zero",
+            sites=["f.py:0-5"], changed_files=["f.py"], root=tmp_path,
+        )
+
+        assert "f.py:2-4" not in [c["site"] for c in result.candidates]
+
 
 @pytest.fixture
 def mirror_repo(tmp_path):
@@ -729,6 +755,34 @@ class TestRawMirrorMatching:
         mirrors = [c for c in result.candidates if c["candidateClass"] == "mirror"]
         assert [c["site"] for c in mirrors] == ["copy.js:5-7"]
 
+    def test_partially_overlapping_copies_are_unioned_not_dropped(self, tmp_path):
+        """Seeds 1-3 and 2-4 match at 6-8 and 7-9. The duplicated region is
+        6-9; keeping only the first would under-report it by a line."""
+        (tmp_path / "copy.js").write_text(
+            "alpha_step();\nbeta_step();\ngamma_step();\ndelta_step();\n"
+            "unrelated_call();\n"
+            "alpha_step();\nbeta_step();\ngamma_step();\ndelta_step();\n"
+        )
+
+        result = sweeper.sweep(
+            signature="overlap", label="overlap",
+            sites=["copy.js:1-3", "copy.js:2-4"],
+            changed_files=["copy.js"], root=tmp_path,
+        )
+
+        mirrors = [c for c in result.candidates if c["candidateClass"] == "mirror"]
+        assert [c["site"] for c in mirrors] == ["copy.js:6-9"]
+
+    def test_line_endings_are_a_documented_blind_spot(self, tmp_path):
+        """Accepted limitation: splitlines() drops the terminator, so an LF and
+        a CRLF block with the same content still match in raw mode."""
+        (tmp_path / "a.sh").write_bytes(b"export build_mode=enabled\nrun_step_two\n")
+        (tmp_path / "b.sh").write_bytes(b"export build_mode=enabled\r\nrun_step_two\r\n")
+
+        result = self._sweep(tmp_path, ["a.sh:1-2"], ["a.sh", "b.sh"])
+
+        assert [c["site"] for c in result.candidates] == ["b.sh:1-2"]
+
 
 class TestPythonNormalizedMatching:
     """The one explicitly supported language. Comments come off via Python's
@@ -812,6 +866,38 @@ class TestPythonNormalizedMatching:
         assert sweeper._python_block_lines(broken.split("\n")) is None
         result = self._sweep(tmp_path, ["broken.py:1-2"], ["broken.py"])
         assert [c["site"] for c in result.candidates] == ["broken.py:3-4"]
+
+    def test_trailing_spaces_inside_a_string_are_part_of_the_value(self, tmp_path):
+        """tokenize tags these lines as string data, so normalization must not
+        touch them -- two fixtures differing only in trailing spaces generate
+        different text and are not duplicates."""
+        (tmp_path / "fixtures.py").write_text(
+            "ALPHA = '''\nfirst_column  second_column   \nthird_column\n'''\n"
+            "BETA = '''\nfirst_column  second_column\nthird_column\n'''\n"
+        )
+
+        result = self._sweep(tmp_path, ["fixtures.py:2-3"], ["fixtures.py"])
+
+        assert result.candidates == []
+
+    def test_blank_lines_inside_a_string_are_part_of_the_value(self, tmp_path):
+        (tmp_path / "blanks.py").write_text(
+            "ALPHA = '''\nfirst_column\n\nsecond_column\n'''\n"
+            "BETA = '''\nfirst_column\nsecond_column\n'''\n"
+        )
+
+        result = self._sweep(tmp_path, ["blanks.py:2-4"], ["blanks.py"])
+
+        assert result.candidates == []
+
+    def test_identical_string_bodies_still_mirror(self, tmp_path):
+        """Preserving string bytes must not stop real duplicates matching."""
+        body = "ALPHA = '''\nfirst_column  second_column   \nthird_column\n'''\n"
+        (tmp_path / "same.py").write_text(body + body.replace("ALPHA", "BETA"))
+
+        result = self._sweep(tmp_path, ["same.py:2-3"], ["same.py"])
+
+        assert [c["site"] for c in result.candidates] == ["same.py:6-7"]
 
     def test_a_parseable_file_is_never_compared_against_an_unparseable_one(
         self, tmp_path

@@ -170,10 +170,16 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
    only by a comment will not be reported** — that is expected, not a bug.
    Adding a language means adding a real tokenizer for it.
 
-   One accepted limitation: in `exact` mode a block can match text sitting in a
-   different lexical context — lines inside a JavaScript template literal that
-   spell out calls made elsewhere. Detecting that needs a per-language parser.
-   Python is unaffected, because `tokenize` identifies string bodies.
+   Two accepted limitations, both in `exact` mode:
+
+   - A block can match text sitting in a different lexical context — lines
+     inside a JavaScript template literal that spell out calls made elsewhere.
+     Detecting that needs a per-language parser. Python is unaffected, because
+     `tokenize` identifies string bodies.
+   - Line endings are not compared: an LF block and a CRLF block with the same
+     content match. Comparing them would have to run through the reader shared
+     with the token sweep, for a case where reporting the duplicate is arguably
+     still right.
 
    Print the report, then fix the cluster plus the reported siblings in this
    cycle. Do not block on approval, but never edit unflagged code silently —
