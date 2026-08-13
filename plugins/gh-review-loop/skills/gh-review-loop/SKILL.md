@@ -115,7 +115,8 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
    a reviewer that says "exception-wrap" at one site and "add error checks" at
    another is describing one pattern, and without the merge each looks like a
    single-site finding and never reaches the sweep's two-site minimum.
-2. **Sweep (report-then-go).** For each multi-site pattern (`count >= 2`), run
+2. **Sweep (report-then-go).** For each multi-site pattern (`count >= 2`), and
+   for each single finding anchored to a multi-line range, run
    `sweep_siblings.py` to find instances of the same shape the reviewer has not
    flagged yet, restricted to the PR's changed files:
 
@@ -126,6 +127,15 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
      --changed-file <path> [--changed-file <path> ...] --json
    ```
 
+   A single multi-line finding uses its range from the receipt:
+
+   ```bash
+   python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/sweep_siblings.py" \
+     --signature <sig> --label "<label>" \
+     --site <path:start-end> \
+     --changed-file <path> [--changed-file <path> ...] --json
+   ```
+
    Pass every site from the cluster and every file in the PR's diff. The script
    intersects the tokens of the flagged lines and reports only lines containing
    all of them, so a candidate has to match what the flagged sites have in
@@ -133,12 +143,90 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
    constrains candidates but cannot qualify a pattern by itself. It reports; it
    never edits.
 
+   Multi-line ranges also enable an exact duplicate-block sweep from one flagged
+   site. The script fingerprints the block and searches the changed files for
+   the same sequence. It reports these as `mirror` candidates; ordinary
+   intersection hits are `token` candidates. `mirror` describes the evidence
+   source, not a path relationship, and does not infer filename twins.
+
+   Mirror matching has two modes, reported per candidate as `matchMode`:
+
+   - **`exact`** — the default for every language. Blocks match only when their
+     text is identical. No comment stripping, no whitespace collapsing, no
+     per-language knowledge.
+   - **`normalized`** — for explicitly supported languages only, currently
+     **Python alone**. Comments are removed with Python's own `tokenize`
+     module, so two blocks differing only in their comments still match.
+     Whitespace is *not* collapsed, because indentation is semantic in Python.
+     Tool directives are *kept*: they change what mypy, flake8, bandit, Cython
+     or coverage do, so blocks differing only in a directive are not duplicates.
+     `tokenize` cannot identify these — Python has no notion of a directive —
+     so they are matched by **shape, not by a list of tools**: a lowercase
+     leading word followed by `:` or `=` (`# cython: boundscheck=False`,
+     `# type: ignore[arg-type]`), plus a few bare ones like `# noqa`.
+
+     Matching the shape is what makes this converge — it covers `doctest:`,
+     `numba:`, `distutils:` and any tool nobody has named yet, instead of
+     needing a new entry per ecosystem. Case is what separates a directive
+     from prose: tools write lowercase, English capitalizes, so `# Note: …`
+     stays an ordinary comment. The accepted cost is lowercase prose shaped
+     like a directive (`# invariant: …`, a bare URL) being treated as
+     meaningful — which loses a duplicate rather than inventing one.
+
+   The modes never mix, and a block is only ever compared against files of its
+   own language family (`.ts` against `.js`, `.yml` against `.yaml`; never
+   `build.sh` against `Makefile`). A Python file that does not tokenize falls
+   back to `exact`.
+
+   **Normalized matching never crosses files.** A Python block is only ever
+   compared against other blocks of the *same* file.
+
+   This is the boundary, not a limitation. Once comments are dropped, identical
+   text can still mean different things in two different files — a `.pyi` stub
+   against a runtime module, one shebang against another, one source encoding
+   against another, `from __future__ import annotations` enabled against not.
+   Enumerating those in the match key does not converge, because the list is
+   the semantics of the language and its entire toolchain; each patch simply
+   surfaces the next member. Within one file every such property is equal by
+   construction, so the question cannot arise at all.
+
+   Cross-file duplicates in those same files are still reported — by raw
+   matching, which claims only that the bytes repeat, a claim no file-level
+   declaration can falsify. So a Python file carries **two** indexes:
+   comment-blind within itself (`normalized`), byte-exact across its family
+   (`exact`). Two `.py` files with a byte-identical block are still reported;
+   two differing only in a comment are not.
+
+   The raw index for a Python file still carries the tokenizer's string tags,
+   so it cannot match a docstring's body against the code that docstring
+   quotes. A `.py` file that does not tokenize is never compared against one
+   that does, because there a string cannot be told from a statement.
+
+   This is a deliberate precision-over-recall trade: an advisory report that
+   fires falsely stops being read, whereas a missed duplicate costs one
+   informational finding. **A duplicate in an unsupported language that differs
+   only by a comment will not be reported** — that is expected, not a bug.
+   Adding a language means adding a real tokenizer for it.
+
+   Two accepted limitations, both in `exact` mode:
+
+   - A block can match text sitting in a different lexical context — lines
+     inside a JavaScript template literal that spell out calls made elsewhere.
+     Detecting that needs a per-language parser. Python is unaffected, because
+     `tokenize` identifies string bodies.
+   - Line endings are not compared: an LF block and a CRLF block with the same
+     content match. Comparing them would have to run through the reader shared
+     with the token sweep, for a case where reporting the duplicate is arguably
+     still right.
+
    Print the report, then fix the cluster plus the reported siblings in this
    cycle. Do not block on approval, but never edit unflagged code silently —
    the report must appear first.
 
    Honor the script's `status`. `too_few_sites`, `pattern_too_thin`, and
-   `no_source` all mean **do not sweep**: fix the flagged sites only. When
+   `no_source` all mean **do not sweep**: fix the flagged sites only. A mirror
+   can return `ok` from one ranged site; token candidates still require two
+   sites. When
    `truncated` is true the pattern is wider than a sweep should be — show the
    report and ask the user before touching unflagged code.
 3. **Mark.** Pass `--swept-pattern <sig>` (the `sig:` token from the Patterns
@@ -179,6 +267,11 @@ line changes control flow; the re-review cap remains the only hard stop.
 
 Sweep scope is **changed files only** — that is both safe (blast radius = the PR's
 own diff) and sufficient (bot reviewers only review changed files).
+
+That scope is enforced, not assumed. The changed-file list comes from a pull
+request, so a path in it may be a symlink (git records the link, not the bytes
+it points at), may spell `../`, or may be absolute. Each is refused before any
+read, so a PR cannot make the sweep quote a file it never touched.
 
 ## Loop Receipt
 
