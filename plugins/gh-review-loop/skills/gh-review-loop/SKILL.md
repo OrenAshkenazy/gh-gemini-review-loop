@@ -144,11 +144,36 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
    never edits.
 
    Multi-line ranges also enable an exact duplicate-block sweep from one flagged
-   site. The script strips comments, collapses whitespace, fingerprints the
-   normalized code-line sequence, and searches the changed files for the same
-   sequence. It reports these as `mirror` candidates; ordinary intersection
-   hits are `token` candidates. `mirror` describes the evidence source, not a
-   path relationship, and does not infer filename twins.
+   site. The script fingerprints the block and searches the changed files for
+   the same sequence. It reports these as `mirror` candidates; ordinary
+   intersection hits are `token` candidates. `mirror` describes the evidence
+   source, not a path relationship, and does not infer filename twins.
+
+   Mirror matching has two modes, reported per candidate as `matchMode`:
+
+   - **`exact`** — the default for every language. Blocks match only when their
+     text is identical. No comment stripping, no whitespace collapsing, no
+     per-language knowledge.
+   - **`normalized`** — for explicitly supported languages only, currently
+     **Python alone**. Comments are removed with Python's own `tokenize`
+     module, so two blocks differing only in their comments still match.
+     Whitespace is *not* collapsed, because indentation is semantic in Python.
+
+   The modes never mix, and a block is only ever compared against files of its
+   own language family (`.ts` against `.js`, `.yml` against `.yaml`; never
+   `build.sh` against `Makefile`). A Python file that does not tokenize falls
+   back to `exact`.
+
+   This is a deliberate precision-over-recall trade: an advisory report that
+   fires falsely stops being read, whereas a missed duplicate costs one
+   informational finding. **A duplicate in an unsupported language that differs
+   only by a comment will not be reported** — that is expected, not a bug.
+   Adding a language means adding a real tokenizer for it.
+
+   One accepted limitation: in `exact` mode a block can match text sitting in a
+   different lexical context — lines inside a JavaScript template literal that
+   spell out calls made elsewhere. Detecting that needs a per-language parser.
+   Python is unaffected, because `tokenize` identifies string bodies.
 
    Print the report, then fix the cluster plus the reported siblings in this
    cycle. Do not block on approval, but never edit unflagged code silently —

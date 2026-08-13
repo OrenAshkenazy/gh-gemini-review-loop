@@ -83,100 +83,6 @@ class TestTokenize:
         assert not sweeper.is_significant_token(token)
 
 
-class TestNormalizeBlock:
-    def test_strips_comments_and_collapses_whitespace(self):
-        assert sweeper.normalize_block([
-            "  const   options = values; // kept in sync",
-            "/* block comment",
-            "   continued */  return   options;",
-        ]) == ("const options = values;", "return options;")
-
-    def test_preserves_comment_markers_in_strings_and_decrement_operators(self):
-        assert sweeper.normalize_block([
-            'const url = "https://example.test/a";',
-            "remaining--;",
-        ]) == ('const url = "https://example.test/a";', "remaining--;")
-
-    def test_preserves_hash_syntax_unless_the_file_uses_hash_comments(self):
-        lines = ["#ifdef WINDOWS", "color: #fff;"]
-
-        assert sweeper.normalize_block(lines) == tuple(lines)
-        assert sweeper.normalize_block(
-            ["# explanation", "value = 1"], hash_comments=True
-        ) == ("value = 1",)
-
-    def test_preserves_python_floor_division(self):
-        assert sweeper.normalize_block(
-            ["result = total // width"],
-            hash_comments=True,
-            slash_comments=False,
-        ) == ("result = total // width",)
-
-    def test_preserves_whitespace_inside_string_literals(self):
-        assert sweeper.normalize_block(
-            ['message = "access  denied"'],
-        ) != sweeper.normalize_block(
-            ['message = "access denied"'],
-        )
-
-    @pytest.mark.parametrize("delimiter", ["`", '"""'])
-    def test_preserves_whitespace_inside_multiline_literals(self, delimiter):
-        first = [f"message = {delimiter}hello", f"  world{delimiter}"]
-        second = [f"message = {delimiter}hello", f" world{delimiter}"]
-
-        assert sweeper.normalize_block(first) != sweeper.normalize_block(second)
-
-    def test_drops_indented_comment_only_and_blank_lines(self):
-        assert sweeper.normalize_block(
-            ["    # note", "    ", "    run_task()"],
-            hash_comments=True,
-            slash_comments=False,
-            preserve_indentation=True,
-        ) == ("    run_task()",)
-
-    def test_strips_inline_hash_and_dash_comments(self):
-        assert sweeper.normalize_block(
-            ["value=compute()# note"],
-            hash_comments=True,
-            slash_comments=False,
-        ) == ("value=compute()",)
-        assert sweeper.normalize_block(
-            ["SELECT compute()-- note"],
-            slash_comments=False,
-            dash_comments=True,
-        ) == ("SELECT compute()",)
-
-    @pytest.mark.parametrize("path", ["script.sh", "config.yaml", "settings.ini"])
-    def test_hash_literals_are_not_treated_as_comments_in_other_languages(self, path):
-        options = sweeper._comment_options(path)
-
-        assert sweeper.normalize_block(
-            ["target=host/#blue"], **options
-        ) != sweeper.normalize_block(
-            ["target=host/#green"], **options
-        )
-
-    def test_ruby_hash_comments_can_start_without_whitespace(self):
-        options = sweeper._comment_options("parser.rb")
-
-        assert sweeper.normalize_block(
-            ["value=compute()# blue"], **options
-        ) == sweeper.normalize_block(
-            ["value=compute()# green"], **options
-        )
-
-    def test_preserves_python_indentation_when_requested(self):
-        assert sweeper.normalize_block(
-            ["    if ready:", "        run_task()"],
-            hash_comments=True,
-            slash_comments=False,
-            preserve_indentation=True,
-        ) != sweeper.normalize_block(
-            ["    if ready:", "      run_task()"],
-            hash_comments=True,
-            slash_comments=False,
-            preserve_indentation=True,
-        )
 
 
 class TestInvariantTokens:
@@ -447,29 +353,32 @@ class TestSweep:
         ]
 
     def test_mirror_does_not_re_report_seed_after_comment_stripping(self, tmp_path):
-        (tmp_path / "query.js").write_text(
-            "// flagged range includes this comment\n"
-            "const normalizedOptions = rawOptions\n"
-            "  .filter((option) => option.enabled)\n"
-            "  .map((option) => option.name.trim())\n"
-            "  .sort();\n"
+        """Only normalized mode drops lines, so only there can the reported
+        range drift off the seed's own line numbers. Raw mode keeps every line
+        and cannot shift at all."""
+        (tmp_path / "query.py").write_text(
+            "# flagged range includes this comment\n"
+            "normalized_options = [\n"
+            "    option.name.strip()\n"
+            "    for option in raw_options\n"
+            "]\n"
             "\n"
-            "const normalizedOptions = rawOptions\n"
-            "  .filter((option) => option.enabled)\n"
-            "  .map((option) => option.name.trim())\n"
-            "  .sort();\n"
+            "normalized_options = [\n"
+            "    option.name.strip()\n"
+            "    for option in raw_options\n"
+            "]\n"
         )
 
         result = sweeper.sweep(
             signature="option-normalization",
             label="option normalization",
-            sites=["query.js:1-5"],
-            changed_files=["query.js"],
+            sites=["query.py:1-5"],
+            changed_files=["query.py"],
             root=tmp_path,
         )
 
         assert [candidate["site"] for candidate in result.candidates] == [
-            "query.js:7-10"
+            "query.py:7-10"
         ]
 
     def test_mirror_does_not_report_windows_overlapping_the_seed(self, tmp_path):
@@ -571,11 +480,10 @@ class TestSweep:
         result = self._sweep(repo)
         assert result.status == "no_source"
 
-
-class TestMirrorNormalizationGuards:
-    """A mirror asserts two blocks are the same code, so every normalization
-    step is a chance to claim that falsely. Each guard below must lose the
-    mirror rather than report one."""
+class TestRawMirrorMatching:
+    """Default mode for every language: blocks match when their text is
+    identical. No per-language knowledge, so there is no normalizer to get
+    wrong -- which is what retires the whole class of collision findings."""
 
     @staticmethod
     def _sweep(tmp_path, sites, changed_files):
@@ -597,447 +505,324 @@ class TestMirrorNormalizationGuards:
     def _heredoc(cls, payload):
         return cls.HEREDOC_SCRIPT.replace("PAYLOAD", payload)
 
-    def test_a_hash_line_inside_a_heredoc_is_payload_not_a_comment(self, tmp_path):
+    # --- the collision findings, now retired by construction ----------------
+    # Each of these was a reported false-positive under normalized matching.
+    # Raw matching refuses them because the text simply differs.
+
+    def test_heredoc_payload_differences_are_visible(self, tmp_path):
         (tmp_path / "script.sh").write_text(
             self._heredoc("alpha") + self._heredoc("beta")
         )
+        assert self._sweep(tmp_path, ["script.sh:2-5"], ["script.sh"]).candidates == []
 
-        result = self._sweep(tmp_path, ["script.sh:2-5"], ["script.sh"])
-
-        assert result.candidates == []
-
-    def test_heredoc_payload_spacing_is_significant(self, tmp_path):
+    def test_heredoc_payload_spacing_is_visible(self, tmp_path):
         (tmp_path / "spacing.sh").write_text(
-            "cat <<EOF\n"
-            "indent_one   two\n"
-            "EOF\n"
-            "cat <<EOF\n"
-            "indent_one two\n"
-            "EOF\n"
+            "cat <<EOF\nindent_one   two\nEOF\n"
+            "cat <<EOF\nindent_one two\nEOF\n"
         )
+        assert self._sweep(tmp_path, ["spacing.sh:1-3"], ["spacing.sh"]).candidates == []
 
-        result = self._sweep(tmp_path, ["spacing.sh:1-3"], ["spacing.sh"])
-
-        assert result.candidates == []
-
-    def test_identical_heredocs_still_mirror(self, tmp_path):
-        """The guard must not silence every shell mirror."""
-        (tmp_path / "same.sh").write_text(self._heredoc("alpha") * 2)
-
-        result = self._sweep(tmp_path, ["same.sh:2-5"], ["same.sh"])
-
-        assert [c["site"] for c in result.candidates] == ["same.sh:8-11"]
-
-    def test_yaml_nesting_depth_is_not_normalized_away(self, tmp_path):
-        (tmp_path / "compose.yaml").write_text(
-            "services:\n"
-            "  web:\n"
-            "    image: alpine_base\n"
-            "    command: serve_http\n"
-            "overrides:\n"
-            "      image: alpine_base\n"
-            "      command: serve_http\n"
-        )
-
-        result = self._sweep(tmp_path, ["compose.yaml:3-4"], ["compose.yaml"])
-
-        assert result.candidates == []
-
-    def test_yaml_blocks_at_the_same_depth_still_mirror(self, tmp_path):
-        (tmp_path / "same.yaml").write_text(
-            "web:\n"
-            "    image: alpine_base\n"
-            "    command: serve_http\n"
-            "api:\n"
-            "    image: alpine_base\n"
-            "    command: serve_http\n"
-        )
-
-        result = self._sweep(tmp_path, ["same.yaml:2-3"], ["same.yaml"])
-
-        assert [c["site"] for c in result.candidates] == ["same.yaml:5-6"]
-
-    def test_an_overlong_seed_is_refused_rather_than_scanned(self, tmp_path, monkeypatch):
-        """Cost is O(file lines x range lines) per seed; the cap is the bound."""
-        monkeypatch.setattr(sweeper, "MAX_MIRROR_BLOCK_LINES", 3)
-        block = "alpha_one();\nbeta_two();\ngamma_three();\ndelta_four();\n"
-        (tmp_path / "long.js").write_text(block * 2)
-
-        result = self._sweep(tmp_path, ["long.js:1-4"], ["long.js"])
-
-        assert result.candidates == []
-
-    def test_a_seed_within_the_cap_still_mirrors(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(sweeper, "MAX_MIRROR_BLOCK_LINES", 4)
-        block = "alpha_one();\nbeta_two();\ngamma_three();\ndelta_four();\n"
-        (tmp_path / "long.js").write_text(block * 2)
-
-        result = self._sweep(tmp_path, ["long.js:1-4"], ["long.js"])
-
-        assert [c["site"] for c in result.candidates] == ["long.js:5-8"]
-
-    def test_differing_non_utf8_bytes_are_not_reported_as_a_mirror(self, tmp_path):
-        """Both blocks decode to U+FFFD under errors='replace' and would
-        otherwise fingerprint alike despite differing on disk."""
-        (tmp_path / "legacy.js").write_bytes(
-            b'const label = "caf\xe9";\nconst other = compute_value();\n'
-            b'const label = "caf\xe8";\nconst other = compute_value();\n'
-        )
-
-        result = self._sweep(tmp_path, ["legacy.js:1-2"], ["legacy.js"])
-
-        assert result.candidates == []
-
-    def test_the_same_block_in_valid_utf8_does_mirror(self, tmp_path):
-        (tmp_path / "clean.js").write_bytes(
-            'const label = "café";\nconst other = compute_value();\n'.encode() * 2
-        )
-
-        result = self._sweep(tmp_path, ["clean.js:1-2"], ["clean.js"])
-
-        assert [c["site"] for c in result.candidates] == ["clean.js:3-4"]
-
-    def test_lossy_files_are_still_readable_for_token_sweeps(self, tmp_path):
-        """Only exact matching refuses lossy text; the token sweep tolerates it."""
-        path = tmp_path / "legacy.py"
-        path.write_bytes(b'value = "caf\xe9".read_text().encode()\n')
-
-        assert sweeper._is_lossy_text(path) is True
-        assert sweeper._read_lines(path) == ['value = "caf�".read_text().encode()']
-
-    def test_a_heredoc_terminator_with_trailing_blanks_is_still_payload(self, tmp_path):
-        """Bash ends a heredoc only on a line that is exactly the delimiter, so
-        ``EOF   `` must not expose the lines after it to comment stripping."""
-        block = (
-            "cat <<EOF\n"
-            "alpha_data\n"
-            "EOF   \n"
-            "# PAYLOAD\n"
-            "EOF\n"
-        )
+    def test_heredoc_terminator_lookalikes_are_visible(self, tmp_path):
+        block = "cat <<EOF\nalpha_data\nEOF   \n# PAYLOAD\nEOF\n"
         (tmp_path / "fake_end.sh").write_text(
             block.replace("PAYLOAD", "FIRST_DATA")
             + block.replace("PAYLOAD", "SECOND_DATA")
         )
+        assert self._sweep(tmp_path, ["fake_end.sh:1-5"], ["fake_end.sh"]).candidates == []
 
-        result = self._sweep(tmp_path, ["fake_end.sh:1-5"], ["fake_end.sh"])
-
-        assert result.candidates == []
-
-    def test_heredoc_payload_trailing_whitespace_is_significant(self, tmp_path):
-        (tmp_path / "trailing.sh").write_text(
-            "cat <<EOF\n"
-            "alpha_one \n"
-            "EOF\n"
-            "cat <<EOF\n"
-            "alpha_one  \n"
-            "EOF\n"
-        )
-
-        result = self._sweep(tmp_path, ["trailing.sh:1-3"], ["trailing.sh"])
-
-        assert result.candidates == []
-
-    def test_removing_a_block_comment_does_not_weld_two_tokens(self, tmp_path):
-        """``account/**/display_name`` is two tokens; ``accountdisplay_name``
-        is one. Dropping the comment without a separator conflates them."""
-        (tmp_path / "report.sql").write_text(
-            "SELECT account/**/display_name FROM records\n"
-            "WHERE archived_at IS NULL\n"
-            "SELECT accountdisplay_name FROM records\n"
-            "WHERE archived_at IS NULL\n"
-        )
-
-        result = self._sweep(tmp_path, ["report.sql:1-2"], ["report.sql"])
-
-        assert result.candidates == []
-
-    def test_a_block_comment_between_lines_still_mirrors(self, tmp_path):
-        """The separator must not stop genuinely identical SQL from matching."""
-        (tmp_path / "same.sql").write_text(
-            "SELECT account/**/display_name FROM records\n"
-            "WHERE archived_at IS NULL\n"
-            "SELECT account /* note */ display_name FROM records\n"
-            "WHERE archived_at IS NULL\n"
-        )
-
-        result = self._sweep(tmp_path, ["same.sql:1-2"], ["same.sql"])
-
-        assert [c["site"] for c in result.candidates] == ["same.sql:3-4"]
-
-    def test_a_hash_inside_a_yaml_block_scalar_is_scalar_data(self, tmp_path):
-        (tmp_path / "messages.yaml").write_text(
-            "first:\n"
-            "  message: |\n"
-            "    # alpha_payload\n"
-            "    body_line\n"
-            "second:\n"
-            "  message: |\n"
-            "    # beta_payload\n"
-            "    body_line\n"
-        )
-
-        result = self._sweep(tmp_path, ["messages.yaml:2-4"], ["messages.yaml"])
-
-        assert result.candidates == []
-
-    def test_a_real_yaml_comment_is_still_stripped(self, tmp_path):
-        """The scalar guard is scoped to block-scalar bodies, not all of YAML."""
-        (tmp_path / "commented.yaml").write_text(
-            "first:\n"
-            "  # alpha note\n"
-            "  image: alpine_base\n"
-            "  command: serve_http\n"
-            "second:\n"
-            "  # beta note\n"
-            "  image: alpine_base\n"
-            "  command: serve_http\n"
-        )
-
-        result = self._sweep(tmp_path, ["commented.yaml:2-4"], ["commented.yaml"])
-
-        assert [c["site"] for c in result.candidates] == ["commented.yaml:7-8"]
-
-    def test_markdown_urls_are_not_truncated_as_slash_comments(self, tmp_path):
-        """``//`` in ``https://`` is not a comment marker in prose."""
-        (tmp_path / "docs.md").write_text(
-            "Docs at https://alpha.example/path\n"
-            "Shared trailing sentence here\n"
-            "Docs at https://beta.example/path\n"
-            "Shared trailing sentence here\n"
-        )
-
-        result = self._sweep(tmp_path, ["docs.md:1-2"], ["docs.md"])
-
-        assert result.candidates == []
-
-    def test_slash_comments_still_apply_to_c_family_files(self, tmp_path):
-        (tmp_path / "handler.ts").write_text(
-            "const handler = buildHandler(); // alpha note\n"
-            "registerHandler(handler);\n"
-            "const handler = buildHandler(); // beta note\n"
-            "registerHandler(handler);\n"
-        )
-
-        result = self._sweep(tmp_path, ["handler.ts:1-2"], ["handler.ts"])
-
-        assert [c["site"] for c in result.candidates] == ["handler.ts:3-4"]
-
-    def test_lines_inside_a_literal_do_not_mirror_executable_code(self, tmp_path):
-        """Same text, different lexical state: fixing the call site cannot
-        imply editing the template that merely spells it out."""
-        (tmp_path / "runner.js").write_text(
-            "const template = `\n"
-            "alpha_task()\n"
-            "beta_task()\n"
-            "`;\n"
-            "alpha_task()\n"
-            "beta_task()\n"
-        )
-
-        result = self._sweep(tmp_path, ["runner.js:2-3"], ["runner.js"])
-
-        assert result.candidates == []
-
-    def test_executable_code_still_mirrors_executable_code(self, tmp_path):
-        (tmp_path / "calls.js").write_text(
-            "alpha_task();\n"
-            "beta_task();\n"
-            "alpha_task();\n"
-            "beta_task();\n"
-        )
-
-        result = self._sweep(tmp_path, ["calls.js:1-2"], ["calls.js"])
-
-        assert [c["site"] for c in result.candidates] == ["calls.js:3-4"]
-
-    @pytest.mark.parametrize("name", ["Makefile", "build.mk", "Makefile.common"])
-    def test_makefile_recipe_tabs_are_significant(self, tmp_path, name):
-        """A leading tab is what makes a line a recipe rather than a directive."""
-        (tmp_path / name).write_text(
-            "target_one:\n"
-            "\texport build_mode=enabled\n"
-            "\trun_step_two\n"
-            "export build_mode=enabled\n"
-            "run_step_two\n"
-        )
-
-        result = self._sweep(tmp_path, [f"{name}:2-3"], [name])
-
-        assert result.candidates == []
-
-    def test_a_non_identifier_heredoc_delimiter_is_recognized(self, tmp_path):
-        """Bash applies quote removal but no expansion, so ``<<$EOF`` ends on a
-        line reading ``$EOF``."""
-        block = (
-            "cat <<$EOF\n"
-            "# PAYLOAD\n"
-            "shared_body\n"
-            "$EOF\n"
-        )
+    def test_non_identifier_heredoc_delimiters_need_no_parsing(self, tmp_path):
+        block = "cat <<$EOF\n# PAYLOAD\nshared_body\n$EOF\n"
         (tmp_path / "dollar.sh").write_text(
             block.replace("PAYLOAD", "alpha_data")
             + block.replace("PAYLOAD", "beta_data")
         )
+        assert self._sweep(tmp_path, ["dollar.sh:1-4"], ["dollar.sh"]).candidates == []
 
-        result = self._sweep(tmp_path, ["dollar.sh:1-4"], ["dollar.sh"])
-
-        assert result.candidates == []
-
-    @pytest.mark.parametrize("opener,terminator", [
-        ("cat <<'EOF'", "EOF"),
-        ("cat <<\\EOF", "EOF"),
-        ("cat <<-EOF", "\tEOF"),
-    ])
-    def test_quoted_and_escaped_heredoc_delimiters_terminate(
-        self, tmp_path, opener, terminator
-    ):
-        """Quote removal means all these forms close on a plain ``EOF``."""
-        block = f"{opener}\n# PAYLOAD\nshared_body\n{terminator}\n"
-        (tmp_path / "forms.sh").write_text(
-            block.replace("PAYLOAD", "alpha_data")
-            + block.replace("PAYLOAD", "beta_data")
+    def test_yaml_nesting_depth_is_visible(self, tmp_path):
+        (tmp_path / "compose.yaml").write_text(
+            "services:\n  web:\n    image: alpine_base\n    command: serve_http\n"
+            "overrides:\n      image: alpine_base\n      command: serve_http\n"
         )
+        assert self._sweep(
+            tmp_path, ["compose.yaml:3-4"], ["compose.yaml"]
+        ).candidates == []
 
-        result = self._sweep(tmp_path, ["forms.sh:1-4"], ["forms.sh"])
-
-        assert result.candidates == []
-
-    def test_an_unclassifiable_heredoc_opener_declines_the_rest_of_the_file(
-        self, tmp_path
-    ):
-        """If we cannot find where the payload ends, nothing after it is code."""
-        flags = sweeper._heredoc_body_flags([
-            "cat <<;",
-            "# alpha_data",
-            "EOF",
-        ])
-
-        assert flags == [False, True, True]
-
-    def test_a_postgres_dollar_quoted_body_is_string_data(self, tmp_path):
-        """``--`` inside ``$body$ ... $body$`` is content, not a SQL comment."""
-        block = (
-            "SELECT $body$\n"
-            "-- PAYLOAD\n"
-            "shared_statement\n"
-            "$body$ FROM records\n"
+    def test_yaml_block_scalar_payloads_are_visible(self, tmp_path):
+        (tmp_path / "messages.yaml").write_text(
+            "first:\n  message: |\n    # alpha_payload\n    body_line\n"
+            "second:\n  message: |\n    # beta_payload\n    body_line\n"
         )
+        assert self._sweep(
+            tmp_path, ["messages.yaml:2-4"], ["messages.yaml"]
+        ).candidates == []
+
+    def test_yaml_plain_scalar_spacing_is_visible(self, tmp_path):
+        (tmp_path / "values.yaml").write_text(
+            "first:\n  message: hello  world\n  level: verbose_mode\n"
+            "second:\n  message: hello world\n  level: verbose_mode\n"
+        )
+        assert self._sweep(
+            tmp_path, ["values.yaml:2-3"], ["values.yaml"]
+        ).candidates == []
+
+    def test_makefile_recipe_tabs_are_visible(self, tmp_path):
+        (tmp_path / "Makefile").write_text(
+            "target_one:\n\texport build_mode=enabled\n\trun_step_two\n"
+            "export build_mode=enabled\nrun_step_two\n"
+        )
+        assert self._sweep(tmp_path, ["Makefile:2-3"], ["Makefile"]).candidates == []
+
+    def test_sql_dollar_quoted_payloads_are_visible(self, tmp_path):
+        block = "SELECT $body$\n-- PAYLOAD\nshared_statement\n$body$ FROM records\n"
         (tmp_path / "fn.sql").write_text(
             block.replace("PAYLOAD", "alpha_payload")
             + block.replace("PAYLOAD", "beta_payload")
         )
+        assert self._sweep(tmp_path, ["fn.sql:1-4"], ["fn.sql"]).candidates == []
 
-        result = self._sweep(tmp_path, ["fn.sql:1-4"], ["fn.sql"])
-
-        assert result.candidates == []
-
-    def test_a_real_sql_comment_is_still_stripped(self, tmp_path):
-        (tmp_path / "plain.sql").write_text(
-            "SELECT account_id FROM records -- alpha note\n"
-            "WHERE archived_at IS NULL\n"
-            "SELECT account_id FROM records -- beta note\n"
-            "WHERE archived_at IS NULL\n"
+    def test_block_comments_do_not_weld_tokens(self, tmp_path):
+        (tmp_path / "report.sql").write_text(
+            "SELECT account/**/display_name FROM records\nWHERE archived_at IS NULL\n"
+            "SELECT accountdisplay_name FROM records\nWHERE archived_at IS NULL\n"
         )
+        assert self._sweep(tmp_path, ["report.sql:1-2"], ["report.sql"]).candidates == []
 
-        result = self._sweep(tmp_path, ["plain.sql:1-2"], ["plain.sql"])
+    def test_markdown_urls_survive_intact(self, tmp_path):
+        (tmp_path / "docs.md").write_text(
+            "Docs at https://alpha.example/path\nShared trailing sentence here\n"
+            "Docs at https://beta.example/path\nShared trailing sentence here\n"
+        )
+        assert self._sweep(tmp_path, ["docs.md:1-2"], ["docs.md"]).candidates == []
 
-        assert [c["site"] for c in result.candidates] == ["plain.sql:3-4"]
-
-    def test_slashes_inside_a_regex_literal_are_not_a_comment(self, tmp_path):
-        """``/[//]alpha/`` is a valid regex whose slashes belong to it."""
+    def test_regex_literal_slashes_survive_intact(self, tmp_path):
         (tmp_path / "routes.js").write_text(
-            "const routePattern = /[//]alpha/;\n"
-            "registerRoute(routePattern);\n"
-            "const routePattern = /[//]beta/;\n"
-            "registerRoute(routePattern);\n"
+            "const routePattern = /[//]alpha/;\nregisterRoute(routePattern);\n"
+            "const routePattern = /[//]beta/;\nregisterRoute(routePattern);\n"
         )
+        assert self._sweep(tmp_path, ["routes.js:1-2"], ["routes.js"]).candidates == []
 
-        result = self._sweep(tmp_path, ["routes.js:1-2"], ["routes.js"])
-
-        assert result.candidates == []
-
-    def test_a_seed_only_matches_files_of_the_same_language(self, tmp_path):
-        """Identical text in shell and make is a coincidence, not a duplicate."""
-        body = "export build_mode=enabled\ninclude common.mk\n"
-        (tmp_path / "build.sh").write_text(body)
-        (tmp_path / "Makefile").write_text(body)
-
-        result = self._sweep(tmp_path, ["build.sh:1-2"], ["build.sh", "Makefile"])
-
-        assert result.candidates == []
-
-    def test_a_seed_still_matches_a_compatible_sibling_language(self, tmp_path):
-        """TS and JS normalize identically, so they remain comparable."""
-        body = "const parsed = parsePayload(raw);\nemitResult(parsed);\n"
-        (tmp_path / "a.js").write_text(body)
-        (tmp_path / "b.ts").write_text(body)
-
-        result = self._sweep(tmp_path, ["a.js:1-2"], ["a.js", "b.ts"])
-
-        assert [c["site"] for c in result.candidates] == ["b.ts:1-2"]
-
-    def test_tool_directives_in_comments_are_content(self, tmp_path):
-        """webpackMode changes loading behavior; it is not formatting."""
+    def test_tool_directives_survive_intact(self, tmp_path):
         (tmp_path / "imports.js").write_text(
             'const mod = import(/* webpackMode: "eager" */ "./alpha");\n'
             "registerModule(mod);\n"
             'const mod = import(/* webpackMode: "lazy" */ "./alpha");\n'
             "registerModule(mod);\n"
         )
+        assert self._sweep(tmp_path, ["imports.js:1-2"], ["imports.js"]).candidates == []
 
-        result = self._sweep(tmp_path, ["imports.js:1-2"], ["imports.js"])
+    # --- what raw matching still reports ------------------------------------
 
-        assert result.candidates == []
+    def test_identical_blocks_still_mirror(self, tmp_path):
+        (tmp_path / "same.sh").write_text(self._heredoc("alpha") * 2)
+        result = self._sweep(tmp_path, ["same.sh:2-5"], ["same.sh"])
+        assert [c["site"] for c in result.candidates] == ["same.sh:8-11"]
 
-    def test_an_ordinary_comment_is_still_stripped(self, tmp_path):
+    def test_identical_makefile_blocks_still_mirror(self, tmp_path):
+        (tmp_path / "Makefile").write_text(
+            "one:\n\texport build_mode=enabled\n\trun_step_two\n"
+            "two:\n\texport build_mode=enabled\n\trun_step_two\n"
+        )
+        result = self._sweep(tmp_path, ["Makefile:2-3"], ["Makefile"])
+        assert [c["site"] for c in result.candidates] == ["Makefile:5-6"]
+
+    def test_a_comment_difference_costs_the_mirror_outside_python(self, tmp_path):
+        """The accepted recall cost: unsupported languages get exact matching
+        only, so a duplicate carrying a different comment is not reported."""
         (tmp_path / "notes.js").write_text(
-            "const mod = loadModule(); /* alpha note */\n"
-            "registerModule(mod);\n"
-            "const mod = loadModule(); /* beta note */\n"
-            "registerModule(mod);\n"
+            "const mod = loadModule(); /* alpha note */\nregisterModule(mod);\n"
+            "const mod = loadModule(); /* beta note */\nregisterModule(mod);\n"
         )
+        assert self._sweep(tmp_path, ["notes.js:1-2"], ["notes.js"]).candidates == []
 
-        result = self._sweep(tmp_path, ["notes.js:1-2"], ["notes.js"])
+    # --- language scoping ---------------------------------------------------
 
-        assert [c["site"] for c in result.candidates] == ["notes.js:3-4"]
+    def test_a_seed_never_matches_another_language(self, tmp_path):
+        body = "export build_mode=enabled\ninclude common.mk\n"
+        (tmp_path / "build.sh").write_text(body)
+        (tmp_path / "Makefile").write_text(body)
+        assert self._sweep(
+            tmp_path, ["build.sh:1-2"], ["build.sh", "Makefile"]
+        ).candidates == []
 
-    def test_yaml_plain_scalar_spacing_is_part_of_the_value(self, tmp_path):
-        (tmp_path / "values.yaml").write_text(
-            "first:\n"
-            "  message: hello  world\n"
-            "  level: verbose_mode\n"
-            "second:\n"
-            "  message: hello world\n"
-            "  level: verbose_mode\n"
+    @pytest.mark.parametrize("other,expected", [
+        ("b.ts", "b.ts:1-2"),      # same ecmascript family
+        ("b.mjs", "b.mjs:1-2"),    # same ecmascript family
+    ])
+    def test_a_seed_matches_its_own_language_family(self, tmp_path, other, expected):
+        body = "const parsed = parsePayload(raw);\nemitResult(parsed);\n"
+        (tmp_path / "a.js").write_text(body)
+        (tmp_path / other).write_text(body)
+        result = self._sweep(tmp_path, ["a.js:1-2"], ["a.js", other])
+        assert [c["site"] for c in result.candidates] == [expected]
+
+    def test_yaml_suffix_aliases_are_one_family(self, tmp_path):
+        body = "image: alpine_base\ncommand: serve_http\n"
+        (tmp_path / "a.yaml").write_text(body)
+        (tmp_path / "b.yml").write_text(body)
+        result = self._sweep(tmp_path, ["a.yaml:1-2"], ["a.yaml", "b.yml"])
+        assert [c["site"] for c in result.candidates] == ["b.yml:1-2"]
+
+    # --- documented limitation ---------------------------------------------
+
+    def test_identical_text_in_a_js_literal_is_a_known_false_positive(self, tmp_path):
+        """Accepted limitation, not a bug to fix here.
+
+        Raw matching has no lexical context, so lines inside a template literal
+        that spell out the same calls made elsewhere still match. Detecting this
+        needs a real JS parser -- the complexity boundary this module stays
+        behind. Python has no such gap (see TestPythonNormalizedMatching).
+        """
+        (tmp_path / "runner.js").write_text(
+            "const template = `\nalpha_task()\nbeta_task()\n`;\n"
+            "alpha_task()\nbeta_task()\n"
         )
+        result = self._sweep(tmp_path, ["runner.js:2-3"], ["runner.js"])
+        assert [c["site"] for c in result.candidates] == ["runner.js:5-6"]
 
-        result = self._sweep(tmp_path, ["values.yaml:2-3"], ["values.yaml"])
+    # --- language-agnostic guards, unchanged by the mode split --------------
 
-        assert result.candidates == []
+    def test_an_overlong_seed_is_refused_rather_than_scanned(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sweeper, "MAX_MIRROR_BLOCK_LINES", 3)
+        block = "alpha_one();\nbeta_two();\ngamma_three();\ndelta_four();\n"
+        (tmp_path / "long.js").write_text(block * 2)
+        assert self._sweep(tmp_path, ["long.js:1-4"], ["long.js"]).candidates == []
+
+    def test_a_seed_within_the_cap_still_mirrors(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sweeper, "MAX_MIRROR_BLOCK_LINES", 4)
+        block = "alpha_one();\nbeta_two();\ngamma_three();\ndelta_four();\n"
+        (tmp_path / "long.js").write_text(block * 2)
+        result = self._sweep(tmp_path, ["long.js:1-4"], ["long.js"])
+        assert [c["site"] for c in result.candidates] == ["long.js:5-8"]
+
+    def test_differing_non_utf8_bytes_are_not_reported_as_a_mirror(self, tmp_path):
+        (tmp_path / "legacy.js").write_bytes(
+            b'const label = "caf\xe9";\nconst other = compute_value();\n'
+            b'const label = "caf\xe8";\nconst other = compute_value();\n'
+        )
+        assert self._sweep(tmp_path, ["legacy.js:1-2"], ["legacy.js"]).candidates == []
+
+    def test_the_same_block_in_valid_utf8_does_mirror(self, tmp_path):
+        (tmp_path / "clean.js").write_bytes(
+            'const label = "café";\nconst other = compute_value();\n'.encode() * 2
+        )
+        result = self._sweep(tmp_path, ["clean.js:1-2"], ["clean.js"])
+        assert [c["site"] for c in result.candidates] == ["clean.js:3-4"]
+
+    def test_lossy_files_are_still_readable_for_token_sweeps(self, tmp_path):
+        path = tmp_path / "legacy.py"
+        path.write_bytes(b'value = "caf\xe9".read_text().encode()\n')
+        assert sweeper._is_lossy_text(path) is True
+        assert sweeper._read_lines(path) == ['value = "caf�".read_text().encode()']
 
     def test_one_copy_is_reported_once_across_seeds_of_different_lengths(
         self, tmp_path
     ):
-        """Two seeds sharing a prefix must not report the same copy twice."""
         (tmp_path / "copy.js").write_text(
-            "alpha_step();\n"
-            "beta_step();\n"
-            "gamma_step();\n"
-            "unrelated_call();\n"
-            "alpha_step();\n"
-            "beta_step();\n"
-            "gamma_step();\n"
+            "alpha_step();\nbeta_step();\ngamma_step();\nunrelated_call();\n"
+            "alpha_step();\nbeta_step();\ngamma_step();\n"
         )
-
         result = sweeper.sweep(
             signature="prefix", label="shared prefix",
             sites=["copy.js:1-2", "copy.js:1-3"],
             changed_files=["copy.js"], root=tmp_path,
         )
-
         mirrors = [c for c in result.candidates if c["candidateClass"] == "mirror"]
         assert [c["site"] for c in mirrors] == ["copy.js:5-7"]
+
+
+class TestPythonNormalizedMatching:
+    """The one explicitly supported language. Comments come off via Python's
+    own tokenizer; whitespace does not, because indentation is semantic."""
+
+    @staticmethod
+    def _sweep(tmp_path, sites, changed_files):
+        return sweeper.sweep(
+            signature="py", label="py",
+            sites=sites, changed_files=changed_files, root=tmp_path,
+        )
+
+    def test_comments_do_not_break_a_python_mirror(self, tmp_path):
+        (tmp_path / "loader.py").write_text(
+            "def load_alpha(path):  # cached\n"
+            "    payload = path.read_text()\n"
+            "    return payload.encode()\n"
+            "def load_beta(path):  # uncached\n"
+            "    payload = path.read_text()\n"
+            "    return payload.encode()\n"
+        )
+        result = self._sweep(tmp_path, ["loader.py:2-3"], ["loader.py"])
+        assert [c["site"] for c in result.candidates] == ["loader.py:5-6"]
+
+    def test_comment_only_and_blank_lines_do_not_break_a_python_mirror(self, tmp_path):
+        (tmp_path / "gapped.py").write_text(
+            "payload = path.read_text()\n"
+            "# an explanatory note\n"
+            "\n"
+            "result = payload.encode()\n"
+            "payload = path.read_text()\n"
+            "result = payload.encode()\n"
+        )
+        result = self._sweep(tmp_path, ["gapped.py:1-4"], ["gapped.py"])
+        assert [c["site"] for c in result.candidates] == ["gapped.py:5-6"]
+
+    def test_indentation_still_distinguishes_python_blocks(self, tmp_path):
+        (tmp_path / "levels.py").write_text(
+            "if outer_ready:\n"
+            "    payload = path.read_text()\n"
+            "    result = payload.encode()\n"
+            "if other_ready:\n"
+            "        payload = path.read_text()\n"
+            "        result = payload.encode()\n"
+        )
+        assert self._sweep(tmp_path, ["levels.py:2-3"], ["levels.py"]).candidates == []
+
+    def test_internal_spacing_still_distinguishes_python_blocks(self, tmp_path):
+        (tmp_path / "spacing.py").write_text(
+            'label = "hello  world"\n'
+            "result = label.encode()\n"
+            'label = "hello world"\n'
+            "result = label.encode()\n"
+        )
+        assert self._sweep(tmp_path, ["spacing.py:1-2"], ["spacing.py"]).candidates == []
+
+    def test_a_docstring_body_does_not_mirror_the_code_it_quotes(self, tmp_path):
+        """tokenize tells us which lines are string bodies, so Python does not
+        have the residual false positive that raw-mode languages do."""
+        (tmp_path / "quoted.py").write_text(
+            "USAGE = '''\n"
+            "alpha_task()\n"
+            "beta_task()\n"
+            "'''\n"
+            "alpha_task()\n"
+            "beta_task()\n"
+        )
+        assert self._sweep(tmp_path, ["quoted.py:2-3"], ["quoted.py"]).candidates == []
+
+    def test_python_never_matches_a_non_python_file(self, tmp_path):
+        body = "payload = path.read_text()\nresult = payload.encode()\n"
+        (tmp_path / "a.py").write_text(body)
+        (tmp_path / "b.txt").write_text(body)
+        assert self._sweep(tmp_path, ["a.py:1-2"], ["a.py", "b.txt"]).candidates == []
+
+    def test_unparseable_python_falls_back_to_raw_matching(self, tmp_path):
+        """A file mid-edit still gets exact matching rather than nothing."""
+        broken = "def broken(:\n    payload = path.read_text()\n"
+        (tmp_path / "broken.py").write_text(broken * 2)
+
+        assert sweeper._python_block_lines(broken.split("\n")) is None
+        result = self._sweep(tmp_path, ["broken.py:1-2"], ["broken.py"])
+        assert [c["site"] for c in result.candidates] == ["broken.py:3-4"]
+
+    def test_a_parseable_file_is_never_compared_against_an_unparseable_one(
+        self, tmp_path
+    ):
+        """Different keys: one indexes as python, the other as raw .py text."""
+        body = "payload = path.read_text()\nresult = payload.encode()\n"
+        (tmp_path / "good.py").write_text(body)
+        (tmp_path / "bad.py").write_text("def broken(:\n" + body)
+
+        result = self._sweep(tmp_path, ["good.py:1-2"], ["good.py", "bad.py"])
+        assert result.candidates == []
 
 
 class TestReport:
@@ -1077,7 +862,23 @@ class TestReport:
             root=mirror_repo,
         )
 
-        assert "[mirror]" in sweeper.render_report(result)
+        # TS/JS are one family but not a supported normalized language, so this
+        # match is text-identical and the report says so.
+        assert "[mirror exact]" in sweeper.render_report(result)
+
+    def test_report_labels_a_normalized_mirror_as_such(self, tmp_path):
+        (tmp_path / "loader.py").write_text(
+            "payload = path.read_text()  # cached\n"
+            "result = payload.encode()\n"
+            "payload = path.read_text()\n"
+            "result = payload.encode()\n"
+        )
+        result = sweeper.sweep(
+            signature="loader", label="loader",
+            sites=["loader.py:1-2"], changed_files=["loader.py"], root=tmp_path,
+        )
+
+        assert "[mirror normalized]" in sweeper.render_report(result)
 
 
 class TestCli:

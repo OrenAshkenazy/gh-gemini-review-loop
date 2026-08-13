@@ -22,32 +22,53 @@ candidate has to match what the flagged sites have in common, not what any one
 of them happens to contain.
 
 A separate exact-block shape handles a multi-line range from one flagged site:
-comments are stripped, whitespace is collapsed, and the normalized sequence is
-fingerprinted and searched across the changed files. These candidates are
-reported as ``mirror`` rather than token-intersection matches.
+the block is fingerprinted and searched across the changed files. These
+candidates are reported as ``mirror`` rather than token-intersection matches.
 
-Exact matching is held to a stricter standard than the token sweep, because a
-mirror claims two blocks are *the same code*. Anything that could make two
-different blocks normalize alike is refused rather than guessed at: heredoc
-payloads keep their ``#`` lines and their spacing, indentation-sensitive formats
-keep their indentation, and a file that is not valid UTF-8 is skipped entirely
-rather than fingerprinted through lossy replacement characters. Each guard can
-only lose a mirror, never invent one.
+Mirror matching has two modes, and the choice of boundary is the design:
+
+**Raw, for every language.** Blocks match when their text is identical. This
+catches copy-paste, which is what a duplicate detector is for, and it makes
+almost no semantic assumptions -- so there is no per-language normalizer to get
+wrong.
+
+**Normalized, for explicitly supported languages only.** Today that is Python
+alone. Comments are removed using Python's own ``tokenize`` module, never a
+hand-rolled scanner, so two blocks differing only in their comments still match.
+Whitespace is *not* collapsed, because indentation is semantic in Python.
+
+The two modes never mix, and normalized blocks are only ever compared against
+normalized blocks of the same language. Raw blocks are compared within a
+language family (``.ts`` against ``.js``, ``.yml`` against ``.yaml``) so that
+identical text in ``build.sh`` and ``Makefile`` -- a coincidence of both
+spelling ``export`` -- is not called a duplicate.
+
+The optimization target is **precision over recall over language coverage**.
+This report is advisory: a missed duplicate costs one informational finding,
+while a false one makes the whole report untrustworthy. Adding a language means
+adding a real tokenizer for it, not another pile of pattern rules.
+
+Known limitation, accepted rather than fixed: in raw mode a block whose text is
+identical to another can still be reported even when the two sit in different
+lexical contexts -- lines inside a JavaScript template literal that spell out
+the same calls made elsewhere. Detecting that needs a parser per language, which
+is the complexity boundary this module deliberately stays behind. Python does
+not have this gap, because ``tokenize`` tells us which lines are string bodies.
 
 This reports. It never edits, and it never reads a file outside the changed set,
 so the blast radius cannot leave the PR's own diff.
 
-Pure stdlib, no network. Language-agnostic: it tokenizes rather than parsing, so
-it degrades to "no candidates" on syntax it does not understand instead of
-guessing.
+Pure stdlib, no network.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import re
+import tokenize as _pytokenize
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -87,105 +108,33 @@ _STRING_RE = re.compile(r"""(['"])(?:\\.|(?!\1).)*\1""", re.DOTALL)
 _NUMBER_RE = re.compile(r"\b\d[\d_.]*\b")
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z_0-9]*|[(){}\[\].,;:=<>!+\-*/%&|^~@]+")
 
-_HASH_COMMENT_SUFFIXES = frozenset({
-    ".py", ".rb", ".sh", ".bash", ".zsh", ".fish",
-    ".yaml", ".yml", ".toml", ".ini", ".cfg",
-})
-_DASH_COMMENT_SUFFIXES = frozenset({".sql"})
-_HASH_COMMENT_NO_SPACE_SUFFIXES = frozenset({".py", ".rb", ".toml"})
+# Mirror matching is normalized only for languages we tokenize with a real
+# tokenizer. Everything else gets raw text matching, which needs no per-language
+# knowledge and therefore cannot get a language wrong.
+_PYTHON_SUFFIXES = frozenset({".py", ".pyi"})
 
-# ``//`` and ``/* */`` are allowlisted, never assumed. Treating every unknown
-# suffix as C-family truncates a bare URL in prose at the ``//`` of ``https://``,
-# which makes two documents that differ only in their links compare equal.
-_SLASH_LINE_COMMENT_SUFFIXES = frozenset({
-    ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh",
-    ".cs", ".java", ".kt", ".kts", ".scala", ".swift",
-    ".go", ".rs", ".dart", ".php", ".m", ".mm", ".zig",
-    ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts",
-    ".json5", ".jsonc", ".proto", ".gradle", ".groovy",
-    ".scss", ".less",
-})
-# CSS and SQL have ``/* */`` but no ``//``: in both, ``url(https://x)`` and
-# ``'https://x'`` are values, not comments.
-_BLOCK_COMMENT_SUFFIXES = _SLASH_LINE_COMMENT_SUFFIXES | {".css", ".sql"}
+# Token types whose body is string data rather than code. Populated defensively
+# because the FSTRING_* types only exist on Python 3.12+.
+_STRING_TOKEN_TYPES = {_pytokenize.STRING}
+for _name in ("FSTRING_START", "FSTRING_MIDDLE", "FSTRING_END"):
+    _type = getattr(_pytokenize, _name, None)
+    if _type is not None:
+        _STRING_TOKEN_TYPES.add(_type)
+del _name, _type
 
-_YAML_SUFFIXES = frozenset({".yaml", ".yml"})
+# Suffixes that are the same language for copy-paste purposes. This is file
+# extension aliasing, not language modeling: it exists so a block copied from a
+# .ts file into a .js file still reads as a duplicate, while identical text in
+# build.sh and Makefile does not.
+_SUFFIX_FAMILIES = {
+    ".js": "ecmascript", ".jsx": "ecmascript", ".mjs": "ecmascript",
+    ".cjs": "ecmascript", ".ts": "ecmascript", ".tsx": "ecmascript",
+    ".mts": "ecmascript", ".cts": "ecmascript",
+    ".yaml": "yaml", ".yml": "yaml",
+    ".md": "markdown", ".markdown": "markdown",
+    ".sh": "shell", ".bash": "shell", ".zsh": "shell", ".ksh": "shell",
+}
 
-# Make distinguishes a recipe line from a directive by a single leading tab, so
-# a Makefile is indentation-sensitive. It is usually named rather than suffixed,
-# which is why _comment_options looks at the file name too.
-_MAKEFILE_NAMES = frozenset({"makefile", "gnumakefile", "bsdmakefile"})
-_MAKEFILE_SUFFIXES = frozenset({".mk", ".make"})
-
-# PostgreSQL dollar quoting: ``$$ ... $$`` or ``$tag$ ... $tag$``. The body is
-# string data, so the SQL ``--`` handler must not reach inside it.
-_DOLLAR_QUOTE_RE = re.compile(r"\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$")
-
-# A JavaScript regex literal, which owns its slashes: ``/[//]alpha/`` contains
-# no comment. Telling a regex from division needs the parser state we do not
-# have, so the lookbehind only rules out the clear division cases and a line
-# that still looks regex-ish is kept verbatim rather than normalized.
-_REGEX_LITERAL_RE = re.compile(
-    r"(?<![*/\w)\]])/(?![/*])(?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\])+/[dgimsuvy]*"
-)
-
-# Comments a compiler, bundler or analyzer reads. Removing one changes
-# behaviour, so it is content. The list is deliberately incomplete and errs
-# toward preserving: a comment kept by mistake only costs a mirror.
-_DIRECTIVE_RE = re.compile(
-    r"^[\s*!]*(?:"
-    r"@?ts-|eslint|prettier|biome-ignore|deno-lint|stylelint|jshint|jslint|"
-    r"webpack\w|vite-|rollup|esbuild|"
-    r"noqa|pragma|pylint|mypy|ruff|flake8|type:\s*ignore|"
-    r"go:|cgo|nolint|golangci|"
-    r"clang-format|clang-tidy|NOLINT|"
-    r"istanbul|codecov|coverage:|"
-    r"codeql|sonar|checkstyle|spotbugs|bandit|"
-    r"fmt:|lint:|SPDX-"
-    r")",
-    re.IGNORECASE,
-)
-
-# Shells where ``<<WORD`` opens a heredoc. Inside the payload a leading ``#`` is
-# data and the spacing is significant, so those lines bypass normalization
-# entirely. (fish has no heredocs, so it is deliberately absent.)
-_HEREDOC_SUFFIXES = frozenset({".sh", ".bash", ".zsh", ".ksh"})
-
-# Formats where leading whitespace carries meaning -- YAML nesting depth, Python
-# blocks, the layout rules of Haskell and F#, list/code-block nesting in prose.
-# Collapsing it would map structurally different blocks onto one fingerprint.
-_INDENTATION_SENSITIVE_SUFFIXES = frozenset({
-    ".py", ".pyi",
-    ".yaml", ".yml",
-    ".sass", ".styl",
-    ".haml", ".slim", ".pug", ".jade",
-    ".coffee", ".nim", ".elm",
-    ".hs", ".lhs", ".fs", ".fsx",
-    ".md", ".markdown", ".rst",
-})
-
-# Any heredoc-looking redirect. The lookbehind and lookahead exclude ``<<<``
-# (a here-string, which has no payload lines) and ``<<=``.
-_HEREDOC_ANY_RE = re.compile(r"(?<!<)<<(?![<=])")
-
-# The same redirect with its delimiter word captured. Bash performs quote
-# removal but no expansion on the word, so the delimiter can be any shell word:
-# ``EOF``, ``'EOF'``, ``$EOF``, ``\EOF``. Anything _HEREDOC_ANY_RE matches but
-# this does not is an opener we cannot classify, and the caller declines.
-_HEREDOC_OPEN_RE = re.compile(
-    r"(?<!<)<<(?![<=])(?P<indicator>[-~]?)[ \t]*"
-    r"(?P<word>(?:'[^']*'|\"[^\"]*\"|\\.|[^\s;&|<>()'\"`])+)"
-)
-
-# A YAML block scalar header: ``key: |``, ``- >-``, ``key: |2+``, optionally
-# followed by a comment. Its body is data, so a ``#`` line in it is content.
-_YAML_BLOCK_SCALAR_RE = re.compile(
-    r"(?:^|[:\-])[ \t]*[|>](?:[0-9][+-]?|[+-][0-9]?)?[ \t]*(?:#.*)?$"
-)
-
-# Tokens too common to carry signal. Keeping them would let a candidate match on
-# `self` alone. This is a stopword list, not a language model: an unknown
-# language simply contributes no stopwords and the token-count floor still holds.
 _STOPWORDS = frozenset({
     "self", "this", "if", "else", "elif", "for", "while", "return", "def",
     "class", "function", "const", "let", "var", "func", "fn", "in", "is",
@@ -254,475 +203,85 @@ def parse_site(raw: str) -> Site:
     return Site(raw, None)
 
 
-def _is_verbatim(flags: list[bool] | None, line_number: int) -> bool:
-    """Whether this line must pass through normalization untouched."""
-    return flags is not None and line_number < len(flags) and flags[line_number]
-
-
-def _opening_delimiter(
-    line: str, index: int, *, dollar_quotes: bool = False
-) -> str | None:
-    """The string delimiter opening at ``index``, if one does.
-
-    Both scanners track quote state independently, so both consult this -- a
-    delimiter one of them fails to recognize would let the other treat string
-    data as code.
-    """
-    for candidate in ('"""', "'''", '"', "'", "`"):
-        if line.startswith(candidate, index):
-            return candidate
-    if dollar_quotes:
-        match = _DOLLAR_QUOTE_RE.match(line, index)
-        if match:
-            return match.group(0)
-    return None
-
-
-def _heredoc_delimiter(word: str) -> str:
-    """Quote removal on a heredoc delimiter word, the way the shell does it.
-
-    No expansion is performed, so ``<<$EOF`` terminates on a line reading
-    ``$EOF``; ``<<'EOF'`` and ``<<\\EOF`` both terminate on ``EOF``.
-    """
-    out: list[str] = []
-    index = 0
-    while index < len(word):
-        character = word[index]
-        if character == "\\" and index + 1 < len(word):
-            out.append(word[index + 1])
-            index += 2
-        elif character in "'\"":
-            close = word.find(character, index + 1)
-            if close == -1:
-                out.append(word[index + 1:])
-                break
-            out.append(word[index + 1:close])
-            index = close + 1
-        else:
-            out.append(character)
-            index += 1
-    return "".join(out)
-
-
-def _heredoc_body_flags(lines: list[str]) -> list[bool]:
-    """Mark the lines that are heredoc payload rather than shell code.
-
-    A heredoc body is literal text: ``# ...`` in it is content, not a comment,
-    and its spacing is part of the data. Marking those lines keeps two ``cat
-    <<EOF`` blocks with different payloads from normalizing onto one
-    fingerprint. The opener line itself is real code and stays unmarked; the
-    terminator is kept verbatim, which is harmless.
-
-    Detection runs on the raw line, so a ``<<`` inside a string literal can
-    open a phantom heredoc. That only makes later lines verbatim, which loses
-    mirror matches instead of inventing them -- the direction this whole shape
-    has to err in.
-    """
-    flags = [False] * len(lines)
-    pending: list[tuple[str, str]] = []
-    active: tuple[str, str] | None = None
-    for index, line in enumerate(lines):
-        if active is not None:
-            flags[index] = True
-            delimiter, indicator = active
-            if indicator == "~":
-                candidate = line.strip()
-            elif indicator == "-":
-                candidate = line.lstrip("\t")
-            else:
-                candidate = line
-            # Bash ends a heredoc only on a line containing the delimiter and
-            # nothing else -- ``EOF   `` is payload, not a terminator. Matching
-            # it loosely would end the heredoc early and expose the rest of the
-            # payload to comment stripping.
-            if candidate == delimiter:
-                active = pending.pop(0) if pending else None
-            continue
-        openers = list(_HEREDOC_OPEN_RE.finditer(line))
-        if len(openers) < len(_HEREDOC_ANY_RE.findall(line)):
-            # A heredoc opens here but its delimiter word is not one we can
-            # classify, so we cannot know where the payload ends. Refuse the
-            # rest of the file rather than normalize data as code.
-            for rest in range(index + 1, len(lines)):
-                flags[rest] = True
-            return flags
-        for match in openers:
-            pending.append((
-                _heredoc_delimiter(match.group("word")),
-                match.group("indicator"),
-            ))
-        if pending:
-            active = pending.pop(0)
-    return flags
-
-
-def _yaml_block_scalar_flags(lines: list[str]) -> list[bool]:
-    """Mark the lines that are YAML block-scalar body rather than YAML syntax.
-
-    Under ``message: |`` an indented ``# ...`` line is scalar content, not a
-    comment. The body runs until the first non-blank line indented no further
-    than the header, which is the same rule the YAML spec uses.
-    """
-    flags = [False] * len(lines)
-    header_indent: int | None = None
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if header_indent is not None:
-            if not stripped:
-                flags[index] = True
-                continue
-            if len(line) - len(line.lstrip(" \t")) > header_indent:
-                flags[index] = True
-                continue
-            header_indent = None
-        if not stripped or stripped.startswith("#"):
-            continue
-        if _YAML_BLOCK_SCALAR_RE.search(line):
-            header_indent = len(line) - len(line.lstrip(" \t"))
-    return flags
-
-
-def _is_directive_comment(text: str) -> bool:
-    """Whether a comment body is a tool directive rather than prose."""
-    return bool(_DIRECTIVE_RE.match(text))
-
-
-def _verbatim_flags(
-    lines: list[str],
-    *,
-    heredocs: bool = False,
-    yaml_scalars: bool = False,
-    regex_literals: bool = False,
-) -> list[bool] | None:
-    """Lines that carry data rather than code, from every enabled source."""
-    sources = []
-    if heredocs:
-        sources.append(_heredoc_body_flags(lines))
-    if yaml_scalars:
-        sources.append(_yaml_block_scalar_flags(lines))
-    if regex_literals:
-        sources.append([bool(_REGEX_LITERAL_RE.search(line)) for line in lines])
-    if not sources:
-        return None
-    return [any(flags[index] for flags in sources) for index in range(len(lines))]
-
-
-def _strip_comments(
-    lines: Iterable[str],
-    *,
-    hash_comments: bool = False,
-    hash_comments_no_space: bool = True,
-    slash_comments: bool = True,
-    dash_comments: bool = False,
-    block_comments: bool = True,
-    dollar_quotes: bool = False,
-    verbatim_flags: list[bool] | None = None,
-) -> tuple[list[str], list[str]]:
-    """Strip common line/block comments while preserving quoted markers.
-
-    Returns ``(stripped, states)``. ``states[i]`` is the lexical state the line
-    *began* in -- ``""`` for code, ``"block"`` inside a block comment,
-    ``"str:<delim>"`` inside an unterminated literal, ``"verbatim"`` for data.
-    Two lines with identical text but different states are not the same code,
-    so mirror matching compares the pair rather than the text alone.
-
-    Lines marked in ``verbatim_flags`` pass through untouched.
-    """
-    stripped: list[str] = []
-    states: list[str] = []
-    in_block = False
-    quote: str | None = None
-    escaped = False
-    for line_number, line in enumerate(lines):
-        if _is_verbatim(verbatim_flags, line_number):
-            stripped.append(line)
-            states.append("verbatim")
-            continue
-        states.append("block" if in_block else (f"str:{quote}" if quote else ""))
-        output: list[str] = []
-        index = 0
-        while index < len(line):
-            pair = line[index:index + 2]
-            if in_block:
-                if pair == "*/":
-                    in_block = False
-                    # A removed block comment separated two tokens. Without a
-                    # replacement, ``account/**/name`` becomes ``accountname``
-                    # and collides with an unrelated single identifier.
-                    output.append(" ")
-                    index += 2
-                else:
-                    index += 1
-                continue
-            character = line[index]
-            if quote is not None:
-                if escaped:
-                    output.append(character)
-                    escaped = False
-                    index += 1
-                    continue
-                if line.startswith(quote, index):
-                    output.append(quote)
-                    index += len(quote)
-                    quote = None
-                    escaped = False
-                    continue
-                output.append(character)
-                if character == "\\":
-                    escaped = True
-                index += 1
-                continue
-            delimiter = _opening_delimiter(line, index, dollar_quotes=dollar_quotes)
-            if delimiter is not None:
-                quote = delimiter
-                output.append(delimiter)
-                index += len(delimiter)
-                continue
-            if block_comments and pair == "/*":
-                close = line.find("*/", index + 2)
-                if close != -1 and _is_directive_comment(line[index + 2:close]):
-                    output.append(line[index:close + 2])
-                    index = close + 2
-                    continue
-                in_block = True
-                index += 2
-                continue
-            if slash_comments and pair == "//":
-                if _is_directive_comment(line[index + 2:]):
-                    output.append(line[index:])
-                break
-            if dash_comments and pair == "--":
-                if _is_directive_comment(line[index + 2:]):
-                    output.append(line[index:])
-                break
-            if (
-                hash_comments
-                and character == "#"
-                and (
-                    hash_comments_no_space
-                    or index == 0
-                    or line[index - 1].isspace()
-                )
-            ):
-                if _is_directive_comment(line[index + 1:]):
-                    output.append(line[index:])
-                break
-            output.append(character)
-            index += 1
-        stripped.append("".join(output))
-    return stripped, states
-
-
-def _collapse_whitespace(
-    lines: Iterable[str],
-    *,
-    preserve_indentation: bool = False,
-    dollar_quotes: bool = False,
-    collapse: bool = True,
-    verbatim_flags: list[bool] | None = None,
-) -> list[str]:
-    """Collapse formatting whitespace without changing quoted text.
-
-    Lines marked in ``verbatim_flags`` are data and pass through byte for byte
-    -- including trailing spaces, which a heredoc emits verbatim, so two
-    payloads differing only there must not compare equal.
-    """
-    normalized_lines: list[str] = []
-    quote: str | None = None
-    escaped = False
-
-    for line_number, line in enumerate(lines):
-        if _is_verbatim(verbatim_flags, line_number):
-            normalized_lines.append(line)
-            continue
-        if not collapse:
-            # A format where we cannot tell syntax whitespace from data --
-            # a YAML plain scalar's internal spaces are part of its value.
-            normalized_lines.append(line.rstrip())
-            continue
-
-        leading = ""
-        if preserve_indentation:
-            width = len(line) - len(line.lstrip(" \t"))
-            leading = line[:width]
-            line = line[width:]
-
-        output: list[str] = []
-        whitespace = False
-        index = 0
-        while index < len(line):
-            character = line[index]
-            if quote is not None:
-                if escaped:
-                    output.append(character)
-                    escaped = False
-                    index += 1
-                    continue
-                if line.startswith(quote, index):
-                    output.append(quote)
-                    index += len(quote)
-                    quote = None
-                    escaped = False
-                    continue
-                output.append(character)
-                if character == "\\":
-                    escaped = True
-                index += 1
-                continue
-
-            delimiter = _opening_delimiter(line, index, dollar_quotes=dollar_quotes)
-            if delimiter is not None:
-                if whitespace and output:
-                    output.append(" ")
-                whitespace = False
-                quote = delimiter
-                output.append(delimiter)
-                index += len(delimiter)
-            elif character.isspace():
-                whitespace = True
-                index += 1
-            else:
-                if whitespace and output:
-                    output.append(" ")
-                whitespace = False
-                output.append(character)
-                index += 1
-
-        body = "".join(output).rstrip()
-        normalized_lines.append((leading + body) if body else "")
-    return normalized_lines
-
-
-def normalize_block(
-    lines: Iterable[str],
-    *,
-    hash_comments: bool = False,
-    hash_comments_no_space: bool = True,
-    slash_comments: bool = True,
-    dash_comments: bool = False,
-    block_comments: bool = True,
-    dollar_quotes: bool = False,
-    preserve_indentation: bool = False,
-    heredocs: bool = False,
-    yaml_scalars: bool = False,
-    regex_literals: bool = False,
-    collapse: bool = True,
-) -> tuple[str, ...]:
-    """Normalize a code block for exact mirror comparison.
-
-    Keyword options mirror ``_comment_options`` exactly, so a caller can splat
-    that dict straight in.
-    """
-    lines = list(lines)
-    verbatim_flags = _verbatim_flags(
-        lines,
-        heredocs=heredocs,
-        yaml_scalars=yaml_scalars,
-        regex_literals=regex_literals,
-    )
-    stripped, states = _strip_comments(
-        lines,
-        hash_comments=hash_comments,
-        hash_comments_no_space=hash_comments_no_space,
-        slash_comments=slash_comments,
-        dash_comments=dash_comments,
-        block_comments=block_comments,
-        dollar_quotes=dollar_quotes,
-        verbatim_flags=verbatim_flags,
-    )
-    collapsed = _collapse_whitespace(
-        stripped,
-        preserve_indentation=preserve_indentation,
-        dollar_quotes=dollar_quotes,
-        collapse=collapse,
-        verbatim_flags=verbatim_flags,
-    )
-    # A blank line is formatting and drops out, but a blank line inside a
-    # heredoc or block scalar is part of the payload and must survive.
-    return tuple(
-        line
-        for line, state in zip(collapsed, states)
-        if line or state == "verbatim"
-    )
-
-
 def _block_fingerprint(block: tuple[str, ...]) -> str:
     return hashlib.sha256("\n".join(block).encode("utf-8")).hexdigest()
 
 
-def _comment_options(path: str) -> dict[str, bool]:
-    """Per-suffix normalization switches. Every comment style is allowlisted:
-    an unrecognized format gets none of them, which costs mirrors on languages
-    we have not enumerated but never invents one."""
+def _family_key(path: str) -> str:
+    """Which files are comparable in raw mode.
+
+    Same suffix, or same explicitly aliased family. A file with no suffix keys
+    on its own name, so ``Makefile`` only ever matches ``Makefile`` -- identical
+    text in ``build.sh`` and ``Makefile`` is both files spelling ``export``, not
+    a duplicated implementation.
+    """
     name = Path(path).name.lower()
     suffix = Path(path).suffix.lower()
-    is_makefile = (
-        name in _MAKEFILE_NAMES
-        or name.startswith("makefile.")
-        or suffix in _MAKEFILE_SUFFIXES
-    )
-    return {
-        "hash_comments": suffix in _HASH_COMMENT_SUFFIXES,
-        "hash_comments_no_space": suffix in _HASH_COMMENT_NO_SPACE_SUFFIXES,
-        "slash_comments": suffix in _SLASH_LINE_COMMENT_SUFFIXES,
-        "dash_comments": suffix in _DASH_COMMENT_SUFFIXES,
-        "block_comments": suffix in _BLOCK_COMMENT_SUFFIXES,
-        "dollar_quotes": suffix in _DASH_COMMENT_SUFFIXES,
-        "preserve_indentation": (
-            suffix in _INDENTATION_SENSITIVE_SUFFIXES or is_makefile
-        ),
-        "heredocs": suffix in _HEREDOC_SUFFIXES,
-        "yaml_scalars": suffix in _YAML_SUFFIXES,
-        "regex_literals": suffix in _SLASH_LINE_COMMENT_SUFFIXES,
-        "collapse": suffix not in _YAML_SUFFIXES,
-    }
+    if not suffix:
+        return f"name:{name}"
+    return f"family:{_SUFFIX_FAMILIES.get(suffix, suffix)}"
 
 
-def _language_key(path: str) -> tuple[tuple[str, bool], ...]:
-    """How this file normalizes. Two files share a key iff the same rules apply.
+def _raw_block_lines(lines: list[str]) -> list[tuple[int, str, str]]:
+    """Every line, verbatim. No language knowledge, so nothing to get wrong."""
+    return [(number, text, "") for number, text in enumerate(lines, start=1)]
 
-    A mirror only means something within one language: ``export build_mode=1``
-    is a shell command in ``build.sh`` and a make directive in ``Makefile``,
-    and identical text there is a coincidence, not a duplicated implementation.
+
+def _python_block_lines(lines: list[str]) -> list[tuple[int, str, str]] | None:
+    """Comment-free Python lines, via Python's own tokenizer.
+
+    Returns ``None`` when the source does not tokenize -- a syntax error, or a
+    dialect this interpreter predates -- and the caller falls back to raw
+    matching rather than guessing at the source.
+
+    Indentation and internal spacing survive untouched, because both are
+    semantic in Python; only comments and the trailing whitespace their removal
+    strands are dropped. Lines interior to a multi-line string are tagged, so a
+    block quoted inside a docstring never mirrors the code it quotes.
     """
-    return tuple(sorted(_comment_options(path).items()))
+    source = "\n".join(lines) + "\n"
+    comment_spans: dict[int, list[tuple[int, int]]] = {}
+    string_interior: set[int] = set()
+    try:
+        tokens = list(_pytokenize.generate_tokens(io.StringIO(source).readline))
+    except (_pytokenize.TokenError, SyntaxError, IndentationError, ValueError):
+        return None
+
+    for token in tokens:
+        if token.type == _pytokenize.COMMENT:
+            comment_spans.setdefault(token.start[0], []).append(
+                (token.start[1], token.end[1])
+            )
+        elif token.type in _STRING_TOKEN_TYPES and token.end[0] > token.start[0]:
+            string_interior.update(range(token.start[0] + 1, token.end[0] + 1))
+
+    entries: list[tuple[int, str, str]] = []
+    for number, line in enumerate(lines, start=1):
+        text = line
+        for start, end in sorted(comment_spans.get(number, ()), reverse=True):
+            text = text[:start] + text[end:]
+        text = text.rstrip()
+        if not text:
+            continue
+        entries.append(
+            (number, text, "string" if number in string_interior else "")
+        )
+    return entries
 
 
-def _normalized_code_lines(
-    lines: list[str],
-    *,
-    path: str,
-) -> list[tuple[int, str, str]]:
-    """``(line number, normalized text, lexical state)`` for each kept line."""
-    options = _comment_options(path)
-    verbatim_flags = _verbatim_flags(
-        lines,
-        heredocs=options["heredocs"],
-        yaml_scalars=options["yaml_scalars"],
-        regex_literals=options["regex_literals"],
-    )
-    stripped, states = _strip_comments(
-        lines,
-        hash_comments=options["hash_comments"],
-        hash_comments_no_space=options["hash_comments_no_space"],
-        slash_comments=options["slash_comments"],
-        dash_comments=options["dash_comments"],
-        block_comments=options["block_comments"],
-        dollar_quotes=options["dollar_quotes"],
-        verbatim_flags=verbatim_flags,
-    )
-    collapsed = _collapse_whitespace(
-        stripped,
-        preserve_indentation=options["preserve_indentation"],
-        dollar_quotes=options["dollar_quotes"],
-        collapse=options["collapse"],
-        verbatim_flags=verbatim_flags,
-    )
-    return [
-        (number, normalized, state)
-        for number, (normalized, state) in enumerate(zip(collapsed, states), start=1)
-        if normalized or state == "verbatim"
-    ]
+def _block_index(
+    lines: list[str], *, path: str
+) -> tuple[list[tuple[int, str, str]], str]:
+    """The comparable line index for a file, plus the key it matches under.
+
+    Two files are compared only when their keys are equal, so normalized Python
+    never meets raw text, and raw text never crosses a language family.
+    """
+    if Path(path).suffix.lower() in _PYTHON_SUFFIXES:
+        entries = _python_block_lines(lines)
+        if entries is not None:
+            return entries, "python"
+    return _raw_block_lines(lines), _family_key(path)
 
 
 def _mirror_candidates(
@@ -731,10 +290,22 @@ def _mirror_candidates(
     lines_of: Callable[[str], list[str]],
     lossy_of: Callable[[str], bool] | None = None,
 ) -> list[dict[str, Any]]:
-    """Find exact normalized copies of flagged multi-line ranges."""
+    """Find exact copies of flagged multi-line ranges.
+
+    Python ranges are compared with comments removed; everything else is
+    compared as raw text. A seed only ever meets files sharing its key, so the
+    two modes never mix.
+    """
     changed = set(changed_files)
     is_lossy = lossy_of if lossy_of is not None else (lambda _rel: False)
-    seeds: list[tuple[tuple[tuple[str, str], ...], str]] = []
+    index_cache: dict[str, tuple[list[tuple[int, str, str]], str]] = {}
+
+    def index_of(rel: str) -> tuple[list[tuple[int, str, str]], str]:
+        if rel not in index_cache:
+            index_cache[rel] = _block_index(lines_of(rel), path=rel)
+        return index_cache[rel]
+
+    seeds: list[tuple[tuple[tuple[str, str], ...], str, str]] = []
     for site in sites:
         if (
             site.path not in changed
@@ -748,10 +319,10 @@ def _mirror_candidates(
         lines = lines_of(site.path)
         if site.line > len(lines):
             continue
-        normalized_source = _normalized_code_lines(lines, path=site.path)
+        entries, key = index_of(site.path)
         block = tuple(
             (text, state)
-            for number, text, state in normalized_source
+            for number, text, state in entries
             if site.start_line <= number <= site.line
         )
         if len(block) < 2 or len(block) > MAX_MIRROR_BLOCK_LINES:
@@ -765,7 +336,7 @@ def _mirror_candidates(
             _block_fingerprint(tuple(
                 f"{state}\x00{text}" for text, state in block
             )),
-            _language_key(site.path),
+            key,
         ))
 
     flagged_ranges = {
@@ -774,26 +345,25 @@ def _mirror_candidates(
         if site.line is not None
     }
     candidates: dict[tuple[str, int, int], dict[str, Any]] = {}
-    normalized_files: dict[str, list[tuple[int, str, str]]] = {}
-    # normalized (text, lexical state) of the first line -> ascending offsets. A
-    # window can only match if its first line does, so this replaces the
-    # per-offset hash of the whole block with one dict lookup, and the
-    # element-wise compare below short-circuits on the first difference.
+    # (text, lexical state) of the first line -> ascending offsets. A window can
+    # only match if its first line does, so this replaces the per-offset hash of
+    # the whole block with one dict lookup, and the element-wise compare below
+    # short-circuits on the first difference.
     head_offsets: dict[str, dict[tuple[str, str], list[int]]] = {}
-    for block, fingerprint, language in seeds:
+    for block, fingerprint, key in seeds:
         width = len(block)
         head = block[0]
         for rel in changed_files:
-            if is_lossy(rel) or _language_key(rel) != language:
+            if is_lossy(rel):
                 continue
-            if rel not in normalized_files:
-                entries = _normalized_code_lines(lines_of(rel), path=rel)
-                normalized_files[rel] = entries
+            entries, rel_key = index_of(rel)
+            if rel_key != key:
+                continue
+            if rel not in head_offsets:
                 offsets: dict[tuple[str, str], list[int]] = {}
                 for offset, (_number, text, state) in enumerate(entries):
                     offsets.setdefault((text, state), []).append(offset)
                 head_offsets[rel] = offsets
-            entries = normalized_files[rel]
             last_offset = len(entries) - width
             for offset in head_offsets[rel].get(head, ()):
                 if offset > last_offset:
@@ -814,6 +384,7 @@ def _mirror_candidates(
                 window = entries[offset:offset + width]
                 candidates[(rel, start, end)] = {
                     "candidateClass": "mirror",
+                    "matchMode": "normalized" if key == "python" else "exact",
                     "path": rel,
                     "line": start,
                     "endLine": end,
@@ -1095,8 +666,14 @@ def render_report(result: SweepResult) -> str:
 
     lines.append(f"  siblings:  {len(result.candidates)} unflagged site(s) match the same shape")
     for candidate in result.candidates:
-        candidate_class = candidate["candidateClass"]
-        class_label = f"[{candidate_class}] " if candidate_class == "mirror" else ""
+        # Say which rule matched. "exact" is text-identical and needs no
+        # language knowledge; "normalized" means comments were ignored, which
+        # only happens for a language we tokenize properly.
+        class_label = (
+            f"[mirror {candidate.get('matchMode', 'exact')}] "
+            if candidate["candidateClass"] == "mirror"
+            else ""
+        )
         lines.append(
             f"    + {class_label}{candidate['site']}  {candidate['text']}"
         )
