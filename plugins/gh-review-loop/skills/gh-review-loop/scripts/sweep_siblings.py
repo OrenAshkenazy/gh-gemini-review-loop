@@ -145,6 +145,14 @@ _PY_DIRECTIVE_PREFIXES = (
     "fmt:", "isort:", "yapf:", "black:", "codespell",
 )
 
+# A PEP 263 source-encoding cookie decides how the interpreter reads the rest
+# of the bytes, so the same bytes under `coding: utf-8` and `coding: latin-1`
+# are different programs. It is a property of the *file*, not of any block
+# inside it, so it belongs in the match key rather than in the comment rules.
+# Matched rather than prefixed because it is legal anywhere in the comment:
+# `# -*- coding: utf-8 -*-` and `# vim: set fileencoding=utf-8 :` both count.
+_PY_ENCODING_COOKIE_RE = re.compile(r"coding[:=]\s*([-_.a-zA-Z0-9]+)")
+
 # Suffixes that are the same language for copy-paste purposes. This is file
 # extension aliasing, not language modeling: it exists so a block copied from a
 # .ts file into a .js file still reads as a duplicate, while identical text in
@@ -261,8 +269,28 @@ def _is_python_directive(comment: str) -> bool:
     coverage do, so two blocks whose only difference is a directive are not
     duplicates. See ``_PY_DIRECTIVE_PREFIXES`` for why this is a list and not
     something the tokenizer can answer.
+
+    Encoding cookies are handled by ``_python_encoding`` instead, because they
+    govern the whole file rather than the block they appear in.
     """
     return comment.lstrip("#").strip().lower().startswith(_PY_DIRECTIVE_PREFIXES)
+
+
+def _python_encoding(lines: list[str]) -> str:
+    """The file's declared source encoding, per PEP 263.
+
+    Only the first two lines are honoured, and only in a comment -- that is the
+    rule the interpreter follows. Two files declaring different encodings are
+    different programs even when their bytes are identical, so this becomes
+    part of the match key and they are never compared.
+    """
+    for line in lines[:2]:
+        if not line.lstrip().startswith("#"):
+            continue
+        match = _PY_ENCODING_COOKIE_RE.search(line)
+        if match:
+            return match.group(1).lower()
+    return "utf-8"
 
 
 def _python_block_lines(lines: list[str]) -> list[tuple[int, str, str]] | None:
@@ -326,7 +354,7 @@ def _block_index(
     if Path(path).suffix.lower() in _PYTHON_SUFFIXES:
         entries = _python_block_lines(lines)
         if entries is not None:
-            return entries, "python"
+            return entries, f"python:{_python_encoding(lines)}"
     return _raw_block_lines(lines), _family_key(path)
 
 
@@ -430,7 +458,9 @@ def _mirror_candidates(
                 window = entries[offset:offset + width]
                 candidates[(rel, start, end)] = {
                     "candidateClass": "mirror",
-                    "matchMode": "normalized" if key == "python" else "exact",
+                    "matchMode": (
+                        "normalized" if key.startswith("python:") else "exact"
+                    ),
                     "path": rel,
                     "line": start,
                     "endLine": end,

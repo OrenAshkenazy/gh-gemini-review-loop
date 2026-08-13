@@ -920,6 +920,31 @@ class TestPythonNormalizedMatching:
 
         assert self._sweep(tmp_path, ["d.py:1-2"], ["d.py"]).candidates == []
 
+    @pytest.mark.parametrize("cookie", [
+        "# coding: {}",
+        "# -*- coding: {} -*-",
+        "# vim: set fileencoding={} :",
+    ])
+    def test_differing_encoding_cookies_are_not_duplicates(self, tmp_path, cookie):
+        """PEP 263 decides how the interpreter reads the remaining bytes, so
+        the same bytes under utf-8 and latin-1 are different programs."""
+        body = 'label = "café"\nemit_label(label)\n'
+        (tmp_path / "a.py").write_text(cookie.format("utf-8") + "\n" + body)
+        (tmp_path / "b.py").write_text(cookie.format("latin-1") + "\n" + body)
+
+        result = self._sweep(tmp_path, ["a.py:2-3"], ["a.py", "b.py"])
+
+        assert result.candidates == []
+
+    def test_matching_encoding_cookies_still_mirror(self, tmp_path):
+        body = 'label = "café"\nemit_label(label)\n'
+        (tmp_path / "a.py").write_text("# coding: utf-8\n" + body)
+        (tmp_path / "b.py").write_text("# coding: utf-8\n" + body)
+
+        result = self._sweep(tmp_path, ["a.py:2-3"], ["a.py", "b.py"])
+
+        assert [c["site"] for c in result.candidates] == ["b.py:2-3"]
+
     def test_identical_directives_still_mirror(self, tmp_path):
         (tmp_path / "same.py").write_text(
             "result = compute(payload)  # type: ignore[arg-type]\n"
