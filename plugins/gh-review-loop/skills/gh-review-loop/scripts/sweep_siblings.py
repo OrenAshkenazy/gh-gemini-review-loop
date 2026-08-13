@@ -88,6 +88,13 @@ and says nothing about whether they mean the same thing.
 This reports. It never edits, and it never reads a file outside the changed set,
 so the blast radius cannot leave the PR's own diff.
 
+That last claim needs enforcing rather than assuming, because the changed-file
+list is derived from a pull request and a pull request is untrusted input. A
+path in it can be a symlink -- git records the link, not the bytes it points at
+-- or can simply spell ``../`` or an absolute path. Each is refused: see
+``_contained_path``. Without that, a PR could make the sweep quote a file it
+never touched into a report.
+
 Pure stdlib, no network.
 """
 
@@ -652,6 +659,36 @@ def _read_text(path: Path) -> tuple[list[str], bool]:
         return data.decode("utf-8", errors="replace").splitlines(), True
 
 
+def _contained_path(root: Path, rel: str) -> Path | None:
+    """``rel`` resolved under ``root``, or ``None`` if it escapes.
+
+    The changed-file list is derived from a pull request, which is untrusted
+    input. Two ways a path in it can point somewhere the diff never went:
+
+    - **A symlink.** Git records the *link* in the diff, mode 120000, not the
+      bytes it points at. Reading through it scans a file no reviewer saw, and
+      the target can sit outside the repository entirely.
+    - **The path itself.** ``../`` climbs out, and an absolute path ignores
+      ``root`` altogether -- ``Path("/repo") / "/etc/passwd"`` is
+      ``/etc/passwd``.
+
+    Either way the sweep would read a file outside the PR and quote up to 200
+    characters of it into a report. So the link is refused outright, and what
+    is left has to resolve to something still under the root.
+    """
+    try:
+        candidate = root / rel
+        if candidate.is_symlink():
+            return None
+        resolved = candidate.resolve()
+        base = root.resolve()
+    except (OSError, ValueError):
+        return None
+    if resolved != base and base not in resolved.parents:
+        return None
+    return resolved
+
+
 def _read_lines(path: Path) -> list[str]:
     """Read a text file, or return [] for anything unreadable or oversized."""
     return _read_text(path)[0]
@@ -742,15 +779,25 @@ def sweep(
 
     file_cache: dict[str, list[str]] = {}
     lossy_cache: dict[str, bool] = {}
+    path_cache: dict[str, Path | None] = {}
+
+    def path_of(rel: str) -> Path | None:
+        if rel not in path_cache:
+            path_cache[rel] = _contained_path(root, rel)
+        return path_cache[rel]
 
     def lines_of(rel: str) -> list[str]:
         if rel not in file_cache:
-            file_cache[rel] = _read_lines(root / rel)
+            target = path_of(rel)
+            file_cache[rel] = [] if target is None else _read_lines(target)
         return file_cache[rel]
 
     def lossy_of(rel: str) -> bool:
         if rel not in lossy_cache:
-            lossy_cache[rel] = _is_lossy_text(root / rel)
+            target = path_of(rel)
+            # A refused path is skipped outright rather than merely read as
+            # empty, so nothing downstream can reach through it.
+            lossy_cache[rel] = True if target is None else _is_lossy_text(target)
         return lossy_cache[rel]
 
     mirror_candidates = _mirror_candidates(located, changed_files, lines_of, lossy_of)

@@ -1405,3 +1405,90 @@ class TestSpansByPath:
             changed_files=["f.py"], root=tmp_path,
         )
         assert [c["site"] for c in result.candidates] == ["f.py:4"]
+
+
+class TestPathContainment:
+    """The changed-file list comes from a pull request, so it is untrusted.
+    A path in it must not be able to reach a file the diff never contained --
+    the sweep quotes what it reads into a report."""
+
+    SECRET = "API_TOKEN = load_credential()\nsubmit_credential(API_TOKEN)\n"
+
+    @pytest.fixture
+    def repo_and_outside(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.py").write_text(self.SECRET)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "real.py").write_text(self.SECRET)
+        (repo / "inside.py").write_text(self.SECRET)
+        return repo, outside
+
+    @staticmethod
+    def _sweep(repo, changed):
+        return sweeper.sweep(
+            signature="s", label="containment", sites=["real.py:1-2"],
+            changed_files=changed, root=repo,
+        )
+
+    def test_a_symlink_out_of_the_repository_is_not_read(self, repo_and_outside):
+        """Git records the link in the diff, mode 120000 -- not the bytes it
+        points at. Following it scans a file outside the PR entirely."""
+        repo, outside = repo_and_outside
+        (repo / "escape.py").symlink_to(outside / "secret.py")
+
+        assert self._sweep(repo, ["real.py", "escape.py"]).candidates == []
+
+    def test_a_symlink_inside_the_repository_is_also_refused(self, repo_and_outside):
+        """Still nothing reviewable in it: the diff carries the link, so the
+        target's text belongs to whichever real path already holds it."""
+        repo, _outside = repo_and_outside
+        (repo / "internal.py").symlink_to(repo / "inside.py")
+
+        assert self._sweep(repo, ["real.py", "internal.py"]).candidates == []
+
+    def test_a_parent_traversal_path_is_refused(self, repo_and_outside):
+        """No symlink needed -- the path itself climbs out."""
+        repo, outside = repo_and_outside
+
+        result = self._sweep(repo, ["real.py", f"../{outside.name}/secret.py"])
+
+        assert result.candidates == []
+
+    def test_an_absolute_path_is_refused(self, repo_and_outside):
+        """`Path("/repo") / "/etc/passwd"` is `/etc/passwd`; the root is
+        silently discarded, so containment has to be checked after joining."""
+        repo, outside = repo_and_outside
+
+        result = self._sweep(repo, ["real.py", str(outside / "secret.py")])
+
+        assert result.candidates == []
+
+    def test_a_symlinked_intermediate_directory_is_refused(self, repo_and_outside):
+        """The final component is a real file; it is a parent that escapes."""
+        repo, outside = repo_and_outside
+        (repo / "sub").mkdir()
+        (repo / "sub" / "outdir").symlink_to(outside, target_is_directory=True)
+
+        result = self._sweep(repo, ["real.py", "sub/outdir/secret.py"])
+
+        assert result.candidates == []
+
+    def test_an_ordinary_file_is_still_read(self, repo_and_outside):
+        """The check must not cost the sweep its actual job."""
+        repo, _outside = repo_and_outside
+
+        result = self._sweep(repo, ["real.py", "inside.py"])
+
+        assert [c["site"] for c in result.candidates] == ["inside.py:1-2"]
+
+    def test_containment_helper_accepts_a_nested_real_path(self, tmp_path):
+        (tmp_path / "pkg").mkdir()
+        (tmp_path / "pkg" / "mod.py").write_text("x = 1\n")
+
+        assert sweeper._contained_path(tmp_path, "pkg/mod.py") is not None
+
+    @pytest.mark.parametrize("rel", ["../elsewhere.py", "/etc/passwd"])
+    def test_containment_helper_rejects_escapes(self, tmp_path, rel):
+        assert sweeper._contained_path(tmp_path, rel) is None

@@ -268,6 +268,11 @@ line changes control flow; the re-review cap remains the only hard stop.
 Sweep scope is **changed files only** — that is both safe (blast radius = the PR's
 own diff) and sufficient (bot reviewers only review changed files).
 
+That scope is enforced, not assumed. The changed-file list comes from a pull
+request, so a path in it may be a symlink (git records the link, not the bytes
+it points at), may spell `../`, or may be absolute. Each is refused before any
+read, so a PR cannot make the sweep quote a file it never touched.
+
 ## Loop Receipt
 
 Pass `--post-receipt` to leave a one-comment audit trail on the PR after the loop runs: cycles used, threads resolved (outdated + addressed-by-reply), threads still pending, and severity breakdown of remaining actionable threads. Use `--dry-run --post-receipt` to preview the receipt without posting.
