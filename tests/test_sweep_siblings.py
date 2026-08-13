@@ -1492,3 +1492,135 @@ class TestPathContainment:
     @pytest.mark.parametrize("rel", ["../elsewhere.py", "/etc/passwd"])
     def test_containment_helper_rejects_escapes(self, tmp_path, rel):
         assert sweeper._contained_path(tmp_path, rel) is None
+
+
+class TestMergedEvidence:
+    """A merged range describes all the lines it now covers, so its claim has
+    to hold across all of them."""
+
+    @staticmethod
+    def _hit(mode, line, end):
+        return {"candidateClass": "mirror", "matchMode": mode, "path": "f.py",
+                "line": line, "endLine": end, "site": f"f.py:{line}-{end}",
+                "text": "t", "fingerprint": "x"}
+
+    @pytest.mark.parametrize("first,second,expected", [
+        ("exact", "normalized", "normalized"),
+        ("normalized", "exact", "normalized"),
+        ("exact", "exact", "exact"),
+        ("normalized", "normalized", "normalized"),
+    ])
+    def test_a_union_is_only_as_strong_as_its_weakest_part(
+        self, first, second, expected
+    ):
+        """`exact` over the union would claim the bytes repeat across lines
+        that only matched once comments were removed."""
+        merged = sweeper._merge_overlapping(
+            [self._hit(first, 10, 11), self._hit(second, 11, 13)]
+        )
+
+        assert [c["site"] for c in merged] == ["f.py:10-13"]
+        assert merged[0]["matchMode"] == expected
+
+
+class TestCandidateCap:
+    """The cap decides how much is reported. It must not decide it by
+    filename, or the strongest finding can vanish while `truncated` implies
+    nothing of consequence was lost."""
+
+    @staticmethod
+    def _token(index):
+        return {"candidateClass": "token", "path": "a.py", "line": index,
+                "site": f"a.py:{index}", "text": "t", "matchedTokens": []}
+
+    @staticmethod
+    def _mirror(path, mode):
+        return {"candidateClass": "mirror", "matchMode": mode, "path": path,
+                "line": 1, "endLine": 2, "site": f"{path}:1-2",
+                "text": "copy", "fingerprint": "f"}
+
+    def _apply(self, candidates, cap=20):
+        result = sweeper.SweepResult(signature="s", label="cap", flagged=())
+        sweeper._set_candidates(result, candidates, cap)
+        return result
+
+    def test_a_mirror_survives_a_flood_of_token_hits(self):
+        """25 token hits in an alphabetically earlier file used to fill the cap
+        and drop the exact copy entirely."""
+        result = self._apply(
+            [self._token(i) for i in range(1, 26)] + [self._mirror("z.py", "exact")]
+        )
+
+        assert result.truncated is True
+        assert "z.py:1-2" in [c["site"] for c in result.candidates]
+
+    def test_both_mirror_kinds_outrank_token_hits(self):
+        result = self._apply(
+            [self._token(i) for i in range(1, 26)]
+            + [self._mirror("z.py", "exact"), self._mirror("m.py", "normalized")]
+        )
+
+        sites = [c["site"] for c in result.candidates]
+        assert "z.py:1-2" in sites and "m.py:1-2" in sites
+
+    def test_an_exact_mirror_outranks_a_normalized_one(self):
+        candidates = [self._mirror("z.py", "exact"), self._mirror("m.py", "normalized")]
+        result = self._apply(candidates, cap=1)
+
+        assert [c["site"] for c in result.candidates] == ["z.py:1-2"]
+
+    def test_reported_candidates_stay_in_location_order(self):
+        """Strength decides what is kept, not how it reads."""
+        result = self._apply(
+            [self._token(i) for i in range(1, 26)] + [self._mirror("z.py", "exact")]
+        )
+
+        assert result.candidates == sorted(result.candidates, key=sweeper._location_key)
+
+    def test_nothing_is_reordered_when_under_the_cap(self):
+        candidates = [self._mirror("z.py", "exact"), self._token(1)]
+        result = self._apply(candidates)
+
+        assert result.truncated is False
+        assert [c["site"] for c in result.candidates] == ["a.py:1", "z.py:1-2"]
+
+
+class TestBracketDirectives:
+    """Pyre writes its suppressions as a bracketed error code with no
+    separator, so the `tool: setting` shape alone does not see them."""
+
+    @pytest.mark.parametrize("comment", [
+        "# pyre-ignore[7]",
+        "# pyre-fixme[16]",
+        "# pyre-ignore-all-errors[21]",
+    ])
+    def test_bracket_directives_are_content(self, comment):
+        assert sweeper._is_python_directive(comment)
+
+    @pytest.mark.parametrize("comment", [
+        "# see [1] for details",
+        "# returns [a, b] as a pair",
+        "# handles [] gracefully",
+    ])
+    def test_prose_with_brackets_is_still_an_ordinary_comment(self, comment):
+        """A space before the bracket is what separates the two: every Pyre
+        form is written tight against it, English is not."""
+        assert not sweeper._is_python_directive(comment)
+
+    def test_differing_pyre_codes_are_not_duplicates(self, tmp_path):
+        """The codes suppress different errors, so removing them would make
+        two unrelated blocks normalize identically."""
+        (tmp_path / "checked.py").write_text(
+            "value = compute(payload)  # pyre-ignore[7]\n"
+            "emit_value(value)\n"
+            "spacer()\n"
+            "value = compute(payload)  # pyre-ignore[16]\n"
+            "emit_value(value)\n"
+        )
+
+        result = sweeper.sweep(
+            signature="pyre", label="pyre", sites=["checked.py:1-2"],
+            changed_files=["checked.py"], root=tmp_path,
+        )
+
+        assert result.candidates == []

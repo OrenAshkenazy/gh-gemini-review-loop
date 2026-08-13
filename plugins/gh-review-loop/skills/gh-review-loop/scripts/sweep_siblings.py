@@ -178,7 +178,14 @@ del _name, _type
 # errs toward preserving -- a comment kept by mistake costs one mirror, while a
 # directive dropped by mistake invents one -- and the known cost is prose that
 # leads with a lowercase `word:`, including bare URLs.
-_PY_DIRECTIVE_RE = re.compile(r"^[a-z][a-z0-9_.\-]*\s*[:=]")
+#
+# Two spellings count. `tool: setting` / `tool=value` is the common one. The
+# other is a bracketed error code with no separator at all -- Pyre writes
+# `# pyre-ignore[7]`, and two blocks suppressing different codes are not
+# duplicates. The bracket alternative allows no space before `[`, which is what
+# keeps prose out: `# see [1] for details` has one and stays an ordinary
+# comment, while every Pyre form is written tight against the bracket.
+_PY_DIRECTIVE_RE = re.compile(r"^[a-z][a-z0-9_.\-]*(?:\s*[:=]|\[)")
 
 # The few directives with no `:` or `=` to key on. Short and closed, unlike a
 # list of tools would be.
@@ -591,6 +598,11 @@ def _merge_overlapping(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]
     ``text`` and ``fingerprint`` stay those of the hit that opened the range --
     they are evidence of the match, while ``line``/``endLine`` describe how far
     the duplication reaches.
+
+    ``matchMode`` is the exception: it describes the whole range, so merging
+    hits of different modes downgrades it to ``normalized``. Keeping ``exact``
+    would claim the bytes repeat across lines that only matched once comments
+    were removed.
     """
     merged: list[dict[str, Any]] = []
     for candidate in sorted(
@@ -606,6 +618,12 @@ def _merge_overlapping(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]
                 if candidate["endLine"] > kept["endLine"]:
                     kept["endLine"] = candidate["endLine"]
                     kept["site"] = f"{kept['path']}:{kept['line']}-{kept['endLine']}"
+                # The union is only as strong as its weakest part. An `exact`
+                # hit extended by a `normalized` one covers lines that matched
+                # only after comments came off, so the merged range cannot
+                # still claim the bytes repeat across all of it.
+                if candidate.get("matchMode") != kept.get("matchMode"):
+                    kept["matchMode"] = "normalized"
                 continue
         merged.append(dict(candidate))
     return merged
@@ -726,25 +744,50 @@ def invariant_tokens(flagged_lines: Iterable[str]) -> set[str]:
     return common
 
 
+def _evidence_rank(candidate: dict[str, Any]) -> int:
+    """How strong a candidate's evidence is, strongest first.
+
+    A duplicated *block* is stronger evidence than a line sharing tokens with
+    the flagged sites, and a byte-identical block is stronger than one that
+    matched only once comments were removed.
+    """
+    if candidate["candidateClass"] != "mirror":
+        return 2
+    return 0 if candidate.get("matchMode") == "exact" else 1
+
+
+def _location_key(candidate: dict[str, Any]) -> tuple[str, int, int, str]:
+    return (
+        candidate["path"],
+        candidate["line"],
+        candidate.get("endLine", candidate["line"]),
+        candidate["candidateClass"],
+    )
+
+
 def _set_candidates(
     result: SweepResult,
     candidates: list[dict[str, Any]],
     max_candidates: int,
 ) -> None:
-    candidates.sort(key=lambda candidate: (
-        candidate["path"],
-        candidate["line"],
-        candidate.get("endLine", candidate["line"]),
-        candidate["candidateClass"],
-    ))
+    candidates.sort(key=_location_key)
     if len(candidates) > max_candidates:
         result.truncated = True
         result.reason = (
-            f"{len(candidates)} candidates found; reporting the first "
-            f"{max_candidates}. A pattern this wide is a refactor, not a sweep "
-            "-- confirm the shape before fixing."
+            f"{len(candidates)} candidates found; reporting {max_candidates}, "
+            "strongest evidence first. A pattern this wide is a refactor, not "
+            "a sweep -- confirm the shape before fixing."
         )
-        candidates = candidates[:max_candidates]
+        # Which ones to *keep* is decided by evidence, not by filename. Sorting
+        # by location alone would let twenty token hits in an alphabetically
+        # early file crowd out the exact duplicate block that is the whole
+        # reason the sweep found anything -- and `truncated` would report that
+        # as if nothing important had been dropped. The sort is stable, so
+        # candidates of equal strength keep their location order.
+        candidates = sorted(candidates, key=_evidence_rank)[:max_candidates]
+        # Restore location order: the cap decides what is reported, not how it
+        # is read.
+        candidates.sort(key=_location_key)
     result.candidates = candidates
 
 
