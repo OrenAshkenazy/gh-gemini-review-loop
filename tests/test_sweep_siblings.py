@@ -944,6 +944,101 @@ class TestMirrorNormalizationGuards:
 
         assert [c["site"] for c in result.candidates] == ["plain.sql:3-4"]
 
+    def test_slashes_inside_a_regex_literal_are_not_a_comment(self, tmp_path):
+        """``/[//]alpha/`` is a valid regex whose slashes belong to it."""
+        (tmp_path / "routes.js").write_text(
+            "const routePattern = /[//]alpha/;\n"
+            "registerRoute(routePattern);\n"
+            "const routePattern = /[//]beta/;\n"
+            "registerRoute(routePattern);\n"
+        )
+
+        result = self._sweep(tmp_path, ["routes.js:1-2"], ["routes.js"])
+
+        assert result.candidates == []
+
+    def test_a_seed_only_matches_files_of_the_same_language(self, tmp_path):
+        """Identical text in shell and make is a coincidence, not a duplicate."""
+        body = "export build_mode=enabled\ninclude common.mk\n"
+        (tmp_path / "build.sh").write_text(body)
+        (tmp_path / "Makefile").write_text(body)
+
+        result = self._sweep(tmp_path, ["build.sh:1-2"], ["build.sh", "Makefile"])
+
+        assert result.candidates == []
+
+    def test_a_seed_still_matches_a_compatible_sibling_language(self, tmp_path):
+        """TS and JS normalize identically, so they remain comparable."""
+        body = "const parsed = parsePayload(raw);\nemitResult(parsed);\n"
+        (tmp_path / "a.js").write_text(body)
+        (tmp_path / "b.ts").write_text(body)
+
+        result = self._sweep(tmp_path, ["a.js:1-2"], ["a.js", "b.ts"])
+
+        assert [c["site"] for c in result.candidates] == ["b.ts:1-2"]
+
+    def test_tool_directives_in_comments_are_content(self, tmp_path):
+        """webpackMode changes loading behavior; it is not formatting."""
+        (tmp_path / "imports.js").write_text(
+            'const mod = import(/* webpackMode: "eager" */ "./alpha");\n'
+            "registerModule(mod);\n"
+            'const mod = import(/* webpackMode: "lazy" */ "./alpha");\n'
+            "registerModule(mod);\n"
+        )
+
+        result = self._sweep(tmp_path, ["imports.js:1-2"], ["imports.js"])
+
+        assert result.candidates == []
+
+    def test_an_ordinary_comment_is_still_stripped(self, tmp_path):
+        (tmp_path / "notes.js").write_text(
+            "const mod = loadModule(); /* alpha note */\n"
+            "registerModule(mod);\n"
+            "const mod = loadModule(); /* beta note */\n"
+            "registerModule(mod);\n"
+        )
+
+        result = self._sweep(tmp_path, ["notes.js:1-2"], ["notes.js"])
+
+        assert [c["site"] for c in result.candidates] == ["notes.js:3-4"]
+
+    def test_yaml_plain_scalar_spacing_is_part_of_the_value(self, tmp_path):
+        (tmp_path / "values.yaml").write_text(
+            "first:\n"
+            "  message: hello  world\n"
+            "  level: verbose_mode\n"
+            "second:\n"
+            "  message: hello world\n"
+            "  level: verbose_mode\n"
+        )
+
+        result = self._sweep(tmp_path, ["values.yaml:2-3"], ["values.yaml"])
+
+        assert result.candidates == []
+
+    def test_one_copy_is_reported_once_across_seeds_of_different_lengths(
+        self, tmp_path
+    ):
+        """Two seeds sharing a prefix must not report the same copy twice."""
+        (tmp_path / "copy.js").write_text(
+            "alpha_step();\n"
+            "beta_step();\n"
+            "gamma_step();\n"
+            "unrelated_call();\n"
+            "alpha_step();\n"
+            "beta_step();\n"
+            "gamma_step();\n"
+        )
+
+        result = sweeper.sweep(
+            signature="prefix", label="shared prefix",
+            sites=["copy.js:1-2", "copy.js:1-3"],
+            changed_files=["copy.js"], root=tmp_path,
+        )
+
+        mirrors = [c for c in result.candidates if c["candidateClass"] == "mirror"]
+        assert [c["site"] for c in mirrors] == ["copy.js:5-7"]
+
 
 class TestReport:
     def test_report_names_the_sites_and_the_shared_shape(self, repo):

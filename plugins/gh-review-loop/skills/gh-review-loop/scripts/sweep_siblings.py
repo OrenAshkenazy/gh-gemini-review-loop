@@ -121,6 +121,31 @@ _MAKEFILE_SUFFIXES = frozenset({".mk", ".make"})
 # string data, so the SQL ``--`` handler must not reach inside it.
 _DOLLAR_QUOTE_RE = re.compile(r"\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$")
 
+# A JavaScript regex literal, which owns its slashes: ``/[//]alpha/`` contains
+# no comment. Telling a regex from division needs the parser state we do not
+# have, so the lookbehind only rules out the clear division cases and a line
+# that still looks regex-ish is kept verbatim rather than normalized.
+_REGEX_LITERAL_RE = re.compile(
+    r"(?<![*/\w)\]])/(?![/*])(?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\])+/[dgimsuvy]*"
+)
+
+# Comments a compiler, bundler or analyzer reads. Removing one changes
+# behaviour, so it is content. The list is deliberately incomplete and errs
+# toward preserving: a comment kept by mistake only costs a mirror.
+_DIRECTIVE_RE = re.compile(
+    r"^[\s*!]*(?:"
+    r"@?ts-|eslint|prettier|biome-ignore|deno-lint|stylelint|jshint|jslint|"
+    r"webpack\w|vite-|rollup|esbuild|"
+    r"noqa|pragma|pylint|mypy|ruff|flake8|type:\s*ignore|"
+    r"go:|cgo|nolint|golangci|"
+    r"clang-format|clang-tidy|NOLINT|"
+    r"istanbul|codecov|coverage:|"
+    r"codeql|sonar|checkstyle|spotbugs|bandit|"
+    r"fmt:|lint:|SPDX-"
+    r")",
+    re.IGNORECASE,
+)
+
 # Shells where ``<<WORD`` opens a heredoc. Inside the payload a leading ``#`` is
 # data and the spacing is significant, so those lines bypass normalization
 # entirely. (fish has no heredocs, so it is deliberately absent.)
@@ -357,8 +382,17 @@ def _yaml_block_scalar_flags(lines: list[str]) -> list[bool]:
     return flags
 
 
+def _is_directive_comment(text: str) -> bool:
+    """Whether a comment body is a tool directive rather than prose."""
+    return bool(_DIRECTIVE_RE.match(text))
+
+
 def _verbatim_flags(
-    lines: list[str], *, heredocs: bool = False, yaml_scalars: bool = False
+    lines: list[str],
+    *,
+    heredocs: bool = False,
+    yaml_scalars: bool = False,
+    regex_literals: bool = False,
 ) -> list[bool] | None:
     """Lines that carry data rather than code, from every enabled source."""
     sources = []
@@ -366,6 +400,8 @@ def _verbatim_flags(
         sources.append(_heredoc_body_flags(lines))
     if yaml_scalars:
         sources.append(_yaml_block_scalar_flags(lines))
+    if regex_literals:
+        sources.append([bool(_REGEX_LITERAL_RE.search(line)) for line in lines])
     if not sources:
         return None
     return [any(flags[index] for flags in sources) for index in range(len(lines))]
@@ -443,12 +479,21 @@ def _strip_comments(
                 index += len(delimiter)
                 continue
             if block_comments and pair == "/*":
+                close = line.find("*/", index + 2)
+                if close != -1 and _is_directive_comment(line[index + 2:close]):
+                    output.append(line[index:close + 2])
+                    index = close + 2
+                    continue
                 in_block = True
                 index += 2
                 continue
             if slash_comments and pair == "//":
+                if _is_directive_comment(line[index + 2:]):
+                    output.append(line[index:])
                 break
             if dash_comments and pair == "--":
+                if _is_directive_comment(line[index + 2:]):
+                    output.append(line[index:])
                 break
             if (
                 hash_comments
@@ -459,6 +504,8 @@ def _strip_comments(
                     or line[index - 1].isspace()
                 )
             ):
+                if _is_directive_comment(line[index + 1:]):
+                    output.append(line[index:])
                 break
             output.append(character)
             index += 1
@@ -471,6 +518,7 @@ def _collapse_whitespace(
     *,
     preserve_indentation: bool = False,
     dollar_quotes: bool = False,
+    collapse: bool = True,
     verbatim_flags: list[bool] | None = None,
 ) -> list[str]:
     """Collapse formatting whitespace without changing quoted text.
@@ -486,6 +534,11 @@ def _collapse_whitespace(
     for line_number, line in enumerate(lines):
         if _is_verbatim(verbatim_flags, line_number):
             normalized_lines.append(line)
+            continue
+        if not collapse:
+            # A format where we cannot tell syntax whitespace from data --
+            # a YAML plain scalar's internal spaces are part of its value.
+            normalized_lines.append(line.rstrip())
             continue
 
         leading = ""
@@ -552,11 +605,20 @@ def normalize_block(
     preserve_indentation: bool = False,
     heredocs: bool = False,
     yaml_scalars: bool = False,
+    regex_literals: bool = False,
+    collapse: bool = True,
 ) -> tuple[str, ...]:
-    """Normalize a code block for exact mirror comparison."""
+    """Normalize a code block for exact mirror comparison.
+
+    Keyword options mirror ``_comment_options`` exactly, so a caller can splat
+    that dict straight in.
+    """
     lines = list(lines)
     verbatim_flags = _verbatim_flags(
-        lines, heredocs=heredocs, yaml_scalars=yaml_scalars
+        lines,
+        heredocs=heredocs,
+        yaml_scalars=yaml_scalars,
+        regex_literals=regex_literals,
     )
     stripped, states = _strip_comments(
         lines,
@@ -572,6 +634,7 @@ def normalize_block(
         stripped,
         preserve_indentation=preserve_indentation,
         dollar_quotes=dollar_quotes,
+        collapse=collapse,
         verbatim_flags=verbatim_flags,
     )
     # A blank line is formatting and drops out, but a blank line inside a
@@ -610,7 +673,19 @@ def _comment_options(path: str) -> dict[str, bool]:
         ),
         "heredocs": suffix in _HEREDOC_SUFFIXES,
         "yaml_scalars": suffix in _YAML_SUFFIXES,
+        "regex_literals": suffix in _SLASH_LINE_COMMENT_SUFFIXES,
+        "collapse": suffix not in _YAML_SUFFIXES,
     }
+
+
+def _language_key(path: str) -> tuple[tuple[str, bool], ...]:
+    """How this file normalizes. Two files share a key iff the same rules apply.
+
+    A mirror only means something within one language: ``export build_mode=1``
+    is a shell command in ``build.sh`` and a make directive in ``Makefile``,
+    and identical text there is a coincidence, not a duplicated implementation.
+    """
+    return tuple(sorted(_comment_options(path).items()))
 
 
 def _normalized_code_lines(
@@ -624,6 +699,7 @@ def _normalized_code_lines(
         lines,
         heredocs=options["heredocs"],
         yaml_scalars=options["yaml_scalars"],
+        regex_literals=options["regex_literals"],
     )
     stripped, states = _strip_comments(
         lines,
@@ -639,6 +715,7 @@ def _normalized_code_lines(
         stripped,
         preserve_indentation=options["preserve_indentation"],
         dollar_quotes=options["dollar_quotes"],
+        collapse=options["collapse"],
         verbatim_flags=verbatim_flags,
     )
     return [
@@ -683,9 +760,13 @@ def _mirror_candidates(
         significant_count = sum(is_significant_token(token) for token in block_tokens)
         if significant_count < MIN_MIRROR_SIGNIFICANT_TOKENS:
             continue
-        seeds.append((block, _block_fingerprint(tuple(
-            f"{state}\x00{text}" for text, state in block
-        ))))
+        seeds.append((
+            block,
+            _block_fingerprint(tuple(
+                f"{state}\x00{text}" for text, state in block
+            )),
+            _language_key(site.path),
+        ))
 
     flagged_ranges = {
         (site.path, site.start_line or site.line, site.line)
@@ -699,11 +780,11 @@ def _mirror_candidates(
     # per-offset hash of the whole block with one dict lookup, and the
     # element-wise compare below short-circuits on the first difference.
     head_offsets: dict[str, dict[tuple[str, str], list[int]]] = {}
-    for block, fingerprint in seeds:
+    for block, fingerprint, language in seeds:
         width = len(block)
         head = block[0]
         for rel in changed_files:
-            if is_lossy(rel):
+            if is_lossy(rel) or _language_key(rel) != language:
                 continue
             if rel not in normalized_files:
                 entries = _normalized_code_lines(lines_of(rel), path=rel)
@@ -740,7 +821,31 @@ def _mirror_candidates(
                     "text": " ".join(text for _, text, _state in window)[:200],
                     "fingerprint": fingerprint,
                 }
-    return list(candidates.values())
+    return _merge_overlapping(list(candidates.values()))
+
+
+def _merge_overlapping(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse mirror hits that cover the same code.
+
+    Seeds of different lengths sharing a prefix each match the same copy, and
+    the range end is part of the candidate key, so one copy would otherwise be
+    reported once per seed length. That overstates how many sites there are and
+    can burn the candidate cap on a single edit. The widest range wins.
+    """
+    merged: list[dict[str, Any]] = []
+    for candidate in sorted(
+        candidates,
+        key=lambda item: (item["path"], item["line"], -item["endLine"]),
+    ):
+        if merged:
+            kept = merged[-1]
+            if (
+                kept["path"] == candidate["path"]
+                and candidate["line"] <= kept["endLine"]
+            ):
+                continue
+        merged.append(candidate)
+    return merged
 
 
 def _strip_literals(line: str) -> str:
