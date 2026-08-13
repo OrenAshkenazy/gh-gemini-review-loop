@@ -178,21 +178,20 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
    `build.sh` against `Makefile`). A Python file that does not tokenize falls
    back to `exact`.
 
-   Two file-level declarations decide what a Python file *means*, so they are
-   part of the match key rather than of the comment rules — a flagged range
-   starting below line 1 must not escape them:
+   **Normalized matching never crosses files.** A Python block is only ever
+   compared against other blocks of the *same* file.
 
-   - the **encoding cookie** (PEP 263), because the same bytes read as `utf-8`
-     and as `latin-1` are different programs;
-   - the **shebang**, because it selects the interpreter, and a Python 2 script
-     is not a duplicate of a Python 3 one however identical their bodies.
+   This is the boundary, not a limitation. Once comments are dropped, identical
+   text can still mean different things in two different files — a `.pyi` stub
+   against a runtime module, one shebang against another, one source encoding
+   against another, `from __future__ import annotations` enabled against not.
+   Enumerating those in the match key does not converge, because the list is
+   the semantics of the language and its entire toolchain; each patch simply
+   surfaces the next member. Within one file every such property is equal by
+   construction, so the question cannot arise at all.
 
-   The cookie's rules are asked of `tokenize.detect_encoding` rather than
-   restated, so a cookie sitting below code (where the interpreter ignores it)
-   does not split the key, and `latin-1` and `iso-8859-1` resolve to one key.
-   The shebang is compared verbatim: deciding that `env python3` and
-   `/usr/bin/python3` are the same interpreter would mean modeling shebangs,
-   and declining to only ever costs a missed duplicate.
+   Cross-file duplicates are still reported — by raw matching, which claims
+   only that the bytes repeat and so is not exposed to any of this.
 
    This is a deliberate precision-over-recall trade: an advisory report that
    fires falsely stops being read, whereas a missed duplicate costs one

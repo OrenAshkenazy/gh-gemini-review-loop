@@ -353,10 +353,6 @@ class TestSweep:
                 "template.js",
                 "message = `header\n  // keep this\n  value`;\n",
             ),
-            (
-                "template.py",
-                'message = """header\n  # keep this\n  value"""\n',
-            ),
         ],
     )
     def test_mirror_seed_inside_multiline_literal_uses_file_context(
@@ -377,6 +373,25 @@ class TestSweep:
         assert [candidate["site"] for candidate in result.candidates] == [
             f"{twin.name}:2-3"
         ]
+
+    def test_a_hash_inside_a_python_docstring_is_string_data(self, tmp_path):
+        """Staged within one file, because normalized matching does not cross
+        files. Were the `#` line treated as a comment it would be dropped, the
+        seed would fall under the two-line floor, and nothing would match --
+        so finding the second copy is what proves it was kept."""
+        literal = 'message = """header\n  # keep this\n  value"""\n'
+        (tmp_path / "template.py").write_text(literal + "spacer()\n" + literal)
+
+        result = sweeper.sweep(
+            signature="literal-body",
+            label="literal body",
+            sites=["template.py:2-3"],
+            changed_files=["template.py"],
+            root=tmp_path,
+        )
+
+        assert [c["site"] for c in result.candidates] == ["template.py:6-7"]
+        assert result.candidates[0]["matchMode"] == "normalized"
 
     def test_mirror_does_not_re_report_seed_after_comment_stripping(self, tmp_path):
         """Only normalized mode drops lines, so only there can the reported
@@ -925,141 +940,85 @@ class TestPythonNormalizedMatching:
 
         assert self._sweep(tmp_path, ["d.py:1-2"], ["d.py"]).candidates == []
 
-    @pytest.mark.parametrize("cookie", [
-        "# coding: {}",
-        "# -*- coding: {} -*-",
-        "# vim: set fileencoding={} :",
-    ])
-    def test_differing_encoding_cookies_are_not_duplicates(self, tmp_path, cookie):
-        """PEP 263 decides how the interpreter reads the remaining bytes, so
-        the same bytes under utf-8 and latin-1 are different programs."""
-        body = 'label = "café"\nemit_label(label)\n'
-        (tmp_path / "a.py").write_text(cookie.format("utf-8") + "\n" + body)
-        (tmp_path / "b.py").write_text(cookie.format("latin-1") + "\n" + body)
+    def test_a_python_block_never_mirrors_into_another_file(self, tmp_path):
+        """The boundary. Normalized matching drops comments, and once they are
+        gone identical text can still mean different things in two files, for
+        reasons with no end. Within one file they cannot differ at all."""
+        body = "payload = read_source()  # cached\nemit_payload(payload)\n"
+        (tmp_path / "a.py").write_text(body)
+        (tmp_path / "b.py").write_text(body.replace("# cached", "# uncached"))
 
-        result = self._sweep(tmp_path, ["a.py:2-3"], ["a.py", "b.py"])
+        result = self._sweep(tmp_path, ["a.py:1-2"], ["a.py", "b.py"])
 
         assert result.candidates == []
 
-    def test_matching_encoding_cookies_still_mirror(self, tmp_path):
-        body = 'label = "café"\nemit_label(label)\n'
-        (tmp_path / "a.py").write_text("# coding: utf-8\n" + body)
-        (tmp_path / "b.py").write_text("# coding: utf-8\n" + body)
+    def test_identical_python_files_still_do_not_cross(self, tmp_path):
+        """Not even when the two files are byte-identical -- the rule is
+        structural, so there is no case left for a semantic difference to hide
+        in. A byte-identical copy is raw mode's job, and it is a `.py` file, so
+        normalized mode owns it and declines."""
+        body = "payload = read_source()\nemit_payload(payload)\n"
+        (tmp_path / "a.py").write_text(body)
+        (tmp_path / "b.py").write_text(body)
 
-        result = self._sweep(tmp_path, ["a.py:2-3"], ["a.py", "b.py"])
+        result = self._sweep(tmp_path, ["a.py:1-2"], ["a.py", "b.py"])
 
-        assert [c["site"] for c in result.candidates] == ["b.py:2-3"]
+        assert result.candidates == []
 
-    @pytest.mark.parametrize("first,honoured", [
-        ("# header", True),          # a comment still allows a line-2 cookie
-        ("#!/usr/bin/python3", True),
-        ("", True),                  # so does a blank line
-        ("import io", False),        # code ends the search
-        ('"""doc"""', False),        # and so does a docstring
+    @pytest.mark.parametrize("name,a_text,b_text", [
+        (
+            "differing shebangs",
+            "#!/usr/bin/python3\n",
+            "#!/usr/bin/python2\n",
+        ),
+        (
+            "differing encodings",
+            "# coding: utf-8\n",
+            "# coding: latin-1\n",
+        ),
+        (
+            "differing future flags",
+            "from __future__ import annotations\n",
+            "import os\n",
+        ),
     ])
-    def test_a_line_two_cookie_is_honoured_only_after_a_comment_or_blank(
-        self, first, honoured
+    def test_file_level_semantics_cannot_produce_a_cross_file_mirror(
+        self, tmp_path, name, a_text, b_text
     ):
-        """PEP 263 stops looking once it sees code, so a cookie below code is
-        not the file's encoding and must not split the match key."""
-        encoding = sweeper._python_encoding([first, "# coding: latin-1"])
-
-        assert (encoding != "utf-8") is honoured
-
-    @pytest.mark.parametrize("source", [
-        "# coding: latin-1\nx = 1",
-        "import io\n# coding: latin-1",
-        '"""doc"""\n# coding: latin-1',
-        "\n# coding: latin-1",
-        "# header\n# coding: latin-1",
-        "# -*- coding: latin-1 -*-\nx = 1",
-        "x = 1\ny = 2",
-        "",
-    ])
-    def test_encoding_agrees_with_the_interpreter(self, source):
-        """The rule is the tokenizer's, not ours -- so check it against the
-        tokenizer rather than against a restatement of PEP 263."""
-        import io as _io
-        import tokenize as _tok
-
-        expected = _tok.detect_encoding(
-            _io.BytesIO(source.encode()).readline
-        )[0]
-
-        assert sweeper._python_encoding(source.splitlines()) == expected
-
-    def test_encoding_aliases_are_the_same_key(self):
-        """`latin-1` and `iso-8859-1` are one encoding, so files spelling it
-        differently must still be comparable."""
-        assert (sweeper._python_encoding(["# coding: latin-1"])
-                == sweeper._python_encoding(["# coding: iso-8859-1"]))
-
-    def test_an_unknown_encoding_falls_back_to_the_text(self):
-        """An undeclarable encoding is still a declaration: two files claiming
-        the same bad cookie agree, and neither matches a real one."""
-        bogus = sweeper._python_encoding(["# coding: not-a-real-encoding"])
-
-        assert bogus == "not-a-real-encoding"
-        assert bogus != sweeper._python_encoding(["# coding: utf-8"])
-
-    def test_code_above_a_cookie_does_not_block_a_real_mirror(self, tmp_path):
-        """The recall side of the same bug. Both files are utf-8 -- the cookies
-        sit below code, so the interpreter ignores them -- and reading them as
-        two different encodings would split the key and hide a real duplicate."""
-        body = "payload = read_source()\nemit(payload)\n"
-        (tmp_path / "a.py").write_text("import io\n# coding: latin-1\n" + body)
-        (tmp_path / "b.py").write_text("import io\n# coding: utf-8\n" + body)
-
-        result = self._sweep(tmp_path, ["a.py:3-4"], ["a.py", "b.py"])
-
-        assert [c["site"] for c in result.candidates] == ["b.py:3-4"]
-
-    @pytest.mark.parametrize("other", [
-        "#!/usr/bin/python2",
-        "#!/usr/bin/env python2",
-        "#!/usr/bin/pypy3",
-    ])
-    def test_differing_shebangs_are_not_duplicates(self, tmp_path, other):
-        """A shebang is a comment to the tokenizer but not to the OS: it picks
-        the interpreter, so identical bodies under different interpreters are
-        different programs."""
+        """Each of these was once its own patch to the match key. The scope
+        rule retires the whole class, including the members nobody has named
+        yet, so none of them needs its own rule any more."""
         body = "payload = read_source()\nemit_payload(payload)\n"
-        (tmp_path / "a.py").write_text("#!/usr/bin/python3\n" + body)
-        (tmp_path / "b.py").write_text(other + "\n" + body)
-
-        result = self._sweep(tmp_path, ["a.py:1-3"], ["a.py", "b.py"])
-
-        assert result.candidates == []
-
-    def test_shebang_applies_to_ranges_that_exclude_it(self, tmp_path):
-        """The interpreter is a property of the file, so it must be in the
-        match key -- a range starting below line 1 must not escape it."""
-        body = "payload = read_source()\nemit_payload(payload)\n"
-        (tmp_path / "a.py").write_text("#!/usr/bin/python3\n" + body)
-        (tmp_path / "b.py").write_text("#!/usr/bin/python2\n" + body)
+        (tmp_path / "a.py").write_text(a_text + body)
+        (tmp_path / "b.py").write_text(b_text + body)
 
         result = self._sweep(tmp_path, ["a.py:2-3"], ["a.py", "b.py"])
 
+        assert result.candidates == [], name
+
+    def test_a_stub_is_not_a_mirror_of_a_runtime_module(self, tmp_path):
+        """`def parse(...) -> str: ...` declares in a `.pyi` and returns
+        Ellipsis in a `.py`. Same text, different meaning, different files."""
+        body = "def parse(raw_value):\n    return transform_value(raw_value)\n"
+        (tmp_path / "a.py").write_text(body)
+        (tmp_path / "b.pyi").write_text(body)
+
+        result = self._sweep(tmp_path, ["a.py:1-2"], ["a.py", "b.pyi"])
+
         assert result.candidates == []
 
-    def test_matching_shebangs_still_mirror(self, tmp_path):
-        body = "payload = read_source()\nemit_payload(payload)\n"
-        (tmp_path / "a.py").write_text("#!/usr/bin/python3\n" + body)
-        (tmp_path / "b.py").write_text("#!/usr/bin/python3\n" + body)
+    def test_raw_matching_still_crosses_files(self, tmp_path):
+        """The recall that pays for the rule above: byte-identical blocks in
+        two files are still reported, because raw mode claims only that the
+        bytes repeat."""
+        body = "const total = accumulate(entries);\nreturn formatTotal(total);\n"
+        (tmp_path / "a.js").write_text(body)
+        (tmp_path / "b.js").write_text(body)
 
-        result = self._sweep(tmp_path, ["a.py:2-3"], ["a.py", "b.py"])
+        result = self._sweep(tmp_path, ["a.js:1-2"], ["a.js", "b.js"])
 
-        assert [c["site"] for c in result.candidates] == ["b.py:2-3"]
-
-    def test_a_shebang_below_line_one_is_an_ordinary_comment(self, tmp_path):
-        """`#!` only means anything on the first line."""
-        body = "payload = read_source()\nemit_payload(payload)\n"
-        (tmp_path / "a.py").write_text("import io\n#!/usr/bin/python3\n" + body)
-        (tmp_path / "b.py").write_text("import io\n#!/usr/bin/python2\n" + body)
-
-        result = self._sweep(tmp_path, ["a.py:3-4"], ["a.py", "b.py"])
-
-        assert [c["site"] for c in result.candidates] == ["b.py:3-4"]
+        assert [c["site"] for c in result.candidates] == ["b.js:1-2"]
+        assert result.candidates[0]["matchMode"] == "exact"
 
     def test_identical_directives_still_mirror(self, tmp_path):
         (tmp_path / "same.py").write_text(

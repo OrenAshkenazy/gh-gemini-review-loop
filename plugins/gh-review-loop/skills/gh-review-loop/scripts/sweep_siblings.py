@@ -32,29 +32,47 @@ catches copy-paste, which is what a duplicate detector is for, and it makes
 almost no semantic assumptions -- so there is no per-language normalizer to get
 wrong.
 
-**Normalized, for explicitly supported languages only.** Today that is Python
-alone. Comments are removed using Python's own ``tokenize`` module, never a
-hand-rolled scanner, so two blocks differing only in their comments still match.
-Whitespace is *not* collapsed, because indentation is semantic in Python.
+**Normalized, for explicitly supported languages only, and only within one
+file.** Today that is Python alone. Comments are removed using Python's own
+``tokenize`` module, never a hand-rolled scanner, so two blocks differing only
+in their comments still match. Whitespace is *not* collapsed, because
+indentation is semantic in Python.
 
-The two modes never mix, and normalized blocks are only ever compared against
-normalized blocks of the same language. Raw blocks are compared within a
-language family (``.ts`` against ``.js``, ``.yml`` against ``.yaml``) so that
-identical text in ``build.sh`` and ``Makefile`` -- a coincidence of both
-spelling ``export`` -- is not called a duplicate.
+The single-file scope is the load-bearing part. Once comments are dropped,
+identical text can still mean different things in two different files: a ``.pyi``
+stub against a runtime module, one shebang against another, one source encoding
+against another, ``from __future__`` enabled against not. That list has no end,
+because it is the semantics of the language and its whole toolchain -- so
+instead of enumerating it, normalized matching stays inside one file, where
+every such property is equal by construction and the question cannot arise.
+Cross-file duplicates are still reported by raw matching, which claims only
+that the bytes repeat.
+
+The two modes never mix. Raw blocks are compared within a language family
+(``.ts`` against ``.js``, ``.yml`` against ``.yaml``) so that identical text in
+``build.sh`` and ``Makefile`` -- a coincidence of both spelling ``export`` --
+is not called a duplicate.
 
 The optimization target is **precision over recall over language coverage**.
 This report is advisory: a missed duplicate costs one informational finding,
 while a false one makes the whole report untrustworthy. Adding a language means
 adding a real tokenizer for it, not another pile of pattern rules.
 
-Two limitations are accepted rather than fixed, both in raw mode:
+Three limitations are accepted rather than fixed, all in raw mode -- which is
+the honest cost of a mode that reads no language: it reports that bytes repeat,
+and says nothing about whether they mean the same thing.
 
 - **Lexical context is invisible.** A block can match text that is identical but
   sits somewhere else entirely -- lines inside a JavaScript template literal
   that spell out the same calls made elsewhere. Detecting that needs a parser
   per language, which is the boundary this module deliberately stays behind.
   Python does not have this gap, because ``tokenize`` identifies string bodies.
+- **Dialects within a family are not distinguished.** A ``#!/bin/bash`` script
+  and a ``#!/bin/sh`` script share the ``shell`` family, so identical text is
+  reported as duplicated even though arrays are valid under one and not the
+  other. The report is right that the bytes repeat; it is the reader who must
+  decide whether one fix serves both. Splitting on the interpreter would mean
+  teaching raw mode a language, which is the boundary it exists to avoid.
 - **Line endings are not compared.** ``splitlines()`` drops the terminator, so
   an LF block and a CRLF block with the same content match and are labelled
   ``exact``. Retaining terminators would have to run through the reader shared
@@ -157,12 +175,6 @@ _PY_BARE_DIRECTIVES = ("noqa", "nosec", "nocover", "nolint", "nosonar")
 # of the bytes, so the same bytes under `coding: utf-8` and `coding: latin-1`
 # are different programs. It is a property of the *file*, not of any block
 # inside it, so it belongs in the match key rather than in the comment rules.
-# Matched rather than prefixed because it is legal anywhere in the comment:
-# `# -*- coding: utf-8 -*-` and `# vim: set fileencoding=utf-8 :` both count.
-_PY_ENCODING_COOKIE_RE = re.compile(r"coding[:=]\s*([-_.a-zA-Z0-9]+)")
-
-# A shebang is only a shebang on the first line, and only at column 0.
-_PY_SHEBANG_RE = re.compile(r"^#!(.*)$")
 
 # Suffixes that are the same language for copy-paste purposes. This is file
 # extension aliasing, not language modeling: it exists so a block copied from a
@@ -281,63 +293,14 @@ def _is_python_directive(comment: str) -> bool:
     are not duplicates. See ``_PY_DIRECTIVE_RE`` for why this matches a shape
     rather than a list of tools, and why the case matters.
 
-    Encoding cookies are handled by ``_python_encoding`` instead, because they
-    govern the whole file rather than the block they appear in.
+    Comments governing the whole file rather than the block they sit in --
+    encoding cookies, shebangs -- need no handling here: normalized blocks are
+    only compared within one file, where those are equal by construction.
     """
     body = comment.lstrip("#").strip()
     if _PY_DIRECTIVE_RE.match(body):
         return True
     return body.lower().startswith(_PY_BARE_DIRECTIVES)
-
-
-def _python_encoding(lines: list[str]) -> str:
-    """The file's declared source encoding, per PEP 263.
-
-    Two files declaring different encodings are different programs even when
-    their bytes are identical, so this becomes part of the match key and they
-    are never compared.
-
-    The rule is asked of the interpreter rather than restated here. PEP 263 has
-    more edges than it looks: a cookie on line 2 counts only when line 1 is
-    blank or a comment, so code -- or a docstring -- on line 1 ends the search,
-    and `latin-1` and `iso-8859-1` name one encoding under two spellings.
-    ``detect_encoding`` is the tokenizer's own answer to all of that, and it
-    normalizes the aliases, so files agreeing on the encoding agree on the key
-    however they spelled it.
-    """
-    header = "\n".join(lines[:2]) + "\n"
-    stream = io.BytesIO(header.encode("utf-8", "surrogateescape"))
-    try:
-        return _pytokenize.detect_encoding(stream.readline)[0]
-    except (SyntaxError, UnicodeError, ValueError):
-        # An undeclarable encoding is still a declaration: fall back to the
-        # text as written so two files claiming the same bad cookie match.
-        for line in lines[:2]:
-            match = _PY_ENCODING_COOKIE_RE.search(line)
-            if match and line.lstrip().startswith("#"):
-                return match.group(1).lower()
-        return "utf-8"
-
-
-def _python_shebang(lines: list[str]) -> str:
-    """The file's interpreter line, if it has one.
-
-    A shebang is a comment to the tokenizer but not to the operating system: it
-    decides which interpreter runs the file, so a Python 2 script and a Python 3
-    script are different programs even when their bodies are byte-identical.
-    Like the encoding cookie this is a property of the whole file rather than of
-    the flagged range, so it belongs in the match key and not in the comment
-    rules -- a range that happens to exclude line 1 must still not match across
-    interpreters.
-
-    The line is used verbatim. Deciding that `env python3` and `/usr/bin/python3`
-    name the same interpreter would mean modeling shebangs, and the only cost of
-    declining to is a duplicate that goes unreported.
-    """
-    if not lines:
-        return ""
-    match = _PY_SHEBANG_RE.match(lines[0])
-    return match.group(1).strip() if match else ""
 
 
 def _python_block_lines(lines: list[str]) -> list[tuple[int, str, str]] | None:
@@ -397,16 +360,22 @@ def _block_index(
 
     Two files are compared only when their keys are equal, so normalized Python
     never meets raw text, and raw text never crosses a language family.
+
+    The normalized key is scoped to the file, so a Python block is only ever
+    compared against other blocks of the *same* file. That is the boundary, not
+    a limitation: normalized matching drops comments, and once comments are
+    gone, identical text can still mean different things in two different files
+    -- a stub against a runtime module, one interpreter against another, one
+    source encoding against another, `from __future__` enabled against not.
+    Enumerating those is unbounded, because it is the whole semantics of the
+    language and its toolchain. Within one file every such property is equal by
+    construction, so the question cannot arise. Cross-file duplicates are still
+    found by raw exact matching, which claims only that the bytes repeat.
     """
     if Path(path).suffix.lower() in _PYTHON_SUFFIXES:
         entries = _python_block_lines(lines)
         if entries is not None:
-            # File-level declarations that change what the program means go in
-            # the key. The encoding cannot contain a colon, so the parts stay
-            # unambiguous however the shebang is written.
-            return entries, (
-                f"python:{_python_encoding(lines)}:{_python_shebang(lines)}"
-            )
+            return entries, f"python:{path}"
     return _raw_block_lines(lines), _family_key(path)
 
 
