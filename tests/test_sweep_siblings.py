@@ -572,6 +572,140 @@ class TestSweep:
         assert result.status == "no_source"
 
 
+class TestMirrorNormalizationGuards:
+    """A mirror asserts two blocks are the same code, so every normalization
+    step is a chance to claim that falsely. Each guard below must lose the
+    mirror rather than report one."""
+
+    @staticmethod
+    def _sweep(tmp_path, sites, changed_files):
+        return sweeper.sweep(
+            signature="guard", label="guard",
+            sites=sites, changed_files=changed_files, root=tmp_path,
+        )
+
+    HEREDOC_SCRIPT = (
+        "write_config() {\n"
+        "  cat <<EOF\n"
+        "# PAYLOAD setting\n"
+        "value=1\n"
+        "EOF\n"
+        "}\n"
+    )
+
+    @classmethod
+    def _heredoc(cls, payload):
+        return cls.HEREDOC_SCRIPT.replace("PAYLOAD", payload)
+
+    def test_a_hash_line_inside_a_heredoc_is_payload_not_a_comment(self, tmp_path):
+        (tmp_path / "script.sh").write_text(
+            self._heredoc("alpha") + self._heredoc("beta")
+        )
+
+        result = self._sweep(tmp_path, ["script.sh:2-5"], ["script.sh"])
+
+        assert result.candidates == []
+
+    def test_heredoc_payload_spacing_is_significant(self, tmp_path):
+        (tmp_path / "spacing.sh").write_text(
+            "cat <<EOF\n"
+            "indent_one   two\n"
+            "EOF\n"
+            "cat <<EOF\n"
+            "indent_one two\n"
+            "EOF\n"
+        )
+
+        result = self._sweep(tmp_path, ["spacing.sh:1-3"], ["spacing.sh"])
+
+        assert result.candidates == []
+
+    def test_identical_heredocs_still_mirror(self, tmp_path):
+        """The guard must not silence every shell mirror."""
+        (tmp_path / "same.sh").write_text(self._heredoc("alpha") * 2)
+
+        result = self._sweep(tmp_path, ["same.sh:2-5"], ["same.sh"])
+
+        assert [c["site"] for c in result.candidates] == ["same.sh:8-11"]
+
+    def test_yaml_nesting_depth_is_not_normalized_away(self, tmp_path):
+        (tmp_path / "compose.yaml").write_text(
+            "services:\n"
+            "  web:\n"
+            "    image: alpine_base\n"
+            "    command: serve_http\n"
+            "overrides:\n"
+            "      image: alpine_base\n"
+            "      command: serve_http\n"
+        )
+
+        result = self._sweep(tmp_path, ["compose.yaml:3-4"], ["compose.yaml"])
+
+        assert result.candidates == []
+
+    def test_yaml_blocks_at_the_same_depth_still_mirror(self, tmp_path):
+        (tmp_path / "same.yaml").write_text(
+            "web:\n"
+            "    image: alpine_base\n"
+            "    command: serve_http\n"
+            "api:\n"
+            "    image: alpine_base\n"
+            "    command: serve_http\n"
+        )
+
+        result = self._sweep(tmp_path, ["same.yaml:2-3"], ["same.yaml"])
+
+        assert [c["site"] for c in result.candidates] == ["same.yaml:5-6"]
+
+    def test_an_overlong_seed_is_refused_rather_than_scanned(self, tmp_path, monkeypatch):
+        """Cost is O(file lines x range lines) per seed; the cap is the bound."""
+        monkeypatch.setattr(sweeper, "MAX_MIRROR_BLOCK_LINES", 3)
+        block = "alpha_one();\nbeta_two();\ngamma_three();\ndelta_four();\n"
+        (tmp_path / "long.js").write_text(block * 2)
+
+        result = self._sweep(tmp_path, ["long.js:1-4"], ["long.js"])
+
+        assert result.candidates == []
+
+    def test_a_seed_within_the_cap_still_mirrors(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sweeper, "MAX_MIRROR_BLOCK_LINES", 4)
+        block = "alpha_one();\nbeta_two();\ngamma_three();\ndelta_four();\n"
+        (tmp_path / "long.js").write_text(block * 2)
+
+        result = self._sweep(tmp_path, ["long.js:1-4"], ["long.js"])
+
+        assert [c["site"] for c in result.candidates] == ["long.js:5-8"]
+
+    def test_differing_non_utf8_bytes_are_not_reported_as_a_mirror(self, tmp_path):
+        """Both blocks decode to U+FFFD under errors='replace' and would
+        otherwise fingerprint alike despite differing on disk."""
+        (tmp_path / "legacy.js").write_bytes(
+            b'const label = "caf\xe9";\nconst other = compute_value();\n'
+            b'const label = "caf\xe8";\nconst other = compute_value();\n'
+        )
+
+        result = self._sweep(tmp_path, ["legacy.js:1-2"], ["legacy.js"])
+
+        assert result.candidates == []
+
+    def test_the_same_block_in_valid_utf8_does_mirror(self, tmp_path):
+        (tmp_path / "clean.js").write_bytes(
+            'const label = "café";\nconst other = compute_value();\n'.encode() * 2
+        )
+
+        result = self._sweep(tmp_path, ["clean.js:1-2"], ["clean.js"])
+
+        assert [c["site"] for c in result.candidates] == ["clean.js:3-4"]
+
+    def test_lossy_files_are_still_readable_for_token_sweeps(self, tmp_path):
+        """Only exact matching refuses lossy text; the token sweep tolerates it."""
+        path = tmp_path / "legacy.py"
+        path.write_bytes(b'value = "caf\xe9".read_text().encode()\n')
+
+        assert sweeper._is_lossy_text(path) is True
+        assert sweeper._read_lines(path) == ['value = "caf�".read_text().encode()']
+
+
 class TestReport:
     def test_report_names_the_sites_and_the_shared_shape(self, repo):
         result = sweeper.sweep(

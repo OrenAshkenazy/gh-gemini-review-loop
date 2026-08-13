@@ -26,6 +26,14 @@ comments are stripped, whitespace is collapsed, and the normalized sequence is
 fingerprinted and searched across the changed files. These candidates are
 reported as ``mirror`` rather than token-intersection matches.
 
+Exact matching is held to a stricter standard than the token sweep, because a
+mirror claims two blocks are *the same code*. Anything that could make two
+different blocks normalize alike is refused rather than guessed at: heredoc
+payloads keep their ``#`` lines and their spacing, indentation-sensitive formats
+keep their indentation, and a file that is not valid UTF-8 is skipped entirely
+rather than fingerprinted through lossy replacement characters. Each guard can
+only lose a mirror, never invent one.
+
 This reports. It never edits, and it never reads a file outside the changed set,
 so the blast radius cannot leave the PR's own diff.
 
@@ -56,6 +64,11 @@ MIN_INVARIANT_TOKENS = 2
 # ``return;`` plus ``}``. A mirror block must carry identifier-like signal too.
 MIN_MIRROR_SIGNIFICANT_TOKENS = 2
 
+# A mirror seed is compared against every window of the same width in every
+# changed file, so its length multiplies the scan cost. Past a few hundred lines
+# a "duplicate block" is a duplicated file, which is a human's call anyway.
+MAX_MIRROR_BLOCK_LINES = 400
+
 # Reporting cap. A sweep that proposes fifty sites is not a sweep, it is a
 # refactor, and it should go back to the human.
 DEFAULT_MAX_CANDIDATES = 20
@@ -80,6 +93,31 @@ _HASH_COMMENT_SUFFIXES = frozenset({
 })
 _DASH_COMMENT_SUFFIXES = frozenset({".sql"})
 _HASH_COMMENT_NO_SPACE_SUFFIXES = frozenset({".py", ".rb", ".toml"})
+
+# Shells where ``<<WORD`` opens a heredoc. Inside the payload a leading ``#`` is
+# data and the spacing is significant, so those lines bypass normalization
+# entirely. (fish has no heredocs, so it is deliberately absent.)
+_HEREDOC_SUFFIXES = frozenset({".sh", ".bash", ".zsh", ".ksh"})
+
+# Formats where leading whitespace carries meaning -- YAML nesting depth, Python
+# blocks, the layout rules of Haskell and F#, list/code-block nesting in prose.
+# Collapsing it would map structurally different blocks onto one fingerprint.
+_INDENTATION_SENSITIVE_SUFFIXES = frozenset({
+    ".py", ".pyi",
+    ".yaml", ".yml",
+    ".sass", ".styl",
+    ".haml", ".slim", ".pug", ".jade",
+    ".coffee", ".nim", ".elm",
+    ".hs", ".lhs", ".fs", ".fsx",
+    ".md", ".markdown", ".rst",
+})
+
+# ``<<WORD``, ``<<-WORD``, ``<<'WORD'``, ``<<"WORD"``, ``<<\WORD``. The negative
+# lookahead keeps ``<<<`` (a here-string, which has no payload lines) out, and
+# requiring an identifier keeps arithmetic shifts such as ``x << 2`` out.
+_HEREDOC_OPEN_RE = re.compile(
+    r"<<(?!<)(-?)\s*(?:(['\"])(?P<quoted>[^'\"]*)\2|\\?(?P<bare>[A-Za-z_][A-Za-z_0-9]*))"
+)
 
 # Tokens too common to carry signal. Keeping them would let a candidate match on
 # `self` alone. This is a stopword list, not a language model: an unknown
@@ -152,6 +190,47 @@ def parse_site(raw: str) -> Site:
     return Site(raw, None)
 
 
+def _is_verbatim(flags: list[bool] | None, line_number: int) -> bool:
+    """Whether this line must pass through normalization untouched."""
+    return flags is not None and line_number < len(flags) and flags[line_number]
+
+
+def _heredoc_body_flags(lines: list[str]) -> list[bool]:
+    """Mark the lines that are heredoc payload rather than shell code.
+
+    A heredoc body is literal text: ``# ...`` in it is content, not a comment,
+    and its spacing is part of the data. Marking those lines keeps two ``cat
+    <<EOF`` blocks with different payloads from normalizing onto one
+    fingerprint. The opener line itself is real code and stays unmarked; the
+    terminator is kept verbatim, which is harmless.
+
+    Detection runs on the raw line, so a ``<<`` inside a string literal can
+    open a phantom heredoc. That only makes later lines verbatim, which loses
+    mirror matches instead of inventing them -- the direction this whole shape
+    has to err in.
+    """
+    flags = [False] * len(lines)
+    pending: list[tuple[str, bool]] = []
+    active: tuple[str, bool] | None = None
+    for index, line in enumerate(lines):
+        if active is not None:
+            flags[index] = True
+            delimiter, strip_tabs = active
+            candidate = line.lstrip("\t") if strip_tabs else line
+            if candidate.rstrip() == delimiter:
+                active = pending.pop(0) if pending else None
+            continue
+        for match in _HEREDOC_OPEN_RE.finditer(line):
+            quoted = match.group("quoted")
+            pending.append((
+                quoted if quoted is not None else match.group("bare"),
+                bool(match.group(1)),
+            ))
+        if pending:
+            active = pending.pop(0)
+    return flags
+
+
 def _strip_comments(
     lines: Iterable[str],
     *,
@@ -159,13 +238,20 @@ def _strip_comments(
     hash_comments_no_space: bool = True,
     slash_comments: bool = True,
     dash_comments: bool = False,
+    verbatim_flags: list[bool] | None = None,
 ) -> list[str]:
-    """Strip common line/block comments while preserving quoted markers."""
+    """Strip common line/block comments while preserving quoted markers.
+
+    Lines marked in ``verbatim_flags`` (heredoc payload) pass through untouched.
+    """
     stripped: list[str] = []
     in_block = False
     quote: str | None = None
     escaped = False
-    for line in lines:
+    for line_number, line in enumerate(lines):
+        if _is_verbatim(verbatim_flags, line_number):
+            stripped.append(line)
+            continue
         output: list[str] = []
         index = 0
         while index < len(line):
@@ -233,14 +319,24 @@ def _strip_comments(
 
 
 def _collapse_whitespace(
-    lines: Iterable[str], *, preserve_indentation: bool = False
+    lines: Iterable[str],
+    *,
+    preserve_indentation: bool = False,
+    verbatim_flags: list[bool] | None = None,
 ) -> list[str]:
-    """Collapse formatting whitespace without changing quoted text."""
+    """Collapse formatting whitespace without changing quoted text.
+
+    Lines marked in ``verbatim_flags`` (heredoc payload) keep their spacing.
+    """
     normalized_lines: list[str] = []
     quote: str | None = None
     escaped = False
 
-    for line in lines:
+    for line_number, line in enumerate(lines):
+        if _is_verbatim(verbatim_flags, line_number):
+            normalized_lines.append(line.rstrip())
+            continue
+
         leading = ""
         if preserve_indentation:
             width = len(line) - len(line.lstrip(" \t"))
@@ -308,19 +404,25 @@ def normalize_block(
     slash_comments: bool = True,
     dash_comments: bool = False,
     preserve_indentation: bool = False,
+    heredocs: bool = False,
 ) -> tuple[str, ...]:
     """Normalize a code block for exact mirror comparison."""
+    lines = list(lines)
+    verbatim_flags = _heredoc_body_flags(lines) if heredocs else None
     stripped = _strip_comments(
         lines,
         hash_comments=hash_comments,
         hash_comments_no_space=hash_comments_no_space,
         slash_comments=slash_comments,
         dash_comments=dash_comments,
+        verbatim_flags=verbatim_flags,
     )
     return tuple(
         line
         for line in _collapse_whitespace(
-            stripped, preserve_indentation=preserve_indentation
+            stripped,
+            preserve_indentation=preserve_indentation,
+            verbatim_flags=verbatim_flags,
         )
         if line
     )
@@ -338,7 +440,8 @@ def _comment_options(path: str) -> dict[str, bool]:
         "hash_comments_no_space": suffix in _HASH_COMMENT_NO_SPACE_SUFFIXES,
         "slash_comments": not hash_comments and suffix not in _DASH_COMMENT_SUFFIXES,
         "dash_comments": suffix in _DASH_COMMENT_SUFFIXES,
-        "preserve_indentation": suffix == ".py",
+        "preserve_indentation": suffix in _INDENTATION_SENSITIVE_SUFFIXES,
+        "heredocs": suffix in _HEREDOC_SUFFIXES,
     }
 
 
@@ -348,12 +451,14 @@ def _normalized_code_lines(
     path: str,
 ) -> list[tuple[int, str]]:
     options = _comment_options(path)
+    verbatim_flags = _heredoc_body_flags(lines) if options["heredocs"] else None
     stripped = _strip_comments(
-                lines,
-                hash_comments=options["hash_comments"],
-                hash_comments_no_space=options["hash_comments_no_space"],
+        lines,
+        hash_comments=options["hash_comments"],
+        hash_comments_no_space=options["hash_comments_no_space"],
         slash_comments=options["slash_comments"],
         dash_comments=options["dash_comments"],
+        verbatim_flags=verbatim_flags,
     )
     return [
         (number, normalized)
@@ -361,6 +466,7 @@ def _normalized_code_lines(
             _collapse_whitespace(
                 stripped,
                 preserve_indentation=options["preserve_indentation"],
+                verbatim_flags=verbatim_flags,
             ),
             start=1,
         )
@@ -372,9 +478,11 @@ def _mirror_candidates(
     sites: list[Site],
     changed_files: list[str],
     lines_of: Callable[[str], list[str]],
+    lossy_of: Callable[[str], bool] | None = None,
 ) -> list[dict[str, Any]]:
     """Find exact normalized copies of flagged multi-line ranges."""
     changed = set(changed_files)
+    is_lossy = lossy_of if lossy_of is not None else (lambda _rel: False)
     seeds: list[tuple[tuple[str, ...], str]] = []
     for site in sites:
         if (
@@ -383,6 +491,8 @@ def _mirror_candidates(
             or site.line is None
             or site.start_line >= site.line
         ):
+            continue
+        if is_lossy(site.path):
             continue
         lines = lines_of(site.path)
         if site.line > len(lines):
@@ -393,9 +503,11 @@ def _mirror_candidates(
             for number, text in normalized_source
             if site.start_line <= number <= site.line
         )
+        if len(block) < 2 or len(block) > MAX_MIRROR_BLOCK_LINES:
+            continue
         block_tokens = set().union(*(tokenize(line) for line in block), set())
         significant_count = sum(is_significant_token(token) for token in block_tokens)
-        if len(block) < 2 or significant_count < MIN_MIRROR_SIGNIFICANT_TOKENS:
+        if significant_count < MIN_MIRROR_SIGNIFICANT_TOKENS:
             continue
         seeds.append((block, _block_fingerprint(block)))
 
@@ -406,24 +518,34 @@ def _mirror_candidates(
     }
     candidates: dict[tuple[str, int, int], dict[str, Any]] = {}
     normalized_files: dict[str, list[tuple[int, str]]] = {}
+    # normalized first line -> ascending offsets. A window can only match if its
+    # first line does, so this replaces the per-offset hash of the whole block
+    # with one dict lookup, and the element-wise compare below short-circuits.
+    head_offsets: dict[str, dict[str, list[int]]] = {}
     for block, fingerprint in seeds:
         width = len(block)
+        head = block[0]
         for rel in changed_files:
+            if is_lossy(rel):
+                continue
             if rel not in normalized_files:
-                normalized_files[rel] = _normalized_code_lines(
-                    lines_of(rel),
-                    path=rel,
-                )
+                entries = _normalized_code_lines(lines_of(rel), path=rel)
+                normalized_files[rel] = entries
+                offsets: dict[str, list[int]] = {}
+                for offset, (_number, text) in enumerate(entries):
+                    offsets.setdefault(text, []).append(offset)
+                head_offsets[rel] = offsets
             entries = normalized_files[rel]
-            for offset in range(len(entries) - width + 1):
-                window = entries[offset:offset + width]
-                candidate_block = tuple(text for _, text in window)
-                if (
-                    _block_fingerprint(candidate_block) != fingerprint
-                    or candidate_block != block
+            last_offset = len(entries) - width
+            for offset in head_offsets[rel].get(head, ()):
+                if offset > last_offset:
+                    break
+                if any(
+                    entries[offset + index][1] != block[index]
+                    for index in range(1, width)
                 ):
                     continue
-                start, end = window[0][0], window[-1][0]
+                start, end = entries[offset][0], entries[offset + width - 1][0]
                 if any(
                     rel == flagged_path
                     and start <= flagged_end
@@ -431,6 +553,7 @@ def _mirror_candidates(
                     for flagged_path, flagged_start, flagged_end in flagged_ranges
                 ):
                     continue
+                window = entries[offset:offset + width]
                 candidates[(rel, start, end)] = {
                     "candidateClass": "mirror",
                     "path": rel,
@@ -470,14 +593,35 @@ def is_significant_token(token: str) -> bool:
     return any(character.isalpha() for character in token)
 
 
-def _read_lines(path: Path) -> list[str]:
-    """Read a text file, or return [] for anything unreadable or oversized."""
+def _read_text(path: Path) -> tuple[list[str], bool]:
+    """Read a text file as ``(lines, lossy)``.
+
+    ``lossy`` is True when the bytes were not valid UTF-8 and had to be decoded
+    with replacement characters. A token sweep tolerates that -- it only wants
+    identifiers, which are ASCII in practice. Exact mirror fingerprinting must
+    not, because distinct source bytes all collapse onto U+FFFD and two
+    genuinely different blocks would fingerprint alike.
+    """
     try:
         if path.stat().st_size > MAX_FILE_BYTES:
-            return []
-        return path.read_text(encoding="utf-8", errors="replace").splitlines()
+            return [], False
+        data = path.read_bytes()
     except (OSError, ValueError):
-        return []
+        return [], False
+    try:
+        return data.decode("utf-8").splitlines(), False
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace").splitlines(), True
+
+
+def _read_lines(path: Path) -> list[str]:
+    """Read a text file, or return [] for anything unreadable or oversized."""
+    return _read_text(path)[0]
+
+
+def _is_lossy_text(path: Path) -> bool:
+    """Whether ``path`` needed replacement characters to decode as UTF-8."""
+    return _read_text(path)[1]
 
 
 def is_code_line(line: str) -> bool:
@@ -559,13 +703,19 @@ def sweep(
     ]
 
     file_cache: dict[str, list[str]] = {}
+    lossy_cache: dict[str, bool] = {}
 
     def lines_of(rel: str) -> list[str]:
         if rel not in file_cache:
             file_cache[rel] = _read_lines(root / rel)
         return file_cache[rel]
 
-    mirror_candidates = _mirror_candidates(located, changed_files, lines_of)
+    def lossy_of(rel: str) -> bool:
+        if rel not in lossy_cache:
+            lossy_cache[rel] = _is_lossy_text(root / rel)
+        return lossy_cache[rel]
+
+    mirror_candidates = _mirror_candidates(located, changed_files, lines_of, lossy_of)
     if len(located) < MIN_FLAGGED_SITES:
         if mirror_candidates:
             _set_candidates(result, mirror_candidates, max_candidates)
