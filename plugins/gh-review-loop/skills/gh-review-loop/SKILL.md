@@ -178,6 +178,22 @@ files next cycle. To collapse that expansion into one cycle, each cycle runs:
    `build.sh` against `Makefile`). A Python file that does not tokenize falls
    back to `exact`.
 
+   Two file-level declarations decide what a Python file *means*, so they are
+   part of the match key rather than of the comment rules — a flagged range
+   starting below line 1 must not escape them:
+
+   - the **encoding cookie** (PEP 263), because the same bytes read as `utf-8`
+     and as `latin-1` are different programs;
+   - the **shebang**, because it selects the interpreter, and a Python 2 script
+     is not a duplicate of a Python 3 one however identical their bodies.
+
+   The cookie's rules are asked of `tokenize.detect_encoding` rather than
+   restated, so a cookie sitting below code (where the interpreter ignores it)
+   does not split the key, and `latin-1` and `iso-8859-1` resolve to one key.
+   The shebang is compared verbatim: deciding that `env python3` and
+   `/usr/bin/python3` are the same interpreter would mean modeling shebangs,
+   and declining to only ever costs a missed duplicate.
+
    This is a deliberate precision-over-recall trade: an advisory report that
    fires falsely stops being read, whereas a missed duplicate costs one
    informational finding. **A duplicate in an unsupported language that differs

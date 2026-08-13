@@ -950,6 +950,117 @@ class TestPythonNormalizedMatching:
 
         assert [c["site"] for c in result.candidates] == ["b.py:2-3"]
 
+    @pytest.mark.parametrize("first,honoured", [
+        ("# header", True),          # a comment still allows a line-2 cookie
+        ("#!/usr/bin/python3", True),
+        ("", True),                  # so does a blank line
+        ("import io", False),        # code ends the search
+        ('"""doc"""', False),        # and so does a docstring
+    ])
+    def test_a_line_two_cookie_is_honoured_only_after_a_comment_or_blank(
+        self, first, honoured
+    ):
+        """PEP 263 stops looking once it sees code, so a cookie below code is
+        not the file's encoding and must not split the match key."""
+        encoding = sweeper._python_encoding([first, "# coding: latin-1"])
+
+        assert (encoding != "utf-8") is honoured
+
+    @pytest.mark.parametrize("source", [
+        "# coding: latin-1\nx = 1",
+        "import io\n# coding: latin-1",
+        '"""doc"""\n# coding: latin-1',
+        "\n# coding: latin-1",
+        "# header\n# coding: latin-1",
+        "# -*- coding: latin-1 -*-\nx = 1",
+        "x = 1\ny = 2",
+        "",
+    ])
+    def test_encoding_agrees_with_the_interpreter(self, source):
+        """The rule is the tokenizer's, not ours -- so check it against the
+        tokenizer rather than against a restatement of PEP 263."""
+        import io as _io
+        import tokenize as _tok
+
+        expected = _tok.detect_encoding(
+            _io.BytesIO(source.encode()).readline
+        )[0]
+
+        assert sweeper._python_encoding(source.splitlines()) == expected
+
+    def test_encoding_aliases_are_the_same_key(self):
+        """`latin-1` and `iso-8859-1` are one encoding, so files spelling it
+        differently must still be comparable."""
+        assert (sweeper._python_encoding(["# coding: latin-1"])
+                == sweeper._python_encoding(["# coding: iso-8859-1"]))
+
+    def test_an_unknown_encoding_falls_back_to_the_text(self):
+        """An undeclarable encoding is still a declaration: two files claiming
+        the same bad cookie agree, and neither matches a real one."""
+        bogus = sweeper._python_encoding(["# coding: not-a-real-encoding"])
+
+        assert bogus == "not-a-real-encoding"
+        assert bogus != sweeper._python_encoding(["# coding: utf-8"])
+
+    def test_code_above_a_cookie_does_not_block_a_real_mirror(self, tmp_path):
+        """The recall side of the same bug. Both files are utf-8 -- the cookies
+        sit below code, so the interpreter ignores them -- and reading them as
+        two different encodings would split the key and hide a real duplicate."""
+        body = "payload = read_source()\nemit(payload)\n"
+        (tmp_path / "a.py").write_text("import io\n# coding: latin-1\n" + body)
+        (tmp_path / "b.py").write_text("import io\n# coding: utf-8\n" + body)
+
+        result = self._sweep(tmp_path, ["a.py:3-4"], ["a.py", "b.py"])
+
+        assert [c["site"] for c in result.candidates] == ["b.py:3-4"]
+
+    @pytest.mark.parametrize("other", [
+        "#!/usr/bin/python2",
+        "#!/usr/bin/env python2",
+        "#!/usr/bin/pypy3",
+    ])
+    def test_differing_shebangs_are_not_duplicates(self, tmp_path, other):
+        """A shebang is a comment to the tokenizer but not to the OS: it picks
+        the interpreter, so identical bodies under different interpreters are
+        different programs."""
+        body = "payload = read_source()\nemit_payload(payload)\n"
+        (tmp_path / "a.py").write_text("#!/usr/bin/python3\n" + body)
+        (tmp_path / "b.py").write_text(other + "\n" + body)
+
+        result = self._sweep(tmp_path, ["a.py:1-3"], ["a.py", "b.py"])
+
+        assert result.candidates == []
+
+    def test_shebang_applies_to_ranges_that_exclude_it(self, tmp_path):
+        """The interpreter is a property of the file, so it must be in the
+        match key -- a range starting below line 1 must not escape it."""
+        body = "payload = read_source()\nemit_payload(payload)\n"
+        (tmp_path / "a.py").write_text("#!/usr/bin/python3\n" + body)
+        (tmp_path / "b.py").write_text("#!/usr/bin/python2\n" + body)
+
+        result = self._sweep(tmp_path, ["a.py:2-3"], ["a.py", "b.py"])
+
+        assert result.candidates == []
+
+    def test_matching_shebangs_still_mirror(self, tmp_path):
+        body = "payload = read_source()\nemit_payload(payload)\n"
+        (tmp_path / "a.py").write_text("#!/usr/bin/python3\n" + body)
+        (tmp_path / "b.py").write_text("#!/usr/bin/python3\n" + body)
+
+        result = self._sweep(tmp_path, ["a.py:2-3"], ["a.py", "b.py"])
+
+        assert [c["site"] for c in result.candidates] == ["b.py:2-3"]
+
+    def test_a_shebang_below_line_one_is_an_ordinary_comment(self, tmp_path):
+        """`#!` only means anything on the first line."""
+        body = "payload = read_source()\nemit_payload(payload)\n"
+        (tmp_path / "a.py").write_text("import io\n#!/usr/bin/python3\n" + body)
+        (tmp_path / "b.py").write_text("import io\n#!/usr/bin/python2\n" + body)
+
+        result = self._sweep(tmp_path, ["a.py:3-4"], ["a.py", "b.py"])
+
+        assert [c["site"] for c in result.candidates] == ["b.py:3-4"]
+
     def test_identical_directives_still_mirror(self, tmp_path):
         (tmp_path / "same.py").write_text(
             "result = compute(payload)  # type: ignore[arg-type]\n"
@@ -1239,3 +1350,55 @@ class TestCommentLines:
         )
         assert result.status == "no_source"
         assert result.candidates == []
+
+
+class TestSpansByPath:
+    """Flagged and mirrored ranges are held as intervals, not as a set of every
+    line they cover: an anchor may span an entire file, and the moving-pointer
+    membership test the sweep uses requires the intervals to be disjoint."""
+
+    def test_overlapping_ranges_merge(self):
+        spans = sweeper._spans_by_path([("a.py", 1, 10), ("a.py", 5, 20)])
+        assert spans == {"a.py": [(1, 20)]}
+
+    def test_adjacent_ranges_merge(self):
+        spans = sweeper._spans_by_path([("a.py", 1, 4), ("a.py", 5, 9)])
+        assert spans == {"a.py": [(1, 9)]}
+
+    def test_disjoint_ranges_stay_separate_and_sorted(self):
+        spans = sweeper._spans_by_path([("a.py", 40, 45), ("a.py", 1, 3)])
+        assert spans == {"a.py": [(1, 3), (40, 45)]}
+
+    def test_paths_are_kept_apart(self):
+        spans = sweeper._spans_by_path([("a.py", 1, 3), ("b.py", 1, 3)])
+        assert spans == {"a.py": [(1, 3)], "b.py": [(1, 3)]}
+
+    def test_a_whole_file_range_costs_one_interval(self):
+        """The property that makes this cheap: cost tracks the number of
+        findings, not the number of lines they cover."""
+        spans = sweeper._spans_by_path(
+            [("big.py", 1, 300_000), ("big.py", 2, 300_000)]
+        )
+        assert spans == {"big.py": [(1, 300_000)]}
+
+    def test_membership_matches_the_set_it_replaces(self):
+        ranges = [("a.py", 3, 7), ("a.py", 6, 9), ("a.py", 20, 21)]
+        spans = sweeper._spans_by_path(ranges)["a.py"]
+        expanded = {n for _p, lo, hi in ranges for n in range(lo, hi + 1)}
+        for line in range(1, 30):
+            assert (any(lo <= line <= hi for lo, hi in spans)) == (line in expanded)
+
+    def test_overlapping_flagged_ranges_are_all_suppressed(self, tmp_path):
+        """Two anchors overlapping in one file must not leave a hole: the
+        moving pointer would skip lines if the intervals were not merged."""
+        (tmp_path / "f.py").write_text(
+            "alpha = compute(seed)\n"
+            "beta = compute(seed)\n"
+            "gamma = compute(seed)\n"
+            "delta = compute(seed)\n"
+        )
+        result = sweeper.sweep(
+            signature="s", label="overlap", sites=["f.py:1-2", "f.py:2-3"],
+            changed_files=["f.py"], root=tmp_path,
+        )
+        assert [c["site"] for c in result.candidates] == ["f.py:4"]

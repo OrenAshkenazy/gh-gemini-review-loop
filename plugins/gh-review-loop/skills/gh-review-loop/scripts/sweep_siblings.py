@@ -161,6 +161,9 @@ _PY_BARE_DIRECTIVES = ("noqa", "nosec", "nocover", "nolint", "nosonar")
 # `# -*- coding: utf-8 -*-` and `# vim: set fileencoding=utf-8 :` both count.
 _PY_ENCODING_COOKIE_RE = re.compile(r"coding[:=]\s*([-_.a-zA-Z0-9]+)")
 
+# A shebang is only a shebang on the first line, and only at column 0.
+_PY_SHEBANG_RE = re.compile(r"^#!(.*)$")
+
 # Suffixes that are the same language for copy-paste purposes. This is file
 # extension aliasing, not language modeling: it exists so a block copied from a
 # .ts file into a .js file still reads as a duplicate, while identical text in
@@ -290,18 +293,51 @@ def _is_python_directive(comment: str) -> bool:
 def _python_encoding(lines: list[str]) -> str:
     """The file's declared source encoding, per PEP 263.
 
-    Only the first two lines are honoured, and only in a comment -- that is the
-    rule the interpreter follows. Two files declaring different encodings are
-    different programs even when their bytes are identical, so this becomes
-    part of the match key and they are never compared.
+    Two files declaring different encodings are different programs even when
+    their bytes are identical, so this becomes part of the match key and they
+    are never compared.
+
+    The rule is asked of the interpreter rather than restated here. PEP 263 has
+    more edges than it looks: a cookie on line 2 counts only when line 1 is
+    blank or a comment, so code -- or a docstring -- on line 1 ends the search,
+    and `latin-1` and `iso-8859-1` name one encoding under two spellings.
+    ``detect_encoding`` is the tokenizer's own answer to all of that, and it
+    normalizes the aliases, so files agreeing on the encoding agree on the key
+    however they spelled it.
     """
-    for line in lines[:2]:
-        if not line.lstrip().startswith("#"):
-            continue
-        match = _PY_ENCODING_COOKIE_RE.search(line)
-        if match:
-            return match.group(1).lower()
-    return "utf-8"
+    header = "\n".join(lines[:2]) + "\n"
+    stream = io.BytesIO(header.encode("utf-8", "surrogateescape"))
+    try:
+        return _pytokenize.detect_encoding(stream.readline)[0]
+    except (SyntaxError, UnicodeError, ValueError):
+        # An undeclarable encoding is still a declaration: fall back to the
+        # text as written so two files claiming the same bad cookie match.
+        for line in lines[:2]:
+            match = _PY_ENCODING_COOKIE_RE.search(line)
+            if match and line.lstrip().startswith("#"):
+                return match.group(1).lower()
+        return "utf-8"
+
+
+def _python_shebang(lines: list[str]) -> str:
+    """The file's interpreter line, if it has one.
+
+    A shebang is a comment to the tokenizer but not to the operating system: it
+    decides which interpreter runs the file, so a Python 2 script and a Python 3
+    script are different programs even when their bodies are byte-identical.
+    Like the encoding cookie this is a property of the whole file rather than of
+    the flagged range, so it belongs in the match key and not in the comment
+    rules -- a range that happens to exclude line 1 must still not match across
+    interpreters.
+
+    The line is used verbatim. Deciding that `env python3` and `/usr/bin/python3`
+    name the same interpreter would mean modeling shebangs, and the only cost of
+    declining to is a duplicate that goes unreported.
+    """
+    if not lines:
+        return ""
+    match = _PY_SHEBANG_RE.match(lines[0])
+    return match.group(1).strip() if match else ""
 
 
 def _python_block_lines(lines: list[str]) -> list[tuple[int, str, str]] | None:
@@ -365,7 +401,12 @@ def _block_index(
     if Path(path).suffix.lower() in _PYTHON_SUFFIXES:
         entries = _python_block_lines(lines)
         if entries is not None:
-            return entries, f"python:{_python_encoding(lines)}"
+            # File-level declarations that change what the program means go in
+            # the key. The encoding cannot contain a colon, so the parts stay
+            # unambiguous however the shebang is written.
+            return entries, (
+                f"python:{_python_encoding(lines)}:{_python_shebang(lines)}"
+            )
     return _raw_block_lines(lines), _family_key(path)
 
 
@@ -480,6 +521,31 @@ def _mirror_candidates(
                     "fingerprint": fingerprint,
                 }
     return _merge_overlapping(list(candidates.values()))
+
+
+def _spans_by_path(
+    ranges: Iterable[tuple[str, int, int]],
+) -> dict[str, list[tuple[int, int]]]:
+    """Group ``(path, start, end)`` ranges per file, sorted and disjoint.
+
+    Overlapping and adjacent ranges are merged so a line can be tested for
+    membership with a single moving pointer. Callers rely on the disjointness:
+    a pointer that can sit on an overlapping range would skip lines covered
+    only by the one it stepped past.
+    """
+    grouped: dict[str, list[tuple[int, int]]] = {}
+    for path, start, end in ranges:
+        grouped.setdefault(path, []).append((start, end))
+    for path, spans in grouped.items():
+        merged: list[tuple[int, int]] = []
+        for start, end in sorted(spans):
+            if merged and start <= merged[-1][1] + 1:
+                if end > merged[-1][1]:
+                    merged[-1] = (merged[-1][0], end)
+                continue
+            merged.append((start, end))
+        grouped[path] = merged
+    return grouped
 
 
 def _merge_overlapping(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -710,35 +776,40 @@ def sweep(
         return result
 
     result.invariant_tokens = tuple(sorted(common))
-    already = {
-        (site.path, line_number)
-        for site in located
-        for line_number in range(site.start_line or site.line, site.line + 1)
-    }
-
     candidates = list(mirror_candidates)
-    # Mirror ranges, grouped per file and sorted. _merge_overlapping already
-    # returns them disjoint, so a line can be tested against them with one
-    # moving pointer instead of a scan of every range -- the difference between
-    # linear and quadratic once a file holds thousands of repeated blocks.
-    mirror_spans: dict[str, list[tuple[int, int]]] = {}
-    for candidate in mirror_candidates:
-        mirror_spans.setdefault(candidate["path"], []).append(
-            (candidate["line"], candidate["endLine"])
-        )
-    for spans in mirror_spans.values():
-        spans.sort()
+    # Both suppression sets are kept as line ranges rather than as sets of
+    # lines. A range costs the same whether it covers three lines or a whole
+    # file, so a reviewer anchor spanning 300k lines no longer costs 300k tuples
+    # of memory; and because the ranges are sorted and disjoint, a line is
+    # tested against them with one moving pointer instead of a scan of every
+    # range -- linear rather than quadratic once a file holds thousands of them.
+    mirror_spans = _spans_by_path(
+        (c["path"], c["line"], c["endLine"]) for c in mirror_candidates
+    )
+    flagged_spans = _spans_by_path(
+        (s.path, s.start_line or s.line, s.line) for s in located
+    )
 
     for rel in changed_files:
-        spans = mirror_spans.get(rel, [])
+        spans = mirror_spans.get(rel, ())
+        flagged = flagged_spans.get(rel, ())
         cursor = 0
+        flagged_cursor = 0
         for index, text in enumerate(lines_of(rel), start=1):
-            # Advance before any skip, or the pointer desyncs from the line.
+            # Advance before any skip, or a pointer desyncs from the line.
             while cursor < len(spans) and spans[cursor][1] < index:
                 cursor += 1
+            while (
+                flagged_cursor < len(flagged)
+                and flagged[flagged_cursor][1] < index
+            ):
+                flagged_cursor += 1
             if cursor < len(spans) and spans[cursor][0] <= index:
                 continue
-            if (rel, index) in already:
+            if (
+                flagged_cursor < len(flagged)
+                and flagged[flagged_cursor][0] <= index
+            ):
                 continue
             if not is_code_line(text):
                 continue
