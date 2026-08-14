@@ -36,25 +36,6 @@ That's the whole interface. [Other install paths](#other-install-paths) · [Prer
 
 ---
 
-## Why this exists
-
-Bot reviewers expand. You fix the two instances of a pattern it flagged, push, and the next review flags three more in files it hadn't reached yet. Round three finds two more. Each round costs you a context switch, and the bot never tells you it's converging.
-
-Three things in this loop attack that directly:
-
-**It sweeps the class, not the instance.** Findings are clustered by a deterministic pattern signature. When one pattern is flagged at 2+ sites, `sweep_siblings.py` reduces those lines to tokens, intersects them, and reports every other line in the PR's changed files containing all of the shared tokens — the siblings the reviewer hasn't reached yet. A single multi-line finding can also fingerprint its normalized block and report exact copies as `mirror` candidates.
-
-Intersecting across sites is the token sweep's safety property: a candidate has to match what the flagged sites have in *common*, not what any one of them happens to contain. Single-site mirror sweeps require a multi-line range and meaningful identifier-like tokens. The tool reports before anything is edited, refuses a single-line site or a too-generic shape, and never reads a file outside your diff. Swept patterns are tracked across cycles, so if one comes back you see `⚠ RECURRED after sweep` instead of silently re-fixing it.
-
-**Mirror matching optimizes for precision over recall.** By default, in every language, two blocks match only when their text is *identical* — no comment stripping, no whitespace collapsing, no per-language guessing. Comment-insensitive matching is enabled only for languages with a real tokenizer behind it, which today means **Python alone**, via the stdlib `tokenize` module (indentation is preserved, because it is semantic) — and only *within a single file*. Once comments are dropped, identical text can still mean different things in two different files: a `.pyi` stub versus a runtime module, one shebang or source encoding or `from __future__` flag versus another. That list is the semantics of the whole toolchain and does not converge, so rather than enumerate it in the match key, normalized matching stays inside one file, where every such property is equal by construction. Those same files are still matched *across* files by raw matching, which claims only that the bytes repeat — a claim no shebang or encoding can falsify. So two `.py` files sharing a byte-identical block are still reported (as `exact`); two differing only in a comment are not. Python's raw index still carries the tokenizer's string tags, so it never matches a docstring's body against the code that docstring quotes. Blocks are never compared across language families, so identical text in `build.sh` and `Makefile` isn't called a duplicate. The trade is explicit: a duplicate in an unsupported language that differs only by a comment goes unreported. This is an advisory report — one that fires falsely stops being read, while a missed duplicate costs one informational finding.
-
-**It won't push red.** Configure a verification profile once — a one-key menu pick on first run, auto-detected from your `pyproject.toml` / `package.json` / `Cargo.toml` / `go.mod` — and every cycle runs your own tests and linters before the commit goes up. A failed required check flips the run to `verification: failed`. Compare: CodeRabbit's autofix runs a build-verification step and [ships the changes anyway when it fails](https://docs.coderabbit.ai/finishing-touches/autofix).
-
-**It has a brake, not a timeout.** The cycle cap is a hard count of re-review requests, default 3, and it counts *only the agent's own pings* — a human asking the bot to look again doesn't burn a cycle. That's a bound on rounds, not a "stop when the bot goes quiet for ten minutes" heuristic.
-
-Everything else it does — reading `isResolved`/`isOutdated` off the `reviewThreads` GraphQL, honoring a maintainer's *"wontfix"* reply, sorting by severity, keeping one live-edited status comment instead of comment spam — is table stakes done carefully. Correct, but not why you'd pick this.
-
-
 ## What's actually implemented
 
 Checkable claims, with the honest scope of each:
@@ -96,6 +77,24 @@ If you're comparing alternatives, the closest is [pbakaus/agent-reviews](https:/
 `--list-reviewers` discovers which bots have commented on your PR; `--reviewer` persists your choice per PR.
 
 **Severity caveat, stated plainly:** only two marker conventions are parsed today — Codex's `![P0]`–`![P3]` and the `![critical]`–`![low]` alt-text form Gemini uses. For any other bot every finding is `unknown`, so `--min-severity high` keeps everything and `--drop-unknown-severity` drops everything. Use severity filtering only with a bot whose format is parsed.
+## Why this exists
+
+Bot reviewers expand. You fix the two instances of a pattern it flagged, push, and the next review flags three more in files it hadn't reached yet. Round three finds two more. Each round costs you a context switch, and the bot never tells you it's converging.
+
+Three things in this loop attack that directly:
+
+**It sweeps the class, not the instance.** Findings are clustered by a deterministic pattern signature. When one pattern is flagged at 2+ sites, `sweep_siblings.py` reduces those lines to tokens, intersects them, and reports every other line in the PR's changed files containing all of the shared tokens — the siblings the reviewer hasn't reached yet. A single multi-line finding can also fingerprint its normalized block and report exact copies as `mirror` candidates.
+
+Intersecting across sites is the token sweep's safety property: a candidate has to match what the flagged sites have in *common*, not what any one of them happens to contain. Single-site mirror sweeps require a multi-line range and meaningful identifier-like tokens. The tool reports before anything is edited, refuses a single-line site or a too-generic shape, and never reads a file outside your diff. Swept patterns are tracked across cycles, so if one comes back you see `⚠ RECURRED after sweep` instead of silently re-fixing it.
+
+**Mirror matching optimizes for precision over recall.** By default, in every language, two blocks match only when their text is *identical* — no comment stripping, no whitespace collapsing, no per-language guessing. Comment-insensitive matching is enabled only for languages with a real tokenizer behind it, which today means **Python alone**, via the stdlib `tokenize` module (indentation is preserved, because it is semantic) — and only *within a single file*. Once comments are dropped, identical text can still mean different things in two different files: a `.pyi` stub versus a runtime module, one shebang or source encoding or `from __future__` flag versus another. That list is the semantics of the whole toolchain and does not converge, so rather than enumerate it in the match key, normalized matching stays inside one file, where every such property is equal by construction. Those same files are still matched *across* files by raw matching, which claims only that the bytes repeat — a claim no shebang or encoding can falsify. So two `.py` files sharing a byte-identical block are still reported (as `exact`); two differing only in a comment are not. Python's raw index still carries the tokenizer's string tags, so it never matches a docstring's body against the code that docstring quotes. Blocks are never compared across language families, so identical text in `build.sh` and `Makefile` isn't called a duplicate. The trade is explicit: a duplicate in an unsupported language that differs only by a comment goes unreported. This is an advisory report — one that fires falsely stops being read, while a missed duplicate costs one informational finding.
+
+**It won't push red.** Configure a verification profile once — a one-key menu pick on first run, auto-detected from your `pyproject.toml` / `package.json` / `Cargo.toml` / `go.mod` — and every cycle runs your own tests and linters before the commit goes up. A failed required check flips the run to `verification: failed`. Compare: CodeRabbit's autofix runs a build-verification step and [ships the changes anyway when it fails](https://docs.coderabbit.ai/finishing-touches/autofix).
+
+**It has a brake, not a timeout.** The cycle cap is a hard count of re-review requests, default 3, and it counts *only the agent's own pings* — a human asking the bot to look again doesn't burn a cycle. That's a bound on rounds, not a "stop when the bot goes quiet for ten minutes" heuristic.
+
+Everything else it does — reading `isResolved`/`isOutdated` off the `reviewThreads` GraphQL, honoring a maintainer's *"wontfix"* reply, sorting by severity, keeping one live-edited status comment instead of comment spam — is table stakes done carefully. Correct, but not why you'd pick this.
+
 
 ## Other install paths
 
