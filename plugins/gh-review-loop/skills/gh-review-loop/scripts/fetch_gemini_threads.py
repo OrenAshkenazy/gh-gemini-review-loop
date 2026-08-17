@@ -35,6 +35,7 @@ from loop_state import (  # noqa: E402 — sibling module, stdlib-only
     load_sticky_state,
     resolve_current_repo,
     save_sticky_state,
+    sentinel_path,
     sticky_state_path,  # noqa: F401 — re-exported; hooks/tests import via this module
     summary_is_stale,  # noqa: F401 — re-exported; hooks/tests import via this module
     touch_sentinel,
@@ -1250,7 +1251,15 @@ def update_run_tracking(pr: PullRequest, findings: list[tuple[str, str | None]])
     save_sticky_state(state)
     # Freshen the loop-active sentinel so the hooks.json shell guard lets the
     # gates run for the duration of this loop (and the 24h TTL restarts).
-    touch_sentinel()
+    # Without the marker the guard exits before Python starts, so the gates are
+    # off even though this run is active — never let that happen silently.
+    if not touch_sentinel():
+        print(
+            f"warning: could not write the loop-active sentinel at {sentinel_path()}. "
+            "The loop continues, but its edit gate, push gate, and Stop-hook "
+            "summary backstop stay disabled until the sentinel can be created.",
+            file=sys.stderr,
+        )
 
 
 def read_run_tracking(pr: PullRequest) -> dict[str, Any]:

@@ -9,7 +9,9 @@ It also owns the loop-active *sentinel file*: an empty marker whose existence
 lets the hooks.json shell guard skip spawning Python entirely on the idle
 path. Lifecycle:
 
-- ``touch_sentinel()`` on every real fetch (loop start / each cycle).
+- ``touch_sentinel()`` on every real fetch (loop start / each cycle). It
+  returns False when the marker could not be written — which disables the
+  gates for the run, so callers warn instead of ignoring it.
 - ``clear_sentinel()`` when the terminal ``--record-run`` leaves no active
   run behind.
 - A sentinel older than ``SENTINEL_TTL_SECONDS`` (24h) is stale — a crashed
@@ -182,12 +184,21 @@ def sentinel_path() -> Path:
     return state_dir() / SENTINEL_NAME
 
 
-def touch_sentinel() -> None:
-    """Create or freshen the loop-active sentinel.
+def touch_sentinel() -> bool:
+    """Create or freshen the loop-active sentinel. True when the marker exists.
 
     Refreshed on every real fetch so a long-running loop never crosses the
-    TTL mid-run. Fails open: hooks degrade to always-spawning Python, never
-    to blocking the loop.
+    TTL mid-run.
+
+    Failure is fail-open *for the loop* but fail-**off** for the gates: the
+    hooks.json guard reads an absent sentinel as "no loop is running" and
+    exits 0 before spawning Python. So a sentinel that cannot be written
+    leaves the loop itself fully functional while silently disabling the
+    profile gate, the push gate, and the Stop-hook summary backstop for the
+    rest of the run — the state.json run block alone will not revive them.
+    That trade is deliberate (a marker we cannot write must never wedge the
+    loop), but it is not free, so this returns False instead of swallowing
+    the error: callers surface it rather than assume the gates are live.
     """
     try:
         path = sentinel_path()
@@ -195,7 +206,8 @@ def touch_sentinel() -> None:
         path.touch()
         os.utime(path, None)
     except OSError:
-        pass
+        return False
+    return True
 
 
 def clear_sentinel() -> None:

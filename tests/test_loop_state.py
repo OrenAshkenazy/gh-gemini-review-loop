@@ -24,6 +24,7 @@ from fetch_gemini_threads import (
 )
 from loop_state import (
     SENTINEL_TTL_SECONDS,
+    any_active_run,
     clear_sentinel,
     sentinel_is_stale,
     sentinel_path,
@@ -82,6 +83,63 @@ class TestSentinelLifecycle:
         assert sentinel_path().exists()
         clear_run_tracking(_pr("other", "repo", 9))
         assert not sentinel_path().exists()
+
+
+class TestSentinelWriteFailureIsObservable:
+    """A sentinel that cannot be written turns the gates OFF, not on.
+
+    The shell guard exits 0 when the marker is absent, so a swallowed OSError
+    would silently drop the edit gate, the push gate and the Stop backstop
+    while state.json still says a run is active. The failure must be reported.
+    """
+
+    @staticmethod
+    def _unwritable(monkeypatch, tmp_path) -> Path:
+        # A regular file where the state dir should be: mkdir(parents=True)
+        # raises NotADirectoryError (an OSError) on every call.
+        blocker = tmp_path / "blocked"
+        blocker.write_text("not a directory")
+        monkeypatch.setenv("GGRL_STATE_DIR", str(blocker / "state"))
+        return blocker
+
+    def test_touch_returns_true_on_success(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        assert touch_sentinel() is True
+
+    def test_touch_returns_false_when_it_cannot_write(self, tmp_path, monkeypatch):
+        self._unwritable(monkeypatch, tmp_path)
+        assert touch_sentinel() is False
+        assert not sentinel_path().exists()
+
+    def test_fetch_warns_when_the_sentinel_cannot_be_written(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr("fetch_gemini_threads.touch_sentinel", lambda: False)
+
+        update_run_tracking(_pr(), [("t1", "a.py")])
+
+        err = capsys.readouterr().err
+        assert "loop-active sentinel" in err
+        # Names the concrete guarantees that are gone, not just "warning".
+        assert "push gate" in err
+        assert "backstop" in err
+
+    def test_fetch_is_silent_when_the_sentinel_is_written(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        update_run_tracking(_pr(), [("t1", "a.py")])
+        assert "sentinel" not in capsys.readouterr().err
+
+    def test_run_state_still_persists_when_the_sentinel_fails(
+        self, tmp_path, monkeypatch
+    ):
+        # Fail-open: the loop keeps working, only the gates go quiet.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr("fetch_gemini_threads.touch_sentinel", lambda: False)
+        update_run_tracking(_pr(), [("t1", "a.py")])
+        assert any_active_run() is True
 
 
 class TestSentinelTtl:
