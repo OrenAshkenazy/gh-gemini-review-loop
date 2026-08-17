@@ -835,6 +835,23 @@ class ReviewerRefused(Exception):
         self.refusal = refusal
 
 
+class WaitTimedOut(Exception):
+    """A blocking ``--wait`` exhausted its ``--timeout`` budget.
+
+    Typed so the CLI can print the deterministic timed-out heartbeat instead
+    of a traceback — the blocking wait is designed to run as a background
+    task, and its captured output must end in a relayable line, not a stack.
+    A bare RuntimeError cannot be used: ``run_gh`` failures raise that too,
+    and a network error must not masquerade as a timeout.
+    """
+
+    def __init__(self, elapsed_seconds: int) -> None:
+        super().__init__(
+            f"Timed out waiting for stable review activity after {elapsed_seconds} seconds."
+        )
+        self.elapsed_seconds = elapsed_seconds
+
+
 def reviewer_refusal(
     pull_request: dict[str, Any],
     author: str,
@@ -1358,7 +1375,12 @@ def clear_wait_state(pr: PullRequest) -> None:
 
 
 WAIT_FIRST_CHUNK_SECONDS = 60
-WAIT_LATER_CHUNK_SECONDS = 90
+WAIT_LATER_CHUNK_SECONDS = 300
+
+# Cadence of the one-line liveness heartbeat a blocking --wait writes to
+# stderr while polling — the signal a user inspects when the wait runs as a
+# background task.
+WAIT_HEARTBEAT_INTERVAL_SECONDS = 60
 
 
 def _parse_iso_utc(value: Any) -> _dt.datetime | None:
@@ -1395,11 +1417,12 @@ def wait_elapsed_seconds(
 
 
 def suggested_next_wait_seconds(checks: int) -> int:
-    """Decay schedule: 60s for the first chunk, 90s after.
+    """Decay schedule: 60s for the first chunk, 300s after.
 
-    Early silence is what feels broken; by the second heartbeat the user knows
-    the loop is waiting, so later checks stretch out. All gaps stay far below
-    the 5-minute prompt-cache TTL.
+    Chunked waits are the fallback for runtimes without background-task
+    completion notifications; every chunk costs a full agent turn. One early
+    heartbeat shows the loop is alive, then chunks stretch to 300s so a long
+    reviewer wait costs O(minutes/5) turns instead of O(minutes).
     """
     return WAIT_FIRST_CHUNK_SECONDS if checks <= 1 else WAIT_LATER_CHUNK_SECONDS
 
@@ -2311,10 +2334,18 @@ def wait_for_stable_review(
 
     Typical usage: pass the ``createdAt`` of the re-review request comment
     that triggered the new cycle, so the wait is anchored to that request.
+
+    Designed to run as a background task: while polling it writes a one-line
+    heartbeat to stderr every ``WAIT_HEARTBEAT_INTERVAL_SECONDS`` so an
+    inspected task shows liveness, and a timeout raises the typed
+    ``WaitTimedOut`` so the CLI ends the captured output with a relayable
+    line instead of a traceback.
     """
-    deadline = time.monotonic() + timeout_seconds
+    start = time.monotonic()
+    deadline = start + timeout_seconds
     last_fingerprint: str | None = None
     stable_since: float | None = None
+    last_heartbeat: float | None = None
 
     if after_iso:
         print(
@@ -2331,8 +2362,16 @@ def wait_for_stable_review(
         now = time.monotonic()
 
         if fingerprint is None:
-            if not after_iso:
-                print(f"Waiting for {author} review activity...", file=sys.stderr)
+            if (
+                last_heartbeat is None
+                or now - last_heartbeat >= WAIT_HEARTBEAT_INTERVAL_SECONDS
+            ):
+                print(
+                    f"Waiting for {author} review activity... "
+                    f"({int(now - start)}s elapsed, timeout {timeout_seconds}s)",
+                    file=sys.stderr,
+                )
+                last_heartbeat = now
         elif after_iso is None:
             # Cycle 1 / initial review: activity is present, so return at once
             # without waiting for it to settle. At the initial review there
@@ -2350,9 +2389,7 @@ def wait_for_stable_review(
             return pull_request
 
         if now >= deadline:
-            raise RuntimeError(
-                f"Timed out waiting for stable {author} review activity after {timeout_seconds} seconds."
-            )
+            raise WaitTimedOut(int(now - start))
 
         time.sleep(min(interval_seconds, max(0.0, deadline - now)))
 
@@ -3177,6 +3214,33 @@ def main() -> int:
                     json_output=args.format == "json",
                     color_enabled=color_enabled,
                 )
+                return 0
+            except WaitTimedOut as timed_out:
+                # Mirror the chunked-mode timed_out contract: deterministic
+                # relayable output, exit 0. Matters most when this wait ran as
+                # a background task and this is the tail of its captured log.
+                if args.format == "json":
+                    print(
+                        json.dumps(
+                            {"wait": {
+                                "status": "timed_out",
+                                "elapsed_seconds": timed_out.elapsed_seconds,
+                            }},
+                            indent=2,
+                            sort_keys=True,
+                        )
+                    )
+                else:
+                    print(
+                        color_loop_block(
+                            metrics.format_wait_heartbeat(
+                                "timed_out",
+                                author=args.author,
+                                elapsed_seconds=timed_out.elapsed_seconds,
+                            ),
+                            enabled=color_enabled,
+                        )
+                    )
                 return 0
         else:
             pull_request = fetch_threads(pr)

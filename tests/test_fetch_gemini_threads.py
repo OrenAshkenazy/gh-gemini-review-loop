@@ -2856,10 +2856,12 @@ class TestWaitElapsedAndDecay:
         assert fgt.wait_elapsed_seconds({"started_at": "garbage"}, "also-garbage", now=now) == 0
 
     def test_decay_schedule(self):
+        # 60s first chunk (early liveness), then 300s: each chunk costs a full
+        # agent turn on fallback runtimes, so later chunks stretch out (#85).
         assert fgt.suggested_next_wait_seconds(0) == 60
         assert fgt.suggested_next_wait_seconds(1) == 60
-        assert fgt.suggested_next_wait_seconds(2) == 90
-        assert fgt.suggested_next_wait_seconds(10) == 90
+        assert fgt.suggested_next_wait_seconds(2) == 300
+        assert fgt.suggested_next_wait_seconds(10) == 300
 
 
 class TestRunWaitChunk:
@@ -3099,6 +3101,102 @@ class TestWaitStopsOnRefusal:
         out = capsys.readouterr().out
         assert "add credits" not in out
         assert "--outcome-reason 'reviewer refused the review'" in out
+
+
+class TestBlockingWaitAsBackgroundTask:
+    """The blocking --wait is the primary, background-run wait (#85): its
+    captured output must show liveness while polling and must end in a
+    deterministic relayable line — never a traceback — on timeout."""
+
+    PR = fgt.PullRequest(owner="o", repo="r", number=5)
+    AFTER = "2026-06-11T12:00:00Z"
+
+    def _quiet_pr(self) -> dict:
+        return {
+            "reviewThreads": {"nodes": []},
+            "reviews": {"nodes": []},
+            "comments": {"nodes": []},
+        }
+
+    def test_timeout_raises_typed_exception(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: self._quiet_pr())
+        monkeypatch.setattr("fetch_gemini_threads.time.sleep", lambda _s: None)
+        clock = iter([0.0] * 3 + [1000.0] * 10)
+        monkeypatch.setattr("fetch_gemini_threads.time.monotonic", lambda: next(clock))
+
+        with pytest.raises(fgt.WaitTimedOut) as excinfo:
+            fgt.wait_for_stable_review(
+                self.PR, author=CODEX, timeout_seconds=900,
+                interval_seconds=1, quiet_seconds=45, after_iso=self.AFTER,
+            )
+        assert excinfo.value.elapsed_seconds >= 900
+
+    def test_heartbeat_lines_while_polling(self, tmp_path, monkeypatch, capsys):
+        """Inspecting the running background task must show elapsed liveness,
+        emitted at most once per WAIT_HEARTBEAT_INTERVAL_SECONDS."""
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: self._quiet_pr())
+        monkeypatch.setattr("fetch_gemini_threads.time.sleep", lambda _s: None)
+        # Three polls at t=0/10/70: heartbeats at t=0 and t=70, none at t=10.
+        clock = iter([0.0, 0.0, 0.0, 10.0, 10.0, 70.0, 70.0, 70.0, 2000.0, 2000.0])
+        monkeypatch.setattr("fetch_gemini_threads.time.monotonic", lambda: next(clock))
+
+        with pytest.raises(fgt.WaitTimedOut):
+            fgt.wait_for_stable_review(
+                self.PR, author=CODEX, timeout_seconds=900,
+                interval_seconds=1, quiet_seconds=45, after_iso=self.AFTER,
+            )
+        err = capsys.readouterr().err
+        heartbeats = [line for line in err.splitlines() if "elapsed" in line]
+        # t=0 (first poll), t=70 (past the 60s cadence), t=2000 (final poll,
+        # just before the timeout raise). The t=10 polls stay silent.
+        assert len(heartbeats) == 3
+        assert "(10s elapsed" not in err
+        assert "(70s elapsed" in err
+        assert f"Waiting for {CODEX} review activity" in heartbeats[0]
+        assert "timeout 900s" in heartbeats[0]
+
+    def test_cli_timeout_prints_relayable_line_and_exits_zero(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(fgt, "resolve_pr", lambda arg: self.PR)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: self._quiet_pr())
+        monkeypatch.setattr("fetch_gemini_threads.time.sleep", lambda _s: None)
+        clock = iter([0.0] * 3 + [1000.0] * 10)
+        monkeypatch.setattr("fetch_gemini_threads.time.monotonic", lambda: next(clock))
+        monkeypatch.setattr(
+            sys, "argv",
+            ["fetch_gemini_threads.py", "--pr", "https://github.com/o/r/pull/5",
+             "--reviewer", CODEX, "--wait", "--after", self.AFTER],
+        )
+
+        assert fgt.main() == 0
+
+        out = capsys.readouterr().out
+        assert "[loop] wait timed out" in out
+        assert "--gemini-unconfirmed" in out
+
+    def test_cli_timeout_json_reports_status(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(fgt, "resolve_pr", lambda arg: self.PR)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda pr: self._quiet_pr())
+        monkeypatch.setattr("fetch_gemini_threads.time.sleep", lambda _s: None)
+        clock = iter([0.0] * 3 + [1000.0] * 10)
+        monkeypatch.setattr("fetch_gemini_threads.time.monotonic", lambda: next(clock))
+        monkeypatch.setattr(
+            sys, "argv",
+            ["fetch_gemini_threads.py", "--pr", "https://github.com/o/r/pull/5",
+             "--reviewer", CODEX, "--wait", "--after", self.AFTER,
+             "--format", "json"],
+        )
+
+        assert fgt.main() == 0
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["wait"]["status"] == "timed_out"
+        assert payload["wait"]["elapsed_seconds"] >= 900
 
 
 class TestWaitChunkCli:
