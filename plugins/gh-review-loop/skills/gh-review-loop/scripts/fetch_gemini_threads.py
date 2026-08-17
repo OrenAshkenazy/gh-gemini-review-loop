@@ -835,6 +835,23 @@ class ReviewerRefused(Exception):
         self.refusal = refusal
 
 
+class WaitTimedOut(Exception):
+    """A blocking ``--wait`` exhausted its ``--timeout`` budget.
+
+    Typed so the CLI can print the deterministic timed-out heartbeat instead
+    of a traceback — the blocking wait is designed to run as a background
+    task, and its captured output must end in a relayable line, not a stack.
+    A bare RuntimeError cannot be used: ``run_gh`` failures raise that too,
+    and a network error must not masquerade as a timeout.
+    """
+
+    def __init__(self, elapsed_seconds: int) -> None:
+        super().__init__(
+            f"Timed out waiting for stable review activity after {elapsed_seconds} seconds."
+        )
+        self.elapsed_seconds = elapsed_seconds
+
+
 def reviewer_refusal(
     pull_request: dict[str, Any],
     author: str,
@@ -1358,7 +1375,12 @@ def clear_wait_state(pr: PullRequest) -> None:
 
 
 WAIT_FIRST_CHUNK_SECONDS = 60
-WAIT_LATER_CHUNK_SECONDS = 90
+WAIT_LATER_CHUNK_SECONDS = 300
+
+# Cadence of the one-line liveness heartbeat a blocking --wait writes to
+# stderr while polling — the signal a user inspects when the wait runs as a
+# background task.
+WAIT_HEARTBEAT_INTERVAL_SECONDS = 60
 
 
 def _parse_iso_utc(value: Any) -> _dt.datetime | None:
@@ -1395,11 +1417,12 @@ def wait_elapsed_seconds(
 
 
 def suggested_next_wait_seconds(checks: int) -> int:
-    """Decay schedule: 60s for the first chunk, 90s after.
+    """Decay schedule: 60s for the first chunk, 300s after.
 
-    Early silence is what feels broken; by the second heartbeat the user knows
-    the loop is waiting, so later checks stretch out. All gaps stay far below
-    the 5-minute prompt-cache TTL.
+    Chunked waits are the fallback for runtimes without background-task
+    completion notifications; every chunk costs a full agent turn. One early
+    heartbeat shows the loop is alive, then chunks stretch to 300s so a long
+    reviewer wait costs O(minutes/5) turns instead of O(minutes).
     """
     return WAIT_FIRST_CHUNK_SECONDS if checks <= 1 else WAIT_LATER_CHUNK_SECONDS
 
@@ -2204,6 +2227,30 @@ def render_receipt(
     return "\n".join(parts) + "\n"
 
 
+def build_receipt_comment_body(
+    blocks: list[str], *, status: str, findings_block: str = ""
+) -> str:
+    """Markdown body carrying the FULL cycle/terminal receipt on the PR.
+
+    This is the single authoritative delivery channel for receipt content
+    (#86): chat gets a one-line pointer, this comment gets everything. The
+    plaintext blocks ride in a code fence; the findings list stays outside it
+    so GitHub auto-links each finding's comment URL.
+    """
+    parts = [f"### gh-review-loop receipt — {status}", ""]
+    content = "\n\n".join(block for block in blocks if block)
+    if content:
+        parts.extend(["```", content, "```", ""])
+    if findings_block:
+        parts.extend([findings_block, ""])
+    parts.append(
+        f"_Last updated: {_now_iso()}. This comment is edited in place as the loop progresses._"
+    )
+    parts.append("")
+    parts.append(STICKY_RECEIPT_MARKER)
+    return "\n".join(parts) + "\n"
+
+
 def thread_fingerprint(threads: list[dict[str, Any]]) -> str:
     payload = []
     for thread in threads:
@@ -2311,10 +2358,18 @@ def wait_for_stable_review(
 
     Typical usage: pass the ``createdAt`` of the re-review request comment
     that triggered the new cycle, so the wait is anchored to that request.
+
+    Designed to run as a background task: while polling it writes a one-line
+    heartbeat to stderr every ``WAIT_HEARTBEAT_INTERVAL_SECONDS`` so an
+    inspected task shows liveness, and a timeout raises the typed
+    ``WaitTimedOut`` so the CLI ends the captured output with a relayable
+    line instead of a traceback.
     """
-    deadline = time.monotonic() + timeout_seconds
+    start = time.monotonic()
+    deadline = start + timeout_seconds
     last_fingerprint: str | None = None
     stable_since: float | None = None
+    last_heartbeat: float | None = None
 
     if after_iso:
         print(
@@ -2331,8 +2386,16 @@ def wait_for_stable_review(
         now = time.monotonic()
 
         if fingerprint is None:
-            if not after_iso:
-                print(f"Waiting for {author} review activity...", file=sys.stderr)
+            if (
+                last_heartbeat is None
+                or now - last_heartbeat >= WAIT_HEARTBEAT_INTERVAL_SECONDS
+            ):
+                print(
+                    f"Waiting for {author} review activity... "
+                    f"({int(now - start)}s elapsed, timeout {timeout_seconds}s)",
+                    file=sys.stderr,
+                )
+                last_heartbeat = now
         elif after_iso is None:
             # Cycle 1 / initial review: activity is present, so return at once
             # without waiting for it to settle. At the initial review there
@@ -2350,9 +2413,7 @@ def wait_for_stable_review(
             return pull_request
 
         if now >= deadline:
-            raise RuntimeError(
-                f"Timed out waiting for stable {author} review activity after {timeout_seconds} seconds."
-            )
+            raise WaitTimedOut(int(now - start))
 
         time.sleep(min(interval_seconds, max(0.0, deadline - now)))
 
@@ -3178,6 +3239,33 @@ def main() -> int:
                     color_enabled=color_enabled,
                 )
                 return 0
+            except WaitTimedOut as timed_out:
+                # Mirror the chunked-mode timed_out contract: deterministic
+                # relayable output, exit 0. Matters most when this wait ran as
+                # a background task and this is the tail of its captured log.
+                if args.format == "json":
+                    print(
+                        json.dumps(
+                            {"wait": {
+                                "status": "timed_out",
+                                "elapsed_seconds": timed_out.elapsed_seconds,
+                            }},
+                            indent=2,
+                            sort_keys=True,
+                        )
+                    )
+                else:
+                    print(
+                        color_loop_block(
+                            metrics.format_wait_heartbeat(
+                                "timed_out",
+                                author=args.author,
+                                elapsed_seconds=timed_out.elapsed_seconds,
+                            ),
+                            enabled=color_enabled,
+                        )
+                    )
+                return 0
         else:
             pull_request = fetch_threads(pr)
         resolved_outdated = 0
@@ -3506,6 +3594,11 @@ def main() -> int:
                 } if clusters else None,
                 **derived,
             )
+            # Read the carried-over classification BEFORE the terminal branch:
+            # --record-run calls clear_run_tracking(), which deletes the very
+            # run block prior_finding_fingerprints() reads. Reading it after
+            # would mark every finding on a capped/human/stopped receipt "new".
+            prior_fps = prior_finding_fingerprints(pr)
             # --cycle-summary is read-only: print the block but never append a
             # record or clear the accumulator, so it is safe to call every cycle.
             if args.record_run:
@@ -3528,10 +3621,73 @@ def main() -> int:
                     print(f"warning: could not stamp summary state: {exc}", file=sys.stderr)
             if args.auto_snapshot:
                 print(color_loop_block(metrics.format_auto_snapshot(record), enabled=color_enabled))
-            else:
+                return 0
+            # Single-channel receipt delivery (#86): the full receipt goes to
+            # the sticky PR comment, chat gets a one-line pointer. stdout keeps
+            # the full receipt only as the fail-open fallback (dry-run, or the
+            # comment write failed) so a receipt can never be lost.
+            summary_block = metrics.format_run_summary(record, terminal=bool(args.record_run))
+            semantic_risk_block = metrics.format_semantic_risk_block(args.semantic_risk)
+            suite_block = metrics.format_suite_block(verification_details)
+            patterns_block = metrics.format_patterns_block(clusters)
+            clustering_advisory = metrics.format_degenerate_clustering_advisory(clusters)
+            convergence_line = convergence["line"]
+            findings_view = []
+            for thread in threads:
+                comments = _iter_comments(thread)
+                line_val = thread.get("line")
+                findings_view.append({
+                    "path": thread.get("path"),
+                    "line": line_val if line_val is not None else thread.get("originalLine"),
+                    "severity": thread_severity(thread),
+                    "url": comments[0].get("url") if comments and isinstance(comments[0], dict) else None,
+                    "carried": finding_fingerprint(thread) in prior_fps,
+                })
+            findings_block = metrics.format_findings_block(findings_view)
+
+            receipt_url = None
+            if not args.dry_run:
+                receipt_status = "RUNNING" if not args.record_run else (
+                    "DONE" if record.get("outcome") == "clean" else "STOPPED"
+                )
+                body = build_receipt_comment_body(
+                    [
+                        summary_block,
+                        semantic_risk_block,
+                        suite_block,
+                        patterns_block,
+                        clustering_advisory,
+                        convergence_line,
+                    ],
+                    status=receipt_status,
+                    findings_block=findings_block,
+                )
+                try:
+                    comment_id = post_or_update_sticky_receipt(pr, body)
+                except (RuntimeError, OSError) as exc:
+                    comment_id = None
+                    print(
+                        f"warning: could not deliver the receipt to the PR comment: {exc}. "
+                        "Printing the full receipt instead.",
+                        file=sys.stderr,
+                    )
+                if comment_id:
+                    receipt_url = (
+                        f"https://github.com/{pr.owner}/{pr.repo}/pull/"
+                        f"{pr.number}#issuecomment-{comment_id}"
+                    )
+
+            if receipt_url:
+                new_count = sum(1 for f in findings_view if not f.get("carried"))
                 print(
                     color_loop_block(
-                        metrics.format_run_summary(record, terminal=bool(args.record_run)),
+                        metrics.format_compact_receipt_line(
+                            record,
+                            terminal=bool(args.record_run),
+                            receipt_url=receipt_url,
+                            findings_new=new_count,
+                            findings_carried=len(findings_view) - new_count,
+                        ),
                         enabled=color_enabled,
                     )
                 )
@@ -3542,36 +3698,33 @@ def main() -> int:
                             enabled=color_enabled,
                         )
                     )
-                # Surface the detected test toolset and the deterministic finding
-                # list inline, so neither stays buried in the collapsed profile
-                # JSON / fetch output. Carried-over findings are marked using the
-                # prior-cycle fingerprint snapshot.
-                semantic_risk_block = metrics.format_semantic_risk_block(args.semantic_risk)
+                # The clustering advisory changes what the agent must do BEFORE
+                # fixing (manual sweep), so it stays in chat alongside the
+                # pointer; everything else lives in the PR comment.
+                if clustering_advisory:
+                    print(clustering_advisory)
+            else:
+                print(color_loop_block(summary_block, enabled=color_enabled))
+                if judge_eval_requested(judge_status):
+                    print(
+                        color_loop_block(
+                            metrics.format_judge_skip(judge_status.get("skip_reason", "")),
+                            enabled=color_enabled,
+                        )
+                    )
                 if semantic_risk_block:
                     print(color_loop_block(semantic_risk_block, enabled=color_enabled))
-                suite_block = metrics.format_suite_block(verification_details)
                 if suite_block:
                     print(suite_block)
                 # Printed directly (like suite_block / findings_block): these
                 # start with "Patterns ("/"Convergence:", not "[loop]", so
                 # color_loop_block would be a no-op wrap.
-                print_clustering_blocks(clusters)
-                convergence_line = convergence["line"]
+                if patterns_block:
+                    print(patterns_block)
+                if clustering_advisory:
+                    print(clustering_advisory)
                 if convergence_line:
                     print(convergence_line)
-                prior_fps = prior_finding_fingerprints(pr)
-                findings_view = []
-                for thread in threads:
-                    comments = _iter_comments(thread)
-                    line_val = thread.get("line")
-                    findings_view.append({
-                        "path": thread.get("path"),
-                        "line": line_val if line_val is not None else thread.get("originalLine"),
-                        "severity": thread_severity(thread),
-                        "url": comments[0].get("url") if comments and isinstance(comments[0], dict) else None,
-                        "carried": finding_fingerprint(thread) in prior_fps,
-                    })
-                findings_block = metrics.format_findings_block(findings_view)
                 if findings_block:
                     print(findings_block)
             return 0

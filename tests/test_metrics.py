@@ -947,3 +947,89 @@ def test_pattern_history_unions_signatures_and_swept_for_matching_pr(tmp_path):
 def test_pattern_history_empty_when_no_log(tmp_path):
     hist = pattern_history_for_pr("o/r", 46, path=tmp_path / "missing.jsonl")
     assert hist == {"seen": set(), "swept": set()}
+
+
+class TestFormatCompactReceiptLine:
+    """The one-line chat pointer that replaces the full stdout receipt (#86)."""
+
+    RECORD = {
+        "findings_fetched": 4,
+        "fixed_count": 3,
+        "remaining_actionable": 1,
+        "cycles_used": 2,
+        "cycle_cap": 3,
+        "verification": "passed",
+        "outcome": "clean",
+    }
+    URL = "https://github.com/o/r/pull/7#issuecomment-99"
+
+    def test_cycle_line_is_one_line_with_counts_and_url(self):
+        out = metrics.format_compact_receipt_line(
+            self.RECORD, terminal=False, receipt_url=self.URL,
+            findings_new=1, findings_carried=0,
+        )
+        assert "\n" not in out
+        assert out.startswith("[loop] Cycle receipt: ")
+        assert "findings 4 seen this run" in out
+        assert "fixed locally 3" in out
+        assert "open 1 (1 new, 0 carried over)" in out
+        assert "cycles 2/3" in out
+        assert "verification passed" in out
+        assert out.endswith(self.URL)
+        assert "outcome" not in out  # cycle lines carry no terminal outcome
+
+    def test_terminal_line_carries_outcome(self):
+        out = metrics.format_compact_receipt_line(
+            self.RECORD, terminal=True, receipt_url=self.URL,
+        )
+        assert out.startswith("[loop] Summary: ")
+        assert "fixed 3" in out
+        assert "outcome clean" in out
+        assert "(" not in out  # no new/carried split without the counts
+
+    def test_zero_remaining_omits_open(self):
+        record = dict(self.RECORD, remaining_actionable=0)
+        out = metrics.format_compact_receipt_line(
+            record, terminal=True, receipt_url=self.URL,
+        )
+        assert "open" not in out
+
+    def test_corrupt_counts_render_as_zero(self):
+        out = metrics.format_compact_receipt_line(
+            {"verification": "skipped"}, terminal=False, receipt_url=self.URL,
+        )
+        assert "findings 0 seen this run" in out
+        assert "cycles 0/0" in out
+
+    # --- shared-denominator guard (#90 review) ---------------------------
+
+    def test_cumulative_total_never_carries_the_current_split(self):
+        # cycle 1 found 4; the next review leaves 1 open. The split describes
+        # the open set, so it must not hang off the cumulative "4".
+        out = metrics.format_compact_receipt_line(
+            self.RECORD, terminal=False, receipt_url=self.URL,
+            findings_new=0, findings_carried=1,
+        )
+        assert "findings 4 (" not in out
+        assert "findings 4 seen this run" in out
+        assert "open 1 (0 new, 1 carried over)" in out
+
+    def test_clean_terminal_run_has_no_empty_split(self):
+        # The old formatter rendered "findings 4 (0 new, 0 carried over)" here.
+        record = dict(self.RECORD, remaining_actionable=0)
+        out = metrics.format_compact_receipt_line(
+            record, terminal=True, receipt_url=self.URL,
+            findings_new=0, findings_carried=0,
+        )
+        assert "0 new" not in out
+        assert "carried over" not in out
+        assert "findings 4 seen this run" in out
+
+    def test_split_is_dropped_when_it_does_not_account_for_the_open_set(self):
+        # Guard against a future caller passing counts from another population.
+        out = metrics.format_compact_receipt_line(
+            self.RECORD, terminal=False, receipt_url=self.URL,
+            findings_new=1, findings_carried=3,  # 4 != remaining_actionable 1
+        )
+        assert "carried over" not in out
+        assert "open 1" in out

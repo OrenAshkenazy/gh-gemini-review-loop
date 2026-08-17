@@ -1,0 +1,83 @@
+# Script usage catalog
+
+Resolve `$GGRL_PLUGIN_ROOT` first (see SKILL.md — run as its own Bash call). All commands below assume it is exported.
+
+```bash
+# Default fetch: resolves unresolved outdated reviewer threads AND
+# addressed-by-reply threads (substantive non-bot reply, >=30 chars) before
+# printing current feedback. The re-review cap does not block this cleanup.
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py"
+
+# Wait for configured reviewer activity to appear (cycle 1 / initial review).
+# No --after → returns as soon as activity is present; it does NOT wait for a
+# quiet/settle period — at the initial review there either are comments or
+# there aren't.
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --wait
+
+# Wait for a NEW reviewer response after a re-review request (cycle 2+).
+# Pass the re-review comment timestamp so prior-cycle activity is ignored.
+# WITH --after the wait settles (waits for the new review to stabilize) so a
+# fast-forward fetch doesn't catch a half-posted re-review.
+# PRIMARY USE: run this as a BACKGROUND Bash task on runtimes with task
+# completion notifications (Claude Code) — one turn per wait. It writes a
+# one-line liveness heartbeat to stderr every ~60s; refusals and timeouts end
+# the captured output with a deterministic relayable block (exit 0).
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
+    --wait --after "$REREVIEW_AT" --timeout 1800
+
+# Chunked wait (fallback for runtimes without background-task completion
+# notifications, e.g. Codex): return within the chunk with a deterministic
+# status instead of blocking. Relay the one-line heartbeat verbatim, then run
+# the next chunk with the suggested next_wait_seconds (60s first, then 300s).
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
+    --wait --after "$REREVIEW_AT" --wait-chunk-seconds 60
+
+# After a --format json chunk, render the human heartbeat for relay:
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
+    --wait-heartbeat
+
+# Request reviewer re-review via the script-owned helper.
+# Parse JSON stdout and capture `created_at` as REREVIEW_AT.
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/request_rereview.py" \
+    --repo OWNER/REPO --pr PR_NUMBER \
+    --review-trigger-mention "$REVIEW_TRIGGER_MENTION" --json
+
+# Render deterministic human-readable formatter blocks for relay.
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
+    --profile-intro --repo OWNER/REPO
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
+    --planned-verification --repo OWNER/REPO
+
+# Run the verification profile (feed its JSON into --verification-details).
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/run_profile.py" owner/repo /path/to/repo
+
+# Read-only fetch (no GraphQL mutations)
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
+    --no-resolve-outdated --no-resolve-addressed-by-reply
+
+# Dry-run all resolutions (logs intended writes to stderr without calling GraphQL)
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --dry-run
+
+# Specific PR URL
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
+    --pr https://github.com/OWNER/REPO/pull/123
+
+# JSON for automation (stdout is machine JSON only; logs go to stderr)
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --format json
+
+# Include outdated, resolved, or addressed-by-reply threads (history investigation)
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
+    --no-resolve-outdated --include-outdated --include-resolved --include-addressed-by-reply
+
+# Discover and persist a reviewer bot
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
+    --list-reviewers --format json
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
+    --reviewer coderabbitai --reviewer-source confirmed --reviewer-name CodeRabbit \
+    --review-trigger-mention @coderabbitai
+
+# Reset reviewer selection for this PR
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --reset-reviewer
+```
+
+The script emits `warning: ... hit page limit ...` to stderr if any GraphQL page maxes out (review threads, reviews, PR comments, or comments within a thread) — older items may be silently missing.

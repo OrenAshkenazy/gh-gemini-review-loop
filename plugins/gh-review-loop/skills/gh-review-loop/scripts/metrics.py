@@ -388,6 +388,60 @@ def format_judge_skip(reason: str) -> str:
     return f"[loop] judge eval skipped: {reason or 'unknown reason'}"
 
 
+def format_compact_receipt_line(
+    record: dict[str, Any],
+    *,
+    terminal: bool,
+    receipt_url: str,
+    findings_new: int | None = None,
+    findings_carried: int | None = None,
+) -> str:
+    """One-line chat pointer for a receipt that lives in the sticky PR comment.
+
+    The full receipt (verification suite, findings list, severity breakdown)
+    is delivered once, on the PR; chat carries only counts + verification +
+    the link (#86). Everything here must fit one line — this is the whole
+    happy-path chat footprint of a cycle.
+
+    Two different denominators appear here and must not be mixed.
+    ``findings_fetched`` is **cumulative** for the run (baseline ∪ currently
+    actionable), so it is labelled "seen this run". ``findings_new`` /
+    ``findings_carried`` describe only the **currently open** set, so they
+    ride on ``open`` where they share its denominator. Attaching the split to
+    the cumulative count produced nonsense like "findings 4 (1 new, 0 carried
+    over)" once earlier findings were resolved, and "findings 4 (0 new, 0
+    carried over)" on a clean terminal run.
+    """
+    header = "[loop] Summary" if terminal else "[loop] Cycle receipt"
+    parts = [
+        f"findings {_count(record.get('findings_fetched'))} seen this run",
+        f"{'fixed' if terminal else 'fixed locally'} {_count(record.get('fixed_count'))}",
+    ]
+    remaining = _count(record.get("remaining_actionable"))
+    if remaining:
+        open_part = f"open {remaining}"
+        # Render the split only when it accounts for exactly the open set —
+        # a caller that passes counts from any other population would silently
+        # reintroduce the mismatch this guard exists to prevent.
+        if (
+            findings_new is not None
+            and findings_carried is not None
+            and _count(findings_new) + _count(findings_carried) == remaining
+        ):
+            open_part += (
+                f" ({_count(findings_new)} new, "
+                f"{_count(findings_carried)} carried over)"
+            )
+        parts.append(open_part)
+    parts.append(
+        f"cycles {_count(record.get('cycles_used'))}/{_count(record.get('cycle_cap'))}"
+    )
+    parts.append(f"verification {record.get('verification', 'skipped')}")
+    if terminal:
+        parts.append(f"outcome {record.get('outcome', '')}")
+    return f"{header}: " + " · ".join(parts) + f" — full receipt: {receipt_url}"
+
+
 def format_wait_heartbeat(
     status: str,
     *,
