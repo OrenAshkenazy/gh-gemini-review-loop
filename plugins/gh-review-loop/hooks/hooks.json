@@ -6,8 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/skills/gh-review-loop/scripts/loop_profile_gate.py\"",
-            "statusMessage": "Checking review loop verification profile",
+            "command": "s=\"${GGRL_STATE_DIR:-$HOME/.config/gh-gemini-review-loop}/loop-active\"; [ -f \"$s\" ] || exit 0; [ -n \"$(find \"$s\" -mmin +1440 2>/dev/null)\" ] && { rm -f \"$s\"; exit 0; }; exec python3 \"${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/skills/gh-review-loop/scripts/loop_profile_gate.py\"",
             "timeout": 15
           }
         ]
@@ -17,8 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/skills/gh-review-loop/scripts/loop_summary_gate.py\"",
-            "statusMessage": "Checking review loop summary gate",
+            "command": "s=\"${GGRL_STATE_DIR:-$HOME/.config/gh-gemini-review-loop}/loop-active\"; [ -f \"$s\" ] || exit 0; [ -n \"$(find \"$s\" -mmin +1440 2>/dev/null)\" ] && { rm -f \"$s\"; exit 0; }; exec python3 \"${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/skills/gh-review-loop/scripts/loop_summary_gate.py\"",
             "timeout": 15
           }
         ]
@@ -29,8 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/skills/gh-review-loop/scripts/loop_summary_hook.py\"",
-            "statusMessage": "Checking review loop summary",
+            "command": "s=\"${GGRL_STATE_DIR:-$HOME/.config/gh-gemini-review-loop}/loop-active\"; [ -f \"$s\" ] || exit 0; [ -n \"$(find \"$s\" -mmin +1440 2>/dev/null)\" ] && { rm -f \"$s\"; exit 0; }; exec python3 \"${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/skills/gh-review-loop/scripts/loop_summary_hook.py\"",
             "timeout": 130
           }
         ]
