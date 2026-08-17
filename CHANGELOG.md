@@ -4,6 +4,83 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [0.2.43] - 2026-08-17
+
+Three of the four token/latency issues landed here at once. #88 and #89 were
+merged into their stacked base branches rather than into `main`, so their
+content reached `main` only when #90 (the stack tip) was merged — see the note
+under 0.2.41/0.2.42.
+
+### Changed
+
+- **Skill loads on demand instead of all at once.** `SKILL.md` split from 1,195
+  lines to 242, with the deeper material moved to seven `references/*.md` files
+  the agent opens only when a run needs them (sweep internals, judge eval,
+  receipts, terminal report, resume/recovery, variations, script usage). Worst
+  case — every reference opened — is still smaller than the previous
+  unconditional load. Closes #84.
+- **Reviewer waits cost O(1) agent turns.** A blocking `--wait` run as a
+  background task is now the primary mode; the chunked fallback decays 60s →
+  300s instead of 60s → 90s. A 30-minute reviewer wait costs 2 turns
+  (background) or 7 (fallback) instead of 21. Adds a 60s stderr heartbeat for
+  liveness and a typed `WaitTimedOut` so a timeout ends in a relayable block
+  rather than a traceback. Closes #85.
+- **One receipt, one channel.** The full receipt is written to the sticky PR
+  comment (`RUNNING` / `DONE` / `STOPPED`, edited in place) and chat gets a
+  single `[loop]` pointer line — roughly 1,700 characters per cycle down to
+  ~230. The HARD-GATE verbatim reprint and the push-gate state snapshot are
+  gone; the Stop-hook backstop is unchanged. If the comment write fails, or
+  under `--dry-run`, the full receipt still prints to stdout, so a receipt is
+  never lost. Closes #86.
+
+### Fixed
+
+- The compact receipt line mixed two populations: `findings_fetched` is
+  cumulative for the run, but the new/carried split describes only the
+  currently-open findings, so a cycle that resolved earlier findings could read
+  `findings 4 (1 new, 0 carried over)`, and a clean terminal run
+  `findings 4 (0 new, 0 carried over)`. The cumulative count is now labelled
+  "seen this run" and the split rides on `open`, where it shares a denominator;
+  it is dropped entirely if the counts do not account for the open set.
+- Terminal receipts lost their carried-over classification: `--record-run`
+  called `clear_run_tracking()` before `prior_finding_fingerprints()` read the
+  run block it had just deleted, so every still-open finding on a capped,
+  human, or stopped receipt rendered as new. The fingerprints are now captured
+  before the terminal branch.
+
+## [0.2.42] - 2026-08-17
+
+No functional change. Release automation fires on PR merge, and #89 was merged
+into its stacked base branch rather than into `main`, so this tag is a version
+bump over unchanged content. The work it is named for shipped in 0.2.43.
+
+## [0.2.41] - 2026-08-17
+
+No functional change, for the same reason as 0.2.42 (#88 merged into its base
+branch). The work it is named for shipped in 0.2.43.
+
+## [0.2.40] - 2026-08-17
+
+### Changed
+
+- **Hooks stop paying for an idle session.** The three bundled hooks are now
+  shell guards that exit before spawning Python unless a `loop-active` sentinel
+  exists and is younger than a 24h TTL. Measured on an idle session, the two
+  PreToolUse gates went from ~277ms to ~12ms per tool call. The gates import a
+  new stdlib-only `loop_state.py` rather than the 3,800-line main script, so the
+  active path got faster too. `statusMessage` removed from all three hooks — an
+  idle session no longer flashes loop status. Closes #83.
+
+### Fixed
+
+- `touch_sentinel()` swallowed `OSError` while its comment claimed the hooks
+  would degrade to always spawning Python. The shell guard does the opposite:
+  an absent sentinel exits 0, so a run active in `state.json` would silently
+  lose its edit gate, push gate and Stop backstop. It now returns `False` on
+  failure and the caller warns, naming the guarantees that go quiet. Failing
+  open for the loop itself is kept deliberately — a marker that cannot be
+  written must never wedge a run.
+
 ### Fixed
 
 - Sibling sweeps now fingerprint a single flagged multi-line range and search
