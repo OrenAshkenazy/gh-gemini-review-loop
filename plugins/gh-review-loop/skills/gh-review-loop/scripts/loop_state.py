@@ -1,0 +1,220 @@
+"""Slim loop-state helpers shared by the hook gates and the main script.
+
+The PreToolUse/Stop hooks must decide "is a review loop active?" on every
+matching tool call, so this module keeps that decision cheap: stdlib-only
+imports, no GraphQL machinery, no argparse tree. Importing it costs
+milliseconds where importing ``fetch_gemini_threads`` costs ~100ms.
+
+It also owns the loop-active *sentinel file*: an empty marker whose existence
+lets the hooks.json shell guard skip spawning Python entirely on the idle
+path. Lifecycle:
+
+- ``touch_sentinel()`` on every real fetch (loop start / each cycle).
+- ``clear_sentinel()`` when the terminal ``--record-run`` leaves no active
+  run behind.
+- A sentinel older than ``SENTINEL_TTL_SECONDS`` (24h) is stale — a crashed
+  or abandoned loop must not keep the hooks live forever. The shell guard
+  deletes it and skips; ``sentinel_is_stale()`` mirrors that rule for tests
+  and Python callers.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import time
+from pathlib import Path
+from typing import Any
+
+SENTINEL_TTL_SECONDS = 24 * 60 * 60
+
+SENTINEL_NAME = "loop-active"
+
+
+def state_dir() -> Path:
+    """Return the per-user state directory (XDG-ish, GGRL_STATE_DIR override)."""
+    base = os.environ.get("GGRL_STATE_DIR") or os.path.expanduser(
+        "~/.config/gh-gemini-review-loop"
+    )
+    return Path(base)
+
+
+def sticky_state_path() -> Path:
+    """Return the path to the sticky-receipt/run state file.
+
+    Overridable via ``GGRL_STATE_DIR`` (useful for tests). Defaults to
+    ``~/.config/gh-gemini-review-loop/state.json`` per XDG conventions.
+    """
+    return state_dir() / "state.json"
+
+
+def load_sticky_state() -> dict[str, Any]:
+    path = sticky_state_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    # state.json must be a JSON object. A valid-but-non-dict payload (a list or
+    # scalar from corruption or hand-editing) would crash callers that do
+    # .values()/.items() on the result. Guard centrally here so every caller —
+    # any_active_run, find_active_run, and the rest — is safe.
+    return data if isinstance(data, dict) else {}
+
+
+def save_sticky_state(state: dict[str, Any]) -> None:
+    path = sticky_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2, sort_keys=True))
+
+
+def safe_int(value: Any) -> int:
+    """Coerce a state value to int, returning 0 for missing/corrupt values.
+
+    state.json is local and can be hand-edited or corrupted; the seq fields
+    must never raise from a non-numeric value, so a bad value reads as 0.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def any_active_run() -> bool:
+    """True if any tracked PR (any repo) has an active loop run.
+
+    Repo-agnostic and network-free, so the Stop hook can skip git/repo
+    resolution entirely on the common case of no loop in flight.
+    """
+    state = load_sticky_state()
+    if not isinstance(state, dict):
+        return False
+    for entry in state.values():
+        if not isinstance(entry, dict):
+            continue
+        run = entry.get("run")
+        # "Active" means a fetch bumped update_seq under the current code. A
+        # started_at without update_seq is legacy/pre-feature cruft (or a
+        # cleared run) and must not count, or stale entries from any repo would
+        # look active forever.
+        if isinstance(run, dict) and safe_int(run.get("update_seq")) > 0:
+            return True
+    return False
+
+
+def find_active_run(repo_full: str) -> tuple[int, dict[str, Any]] | None:
+    """Return ``(pr_number, run)`` for the active Gemini loop in ``repo_full``.
+
+    A loop is "active" once a cycle has accumulated into its ``run`` block
+    (signalled by ``started_at``); ``--record-run`` clears that block, so a
+    recorded/never-started loop reads as inactive. This is the cheap,
+    network-free gate the loop hooks use to decide whether to spend a GitHub
+    fetch on a summary, so it only reads local state. If several PRs in the
+    repo look active, the most recently started one wins.
+    """
+    candidates: list[tuple[str, int, dict[str, Any]]] = []
+    state = load_sticky_state()
+    if not isinstance(state, dict):
+        return None
+    for key, entry in state.items():
+        prefix, sep, suffix = key.rpartition("#")
+        if not sep or prefix != repo_full:
+            continue
+        try:
+            number = int(suffix)
+        except ValueError:
+            continue
+        run = entry.get("run") if isinstance(entry, dict) else None
+        # Active = bumped update_seq under current code (see any_active_run);
+        # a started_at-only run is legacy cruft and is skipped. Order by
+        # started_at so the most recently begun loop wins when several qualify.
+        if isinstance(run, dict) and safe_int(run.get("update_seq")) > 0:
+            # str() the sort key so a corrupted non-str started_at can't
+            # TypeError when sorting candidates of mixed types.
+            candidates.append((str(run.get("started_at", "")), number, run))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: c[0])
+    _, number, run = candidates[-1]
+    return number, run
+
+
+def summary_is_stale(run: dict[str, Any]) -> bool:
+    """True when the run has advanced since the last emitted summary.
+
+    ``update_seq`` is bumped on every fetch; ``last_summary_seq`` is stamped
+    when a summary is emitted. A run that fetched but was never summarized
+    (``last_summary_seq`` absent → 0) is stale. A run with ``started_at`` but no
+    fetch yet (``update_seq`` 0) has nothing to show and is not stale.
+    """
+    return safe_int(run.get("update_seq")) > safe_int(run.get("last_summary_seq"))
+
+
+def resolve_current_repo() -> str:
+    """Return 'owner/repo' for the current dir without needing an open PR."""
+    proc = subprocess.run(
+        ["gh", "repo", "view", "--json", "nameWithOwner"],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        message = proc.stderr.strip() or proc.stdout.strip()
+        raise RuntimeError(f"gh repo view failed: {message}")
+    try:
+        view = json.loads(proc.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Could not resolve the current repo with gh repo view.") from exc
+    if not isinstance(view, dict) or "nameWithOwner" not in view:
+        raise RuntimeError("Could not resolve the current repo with gh repo view.")
+    return view["nameWithOwner"]
+
+
+# ---------------------------------------------------------------------------
+# Loop-active sentinel
+# ---------------------------------------------------------------------------
+
+
+def sentinel_path() -> Path:
+    return state_dir() / SENTINEL_NAME
+
+
+def touch_sentinel() -> None:
+    """Create or freshen the loop-active sentinel.
+
+    Refreshed on every real fetch so a long-running loop never crosses the
+    TTL mid-run. Fails open: hooks degrade to always-spawning Python, never
+    to blocking the loop.
+    """
+    try:
+        path = sentinel_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
+def clear_sentinel() -> None:
+    try:
+        sentinel_path().unlink()
+    except OSError:
+        pass
+
+
+def sentinel_is_stale(now: float | None = None) -> bool:
+    """True when the sentinel exists but is older than the 24h TTL.
+
+    Mirrors the hooks.json shell guard (``find -mmin +1440``) so tests can
+    assert the two rules agree. A missing sentinel is not "stale" — it is
+    simply absent.
+    """
+    try:
+        mtime = sentinel_path().stat().st_mtime
+    except OSError:
+        return False
+    reference = time.time() if now is None else now
+    return (reference - mtime) > SENTINEL_TTL_SECONDS

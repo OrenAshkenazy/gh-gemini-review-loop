@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-from fetch_gemini_threads import (  # noqa: E402
+from loop_state import (  # noqa: E402 — slim, stdlib-only (see #83)
     any_active_run,
     find_active_run,
     resolve_current_repo,

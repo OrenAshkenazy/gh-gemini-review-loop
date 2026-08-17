@@ -28,6 +28,18 @@ import cluster_findings  # noqa: E402 — sibling module, pure/stdlib-only
 import reviewer_resolver  # noqa: E402 — sibling module, pure/stdlib-only
 import review_vendors  # noqa: E402 — sibling module, pure/stdlib-only
 from loop_color import color_loop, colors_enabled  # noqa: E402 — sibling module
+from loop_state import (  # noqa: E402 — sibling module, stdlib-only
+    any_active_run,
+    clear_sentinel,
+    find_active_run,  # noqa: F401 — re-exported; hooks/tests import via this module
+    load_sticky_state,
+    resolve_current_repo,
+    save_sticky_state,
+    sticky_state_path,  # noqa: F401 — re-exported; hooks/tests import via this module
+    summary_is_stale,  # noqa: F401 — re-exported; hooks/tests import via this module
+    touch_sentinel,
+)
+from loop_state import safe_int as _safe_int  # noqa: E402
 
 
 # There is no default reviewer. An unconfigured PR resolves to "none configured"
@@ -158,14 +170,6 @@ def select_stats_records(
     if not all_repos:
         records = [r for r in records if r.get("repo") == repo]
     return records[-window:] if window > 0 else records
-
-
-def resolve_current_repo() -> str:
-    """Return 'owner/repo' for the current dir without needing an open PR."""
-    view = run_gh(["repo", "view", "--json", "nameWithOwner"])
-    if not isinstance(view, dict) or "nameWithOwner" not in view:
-        raise RuntimeError("Could not resolve the current repo with gh repo view.")
-    return view["nameWithOwner"]
 
 
 QUERY = """
@@ -1096,41 +1100,13 @@ def post_pr_comment(pr: PullRequest, body: str, *, dry_run: bool = False) -> Non
 STICKY_RECEIPT_MARKER = "<!-- gh-review-loop:sticky-receipt -->"
 
 
-def sticky_state_path() -> Path:
-    """Return the path to the sticky-receipt state file.
-
-    Overridable via ``GGRL_STATE_DIR`` (useful for tests). Defaults to
-    ``~/.config/gh-gemini-review-loop/state.json`` per XDG conventions.
-    """
-    base = os.environ.get("GGRL_STATE_DIR") or os.path.expanduser(
-        "~/.config/gh-gemini-review-loop"
-    )
-    return Path(base) / "state.json"
+# State-file primitives (sticky_state_path/load/save, active-run queries,
+# the loop-active sentinel) live in loop_state so the hook gates can import
+# them without paying this module's full import cost. Re-exported above.
 
 
 def _state_key(pr: PullRequest) -> str:
     return f"{pr.owner}/{pr.repo}#{pr.number}"
-
-
-def load_sticky_state() -> dict[str, Any]:
-    path = sticky_state_path()
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {}
-    # state.json must be a JSON object. A valid-but-non-dict payload (a list or
-    # scalar from corruption or hand-editing) would crash callers that do
-    # .values()/.items() on the result. Guard centrally here so every caller —
-    # any_active_run, find_active_run, and the rest — is safe.
-    return data if isinstance(data, dict) else {}
-
-
-def save_sticky_state(state: dict[str, Any]) -> None:
-    path = sticky_state_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2, sort_keys=True))
 
 
 def read_reviewer_selection(pr: PullRequest) -> dict[str, Any] | None:
@@ -1272,6 +1248,9 @@ def update_run_tracking(pr: PullRequest, findings: list[tuple[str, str | None]])
     entry["run"] = run
     state[key] = entry
     save_sticky_state(state)
+    # Freshen the loop-active sentinel so the hooks.json shell guard lets the
+    # gates run for the duration of this loop (and the 24h TTL restarts).
+    touch_sentinel()
 
 
 def read_run_tracking(pr: PullRequest) -> dict[str, Any]:
@@ -1284,6 +1263,10 @@ def clear_run_tracking(pr: PullRequest) -> None:
     if key in state and "run" in state[key]:
         del state[key]["run"]
         save_sticky_state(state)
+    # Drop the sentinel only when no loop remains anywhere — another repo's
+    # concurrent loop still needs the hooks live.
+    if not any_active_run():
+        clear_sentinel()
 
 
 def begin_wait_chunk(pr: PullRequest, after_iso: str | None) -> dict[str, Any]:
@@ -1891,18 +1874,6 @@ def prior_pattern_signatures(pr: PullRequest) -> set[str]:
     return {x for x in value if isinstance(x, str)} if isinstance(value, list) else set()
 
 
-def _safe_int(value: Any) -> int:
-    """Coerce a state value to int, returning 0 for missing/corrupt values.
-
-    state.json is local and can be hand-edited or corrupted; the seq fields
-    must never raise from a non-numeric value, so a bad value reads as 0.
-    """
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
-
-
 def detect_no_progress(pr: PullRequest, current_fingerprint: str) -> bool:
     """True when the actionable thread fingerprint is unchanged from last cycle.
 
@@ -1940,76 +1911,6 @@ def detect_no_progress(pr: PullRequest, current_fingerprint: str) -> bool:
         and prev_fingerprint == current_fingerprint
         and update_seq >= 2
     )
-
-
-def any_active_run() -> bool:
-    """True if any tracked PR (any repo) has an active loop run.
-
-    Repo-agnostic and network-free, so the Stop hook can skip git/repo
-    resolution entirely on the common case of no loop in flight.
-    """
-    state = load_sticky_state()
-    if not isinstance(state, dict):
-        return False
-    for entry in state.values():
-        if not isinstance(entry, dict):
-            continue
-        run = entry.get("run")
-        # "Active" means a fetch bumped update_seq under the current code. A
-        # started_at without update_seq is legacy/pre-feature cruft (or a
-        # cleared run) and must not count, or stale entries from any repo would
-        # look active forever.
-        if isinstance(run, dict) and _safe_int(run.get("update_seq")) > 0:
-            return True
-    return False
-
-
-def find_active_run(repo_full: str) -> tuple[int, dict[str, Any]] | None:
-    """Return ``(pr_number, run)`` for the active Gemini loop in ``repo_full``.
-
-    A loop is "active" once a cycle has accumulated into its ``run`` block
-    (signalled by ``started_at``); ``--record-run`` clears that block, so a
-    recorded/never-started loop reads as inactive. This is the cheap,
-    network-free gate the loop hooks use to decide whether to spend a GitHub
-    fetch on a summary, so it only reads local state. If several PRs in the
-    repo look active, the most recently started one wins.
-    """
-    candidates: list[tuple[str, int, dict[str, Any]]] = []
-    state = load_sticky_state()
-    if not isinstance(state, dict):
-        return None
-    for key, entry in state.items():
-        prefix, sep, suffix = key.rpartition("#")
-        if not sep or prefix != repo_full:
-            continue
-        try:
-            number = int(suffix)
-        except ValueError:
-            continue
-        run = entry.get("run") if isinstance(entry, dict) else None
-        # Active = bumped update_seq under current code (see any_active_run);
-        # a started_at-only run is legacy cruft and is skipped. Order by
-        # started_at so the most recently begun loop wins when several qualify.
-        if isinstance(run, dict) and _safe_int(run.get("update_seq")) > 0:
-            # str() the sort key so a corrupted non-str started_at can't
-            # TypeError when sorting candidates of mixed types.
-            candidates.append((str(run.get("started_at", "")), number, run))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda c: c[0])
-    _, number, run = candidates[-1]
-    return number, run
-
-
-def summary_is_stale(run: dict[str, Any]) -> bool:
-    """True when the run has advanced since the last emitted summary.
-
-    ``update_seq`` is bumped on every fetch; ``last_summary_seq`` is stamped
-    when a summary is emitted. A run that fetched but was never summarized
-    (``last_summary_seq`` absent → 0) is stale. A run with ``started_at`` but no
-    fetch yet (``update_seq`` 0) has nothing to show and is not stale.
-    """
-    return _safe_int(run.get("update_seq")) > _safe_int(run.get("last_summary_seq"))
 
 
 def stamp_summary_emitted(pr: PullRequest) -> None:
