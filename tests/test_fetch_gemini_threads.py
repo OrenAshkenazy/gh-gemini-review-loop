@@ -2318,6 +2318,90 @@ class TestSingleChannelReceiptDelivery:
         assert "https://github.com/o/r/pull/7#discussion_r1" in body
         assert fgt.STICKY_RECEIPT_MARKER in body
 
+    # --- denominators and carried-over classification (#90 review) --------
+
+    CARRIED_THREAD = {
+        "id": "t4", "path": "d.py", "line": 12,
+        "comments": [{
+            "author": {"login": BOT},
+            "body": "Validate this bound before the query runs.",
+            "url": "https://github.com/o/r/pull/7#discussion_r4",
+        }],
+    }
+
+    def _two_cycles_one_survivor(self, fgt, pr):
+        """Cycle 1 found 4 findings; by cycle 2 only the 4th is still open."""
+        update_run_tracking(pr, [
+            ("t1", "a.py"), ("t2", "b.py"), ("t3", "c.py"), ("t4", "d.py"),
+        ])
+        survivor_fp = fgt.finding_fingerprint(self.CARRIED_THREAD)
+        track_finding_fingerprints(pr, {"fp-t1", "fp-t2", "fp-t3", survivor_fp})
+        track_finding_fingerprints(pr, {survivor_fp})
+
+    def test_pointer_keeps_cumulative_and_current_counts_apart(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """findings_fetched is cumulative; new/carried describe the open set.
+
+        With 3 of 4 findings resolved the old line read
+        "findings 4 (0 new, 1 carried over)" — two populations, one bracket.
+        """
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+
+        pr = PullRequest(owner="o", repo="r", number=7)
+        self._two_cycles_one_survivor(fgt, pr)
+        posted: list = []
+        self._stub(fgt, monkeypatch, pr, [self.CARRIED_THREAD], posted)
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py", "--cycle-summary",
+            "--judge-mode", "off", "--no-agent-filter",
+            "--no-resolve-outdated", "--no-resolve-addressed-by-reply",
+            "--fixed-count", "3", "--verification", "passed", "--no-color",
+        ])
+
+        assert fgt.main() == 0
+
+        out = capsys.readouterr().out
+        assert "findings 4 seen this run" in out
+        assert "open 1 (0 new, 1 carried over)" in out
+        # The cumulative count must never carry the current split.
+        assert "findings 4 (" not in out
+        # The PR comment counts the open set the same way.
+        assert "Findings (1): 0 new, 1 carried over" in posted[0]
+
+    def test_terminal_receipt_keeps_carried_over_after_cleanup(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--record-run clears the run block that holds the prior fingerprints.
+
+        Reading them after that cleanup marked every still-open finding on a
+        capped/human/stopped receipt as "new".
+        """
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+
+        pr = PullRequest(owner="o", repo="r", number=7)
+        self._two_cycles_one_survivor(fgt, pr)
+        posted: list = []
+        self._stub(fgt, monkeypatch, pr, [self.CARRIED_THREAD], posted)
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py", "--record-run",
+            "--judge-mode", "off", "--no-agent-filter",
+            "--no-resolve-outdated", "--no-resolve-addressed-by-reply",
+            "--fixed-count", "3", "--verification", "passed",
+            "--outcome", "human", "--no-color",
+        ])
+
+        assert fgt.main() == 0
+
+        out = capsys.readouterr().out
+        assert "open 1 (0 new, 1 carried over)" in out
+        assert "1 new" not in out
+        assert "Findings (1): 0 new, 1 carried over" in posted[0]
+        # Terminal cleanup still happens — the fix is ordering, not skipping it.
+        assert read_run_tracking(pr) == {}
+
     def test_record_run_posts_terminal_receipt_with_done_status(
         self, tmp_path, monkeypatch, capsys
     ):

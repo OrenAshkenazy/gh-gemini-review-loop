@@ -3594,6 +3594,11 @@ def main() -> int:
                 } if clusters else None,
                 **derived,
             )
+            # Read the carried-over classification BEFORE the terminal branch:
+            # --record-run calls clear_run_tracking(), which deletes the very
+            # run block prior_finding_fingerprints() reads. Reading it after
+            # would mark every finding on a capped/human/stopped receipt "new".
+            prior_fps = prior_finding_fingerprints(pr)
             # --cycle-summary is read-only: print the block but never append a
             # record or clear the accumulator, so it is safe to call every cycle.
             if args.record_run:
@@ -3627,7 +3632,6 @@ def main() -> int:
             patterns_block = metrics.format_patterns_block(clusters)
             clustering_advisory = metrics.format_degenerate_clustering_advisory(clusters)
             convergence_line = convergence["line"]
-            prior_fps = prior_finding_fingerprints(pr)
             findings_view = []
             for thread in threads:
                 comments = _iter_comments(thread)
