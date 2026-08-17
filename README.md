@@ -108,21 +108,44 @@ The `-a` flag selects target agents; omit it for the interactive picker. Require
 
 ### Upgrading
 
+**Claude Code:**
+
 ```
 /plugin update gh-review-loop
 ```
 
-> **Upgrading from `gh-gemini-review-loop`?** Remove the old **marketplace**, not just the plugin — the stale marketplace entry is what pins you to the old name:
->
-> ```
-> /plugin marketplace remove gh-gemini-review-loop
-> /plugin marketplace add OrenAshkenazy/gh-review-loop
-> /plugin install gh-review-loop@gh-review-loop
-> ```
->
-> Settings, verification profiles, and run history are untouched — they live in `~/.config/gh-gemini-review-loop/`, which the renamed plugin still reads.
+**Codex** — plugins come from a marketplace *snapshot*, so refresh the snapshot:
 
-> **Stuck on an old version?** If `/plugin` reports *"already at the latest version"* while the [releases page](https://github.com/OrenAshkenazy/gh-review-loop/releases) is further ahead, your marketplace is pinned to a branch. Check the `ref` field in `~/.claude/plugins/known_marketplaces.json` — an entry tracking a feature branch instead of the default branch reports that branch's version as "latest" forever. Re-add the marketplace with the three commands above to track the default branch again.
+```bash
+codex plugin marketplace upgrade gh-review-loop
+```
+
+Omit the name to refresh every configured marketplace.
+
+### Upgrading from `gh-gemini-review-loop`
+
+Remove the old **marketplace**, not just the plugin — the stale marketplace entry is what pins you to the old name.
+
+**Claude Code:**
+
+```
+/plugin marketplace remove gh-gemini-review-loop
+/plugin marketplace add OrenAshkenazy/gh-review-loop
+/plugin install gh-review-loop@gh-review-loop
+```
+
+**Codex:**
+
+```bash
+codex plugin remove gh-gemini-review-loop@gh-gemini-review-loop
+codex plugin marketplace remove gh-gemini-review-loop
+codex plugin marketplace add OrenAshkenazy/gh-review-loop
+codex plugin add gh-review-loop@gh-review-loop
+```
+
+Settings, verification profiles, and run history are untouched on both — they live in `~/.config/gh-gemini-review-loop/`, which the renamed plugin still reads.
+
+> **Stuck on an old version?** If your runtime insists you are already current while the [releases page](https://github.com/OrenAshkenazy/gh-review-loop/releases) has moved on, the marketplace is pinned to a branch rather than tracking the default one. Both runtimes let you pin — Claude Code stores it as `ref` in `~/.claude/plugins/known_marketplaces.json`; Codex stores it as `ref` under `[marketplaces.<name>]` in `~/.codex/config.toml`, and accepts `owner/repo@ref` or `--ref` when adding. A pinned entry reports that branch's version as "latest" forever, and refreshing it changes nothing. Check with `codex plugin marketplace list` (Codex) or the config file above (Claude Code), then re-add the marketplace with the commands in this section to track the default branch again.
 
 ---
 
