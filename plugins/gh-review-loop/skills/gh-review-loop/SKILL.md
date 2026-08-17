@@ -134,7 +134,7 @@ Emit one-line status updates at each phase transition:
 | **Before push (HARD GATE)** | Run `--cycle-summary`, print its full output. Only then push. |
 | After push | `[loop] session cycle N — pushed. Requesting reviewer re-review. Cap now M/K.` |
 | After final re-review request | Wait after `REREVIEW_AT` before terminal recording; record `--gemini-confirmed` on success, `--gemini-unconfirmed` on timeout. |
-| During any reviewer wait | Chunked waits (`--wait-chunk-seconds`); relay each heartbeat verbatim, then start the next chunk. Never background the wait; never go silent >~90s. |
+| During any reviewer wait | Primary (background-capable runtime): run the wait as one background Bash task; relay its final status once on completion. Fallback: chunked waits (`--wait-chunk-seconds`), one-line heartbeat relayed per chunk. See Workflow step 11. |
 | Stop condition | `[loop] STOP — <stop-condition>: <one-line explanation>.` |
 | Loop complete (clean) | `[loop] DONE — 0 actionable threads remaining. Cycles used: N/<cap>.` |
 | After DONE/STOP | `[loop] Summary` block from `--record-run`, full stdout. If `remaining_actionable > 0`, load `references/terminal-report.md` and render the three-bucket breakdown. |
@@ -172,7 +172,7 @@ At the cap, still run cleanup, terminal classification, metrics recording, and t
 1. **Trigger by default after PR creation.** "Create the PR", "ship this", "run the review loop" all authorize the full loop: wait, fetch, acknowledge, fix, verify, push, re-review.
 2. **Resolve the PR.** Use the given URL/number, else `gh pr view --json number,url,headRefName,baseRefName` on the current branch. No PR → report the blocker.
 3. **Select the reviewer** (see Reviewer Selection). Persisted → continue silently.
-4. **Wait for the first review.** Check `reviewerSelection.auto_reviews` first: when `false` (Codex) and the PR has no review activity from that reviewer, post the trigger via `request_rereview.py` and wait with `--after`; waiting without pinging burns the whole timeout. Cycle 1 without `--after` returns as soon as activity is present (no settle). If the wait times out, say so — do not invent feedback. If the PR already has reviewer activity at session start, skip the wait and fetch (missed-trigger recovery; see `references/resume-and-recovery.md`).
+4. **Wait for the first review.** Check `reviewerSelection.auto_reviews` first: when `false` (Codex) and the PR has no review activity from that reviewer, post the trigger via `request_rereview.py` and wait with `--after`; waiting without pinging burns the whole timeout. Cycle 1 without `--after` returns as soon as activity is present (no settle). Run the wait per the step-11 wait protocol (background primary, chunked fallback). If the wait times out, say so — do not invent feedback. If the PR already has reviewer activity at session start, skip the wait and fetch (missed-trigger recovery; see `references/resume-and-recovery.md`).
 5. **Check loop status.** Count prior agent-posted re-review requests; at or above the cap follow Stopping Conditions. Stale threads (outdated, addressed-by-reply) are auto-resolved unless opted out.
 6. **Fetch reviewer threads** (persisted reviewer; default filter unresolved + not outdated).
 7. **Acknowledge.** Summarize actionable findings grouped by file/behavior. None → report clean and stop. **Profile gate:** first run for the repo → make the profile decision NOW, before any edit (see Verification Profile). Then relay `--profile-intro`.
@@ -188,12 +188,19 @@ At the cap, still run cleanup, terminal classification, metrics recording, and t
         --repo OWNER/REPO --pr PR_NUMBER --json
       ```
       Capture `created_at` as `REREVIEW_AT`. `status: no_safe_trigger` → stop and relay the message exactly.
-    - Wait with chunked foreground waits — never background:
+    - Wait for the reviewer. **Primary — runtimes with background-task completion notifications (Claude Code):** run the blocking wait as a **background** Bash task and continue only when the harness reports it finished, so a wait of any length costs one turn:
+      ```bash
+      python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
+        --wait --after "$REREVIEW_AT" --timeout 1800
+      ```
+      The script writes a one-line liveness heartbeat to stderr every ~60s — the user can inspect the running task at any time. Do not poll the task in a loop, and never invent its result before the completion notification. When it exits, relay its final output once: success proceeds into the fetched threads; `refused` and `timed_out` end with a deterministic relayable block.
+      **Fallback — runtimes without completion notifications (e.g. Codex):** chunked foreground waits:
       ```bash
       python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
         --wait --after "$REREVIEW_AT" --wait-chunk-seconds 60
       ```
-      Statuses: `waiting`, `settling`, `ready` (same call returns the threads), `timed_out`, `refused`. After each non-ready chunk relay the heartbeat verbatim and start the next chunk with the script's `next_wait_seconds` — the script owns the 60s→90s decay. On `refused`, stop waiting and relay the `[loop] STOP` block: `kind: withdrawn` → terminal, record `--outcome human --gemini-unconfirmed`; `kind: quota_exhausted` → ask the user now (Stop the loop, or upgrade/add credits then re-run the same wait) — do not re-request the review. On `timed_out`, record `--gemini-unconfirmed`; do not guess `clean`.
+      After each non-ready chunk relay the one-line heartbeat verbatim and start the next chunk with the script's `next_wait_seconds` — the script owns the 60s→300s decay; do not invent intervals.
+      Statuses (both modes): `waiting`, `settling`, `ready` (same call returns the threads), `timed_out`, `refused`. On `refused`, stop waiting and relay the `[loop] STOP` block: `kind: withdrawn` → terminal, record `--outcome human --gemini-unconfirmed`; `kind: quota_exhausted` → ask the user now (Stop the loop, or upgrade/add credits then re-run the same wait) — do not re-request the review. On `timed_out`, record `--gemini-unconfirmed`; do not guess `clean`.
     - After the final wait, record exactly once with `--record-run` and relay the `[loop] Summary` verbatim.
 
 ## Script Usage

@@ -18,12 +18,17 @@ python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py
 # Pass the re-review comment timestamp so prior-cycle activity is ignored.
 # WITH --after the wait settles (waits for the new review to stabilize) so a
 # fast-forward fetch doesn't catch a half-posted re-review.
+# PRIMARY USE: run this as a BACKGROUND Bash task on runtimes with task
+# completion notifications (Claude Code) — one turn per wait. It writes a
+# one-line liveness heartbeat to stderr every ~60s; refusals and timeouts end
+# the captured output with a deterministic relayable block (exit 0).
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
-    --wait --after "$REREVIEW_AT"
+    --wait --after "$REREVIEW_AT" --timeout 1800
 
-# Chunked wait (preferred): return within 60s with a deterministic status
-# instead of blocking. Relay the printed heartbeat verbatim, then run the next
-# chunk with the suggested --wait-chunk-seconds.
+# Chunked wait (fallback for runtimes without background-task completion
+# notifications, e.g. Codex): return within the chunk with a deterministic
+# status instead of blocking. Relay the one-line heartbeat verbatim, then run
+# the next chunk with the suggested next_wait_seconds (60s first, then 300s).
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
     --wait --after "$REREVIEW_AT" --wait-chunk-seconds 60
 
