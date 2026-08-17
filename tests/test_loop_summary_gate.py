@@ -7,8 +7,10 @@ blocked while a loop is active for the repo and summary_is_stale() is True
 last_summary_seq and clears the gate.
 """
 
+import io
+import json
+
 from fetch_gemini_threads import save_sticky_state
-from loop_summary_gate import format_run_snapshot
 from loop_summary_gate import main as summary_gate_main
 from loop_summary_gate import stale_summary_for_push
 
@@ -111,7 +113,9 @@ class TestStaleSummaryForPush:
         })
         assert stale_summary_for_push("o/r") is None
 
-    def test_info_includes_run_fields(self, tmp_path, monkeypatch):
+    def test_info_is_trimmed_to_fix_instruction_fields(self, tmp_path, monkeypatch):
+        # #86: the block message is just the fix instruction — no embedded
+        # state snapshot, so no snapshot fields in the info dict.
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         save_sticky_state({
             "o/r#5": {"run": {
@@ -122,46 +126,27 @@ class TestStaleSummaryForPush:
             }},
         })
         info = stale_summary_for_push("o/r")
-        assert info is not None
-        assert info["finding_ids"] == ["id1", "id2"]
-        assert info["finding_paths"] == ["src/foo.py", "src/bar.py"]
-        assert info["started_at"] == "2026-06-07T08:00:00Z"
+        assert info == {"pr_number": 5, "update_seq": 3, "last_summary_seq": 0}
 
 
-class TestFormatRunSnapshot:
-    def test_includes_key_fields(self):
-        info = {
-            "update_seq": 2,
-            "last_summary_seq": 0,
-            "finding_ids": ["a", "b", "c"],
-            "finding_paths": ["src/x.py"],
-            "started_at": "2026-06-07T08:00:00Z",
-        }
-        out = format_run_snapshot(info)
-        assert "2026-06-07" in out
-        assert "3" in out   # thread count
-        assert "src/x.py" in out
-        assert "snapshot" in out.lower()
+class TestBlockMessage:
+    def test_block_is_one_instruction_without_snapshot(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        _active_stale("o/r", number=7)
+        monkeypatch.setattr("loop_summary_gate.resolve_current_repo", lambda: "o/r")
+        monkeypatch.setattr(
+            "sys.stdin",
+            io.StringIO(json.dumps(
+                {"tool_name": "Bash", "tool_input": {"command": "git push origin"}}
+            )),
+        )
 
-    def test_truncates_long_path_list(self):
-        info = {
-            "update_seq": 1,
-            "last_summary_seq": 0,
-            "finding_ids": [],
-            "finding_paths": ["a.py", "b.py", "c.py", "d.py"],
-            "started_at": "2026-06-07T08:00:00Z",
-        }
-        out = format_run_snapshot(info)
-        assert "…" in out  # truncation marker for > 3 paths
+        assert summary_gate_main() == 2
 
-    def test_handles_empty_run(self):
-        info = {
-            "update_seq": "?",
-            "last_summary_seq": 0,
-            "finding_ids": [],
-            "finding_paths": [],
-            "started_at": "",
-        }
-        out = format_run_snapshot(info)
-        assert "none recorded" in out
-        assert "?" in out  # started_at fallback
+        err = capsys.readouterr().err
+        assert "--cycle-summary" in err
+        assert "https://github.com/o/r/pull/7" in err
+        assert "snapshot" not in err.lower()
+        assert "Threads tracked" not in err

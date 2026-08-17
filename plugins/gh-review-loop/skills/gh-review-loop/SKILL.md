@@ -98,14 +98,14 @@ Each repo can have a code-derived **verification profile** — the checks the ve
 
 ## Receipts: per-cycle and terminal
 
-- **`--cycle-summary`** — read-only mid-loop receipt. Builds from the accumulated run state and prints a `[loop] Cycle receipt` block. Does not write `runs.jsonl`, does not clear the accumulator. Safe every cycle.
-- **`--record-run`** — terminal. Fetches current thread state, appends one record to local `runs.jsonl`, prints the `[loop] Summary` block, and **clears the run accumulator**. Call exactly once, at loop end. Key flags: `--fixed-count`, `--verification <passed|failed|skipped>`, `--verification-details '<json>'`, `--outcome <clean|capped|human|regression|no_progress|verification_failed|fixed_pending_confirmation>`, `--outcome-reason '<text>'`, `--gemini-confirmed`/`--gemini-unconfirmed`, `--fixed-finding <fp>` (repeatable), `--swept-pattern <sig>` (repeatable).
+- **`--cycle-summary`** — read-only mid-loop receipt. Builds from the accumulated run state. Does not write `runs.jsonl`, does not clear the accumulator. Safe every cycle.
+- **`--record-run`** — terminal. Fetches current thread state, appends one record to local `runs.jsonl`, and **clears the run accumulator**. Call exactly once, at loop end. Key flags: `--fixed-count`, `--verification <passed|failed|skipped>`, `--verification-details '<json>'`, `--outcome <clean|capped|human|regression|no_progress|verification_failed|fixed_pending_confirmation>`, `--outcome-reason '<text>'`, `--gemini-confirmed`/`--gemini-unconfirmed`, `--fixed-finding <fp>` (repeatable), `--swept-pattern <sig>` (repeatable).
+
+**Single-channel delivery.** Both commands deliver the FULL receipt (verification suite, findings list with URLs, severity breakdown) to the sticky PR comment — one comment per PR, edited in place — and print a one-line `[loop]` pointer to stdout: counts + verification + link to the receipt comment. Relay that pointer line verbatim in your text response; do NOT reprint the full receipt in chat. If the comment write fails (or `--dry-run`), the script falls back to printing the full receipt on stdout — relay that fallback verbatim instead, so the receipt is never lost.
 
 **Emit a receipt at the end of every cycle.** Non-terminal cycle → `--cycle-summary` right after verify, REQUIRED even when fixes were small. Terminal cycle → `--record-run` only (never both on the same cycle; never `--record-run` twice).
 
-The receipt's `Verification suite:` and `Findings (N):` sections are the canonical visible record — relay the entire block verbatim; do not hand-roll a findings list or leave it in a collapsed tool result.
-
-**Script-owned human blocks** — relay verbatim, never paraphrase unless the script fails: profile intro, planned verification, judge table/skip line, cycle receipt, terminal summary, semantic-risk note, `Next options:`, wait heartbeat. Before the reviewer confirms a re-review, use the script's fixed-pending wording (`Fixed locally` / `Awaiting push/re-review confirmation`), never `Remaining valid actionable`. Keep the script's ANSI color in human-readable `[loop]` output; `--json`/`--format json` stdout is machine JSON only — parse it, do not relay it unless asked.
+**Script-owned human blocks** — relay verbatim, never paraphrase unless the script fails: profile intro, planned verification, judge table/skip line, the receipt pointer line (or fallback receipt), semantic-risk note, `Next options:`, wait heartbeat. Before the reviewer confirms a re-review, use the script's fixed-pending wording (`Fixed locally` / `Awaiting push/re-review confirmation`), never `Remaining valid actionable`. Keep the script's ANSI color in human-readable `[loop]` output; `--json`/`--format json` stdout is machine JSON only — parse it, do not relay it unless asked.
 
 ## Progress Narration
 
@@ -115,7 +115,8 @@ DO NOT run `git push` or call `--record-run` until you have:
 2. For a terminal cycle after a final push, requested reviewer re-review,
    captured `REREVIEW_AT`, waited with `--wait --after "$REREVIEW_AT"`, and
    set the terminal record's reviewer confirmation flag from that wait result.
-3. Printed the FULL stdout of that script call verbatim in your text response to the user.
+3. Relayed that call's printed `[loop]` receipt pointer line (or, on the
+   stdout fallback, its full receipt output) in your text response to the user.
 
 This is enforced mechanically: a PreToolUse:Bash hook (`loop_summary_gate.py`) blocks every `git push` while a review loop is active and the summary is stale. The hook does NOT fire for `--record-run` (the terminal receipt is exempt). Trying to push without summarizing first returns exit code 2 and explains the fix.
 
@@ -131,13 +132,13 @@ Emit one-line status updates at each phase transition:
 | After fix attempt | `[loop] session cycle N — fixes applied. Verifying via profile runner.` |
 | After verify | `[loop] session cycle N — verified (<test summary>).` |
 | Before push | `[loop] session cycle N — committing and pushing <commit-sha>...` |
-| **Before push (HARD GATE)** | Run `--cycle-summary`, print its full output. Only then push. |
+| **Before push (HARD GATE)** | Run `--cycle-summary` — it writes the full receipt to the PR comment — and relay its `[loop] Cycle receipt` pointer line. Only then push. |
 | After push | `[loop] session cycle N — pushed. Requesting reviewer re-review. Cap now M/K.` |
 | After final re-review request | Wait after `REREVIEW_AT` before terminal recording; record `--gemini-confirmed` on success, `--gemini-unconfirmed` on timeout. |
 | During any reviewer wait | Primary (background-capable runtime): run the wait as one background Bash task; relay its final status once on completion. Fallback: chunked waits (`--wait-chunk-seconds`), one-line heartbeat relayed per chunk. See Workflow step 11. |
 | Stop condition | `[loop] STOP — <stop-condition>: <one-line explanation>.` |
 | Loop complete (clean) | `[loop] DONE — 0 actionable threads remaining. Cycles used: N/<cap>.` |
-| After DONE/STOP | `[loop] Summary` block from `--record-run`, full stdout. If `remaining_actionable > 0`, load `references/terminal-report.md` and render the three-bucket breakdown. |
+| After DONE/STOP | Relay the `[loop] Summary` pointer line from `--record-run` (full receipt is in the PR comment). If `remaining_actionable > 0`, load `references/terminal-report.md` and render the three-bucket breakdown. |
 
 Skip narration only in pure non-interactive batch mode. For visibility outside the chat (user stepping away), pair with `--sticky-receipt` (see `references/receipts-and-metrics.md`).
 
@@ -181,7 +182,7 @@ At the cap, still run cleanup, terminal classification, metrics recording, and t
 10. **Verify.** Relay `--planned-verification`, run `run_profile.py`, feed results into `--verification`/`--verification-details`. No profile → narrowest meaningful checks. Checks can't run → report why.
 11. **Commit, push, re-review, wait, record.**
     - Commit with a clear message (e.g. `fix: address AI reviewer findings`).
-    - Non-terminal cycle: run `--cycle-summary`, relay the receipt verbatim, then push.
+    - Non-terminal cycle: run `--cycle-summary` (delivers the full receipt to the PR comment), relay its `[loop]` pointer line, then push.
     - Post the re-review only if within the cap, via the helper (never hand-write the trigger):
       ```bash
       python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/request_rereview.py" \
@@ -201,7 +202,7 @@ At the cap, still run cleanup, terminal classification, metrics recording, and t
       ```
       After each non-ready chunk relay the one-line heartbeat verbatim and start the next chunk with the script's `next_wait_seconds` — the script owns the 60s→300s decay; do not invent intervals.
       Statuses (both modes): `waiting`, `settling`, `ready` (same call returns the threads), `timed_out`, `refused`. On `refused`, stop waiting and relay the `[loop] STOP` block: `kind: withdrawn` → terminal, record `--outcome human --gemini-unconfirmed`; `kind: quota_exhausted` → ask the user now (Stop the loop, or upgrade/add credits then re-run the same wait) — do not re-request the review. On `timed_out`, record `--gemini-unconfirmed`; do not guess `clean`.
-    - After the final wait, record exactly once with `--record-run` and relay the `[loop] Summary` verbatim.
+    - After the final wait, record exactly once with `--record-run` and relay its `[loop] Summary` pointer line (the full terminal receipt is in the PR comment).
 
 ## Script Usage
 

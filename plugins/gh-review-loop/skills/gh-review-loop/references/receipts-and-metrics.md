@@ -1,17 +1,18 @@
 # Receipts, run metrics, and PR audit comments
 
-The per-cycle discipline (`--cycle-summary` every non-terminal cycle, one terminal `--record-run`, relay blocks verbatim) is in SKILL.md. This file covers the PR-comment receipts, what metrics are stored, the semantic-risk note, and `--stats`.
+The per-cycle discipline (`--cycle-summary` every non-terminal cycle, one terminal `--record-run`, single-channel delivery to the sticky PR comment with a one-line chat pointer) is in SKILL.md. This file covers the PR-comment machinery, what metrics are stored, the semantic-risk note, and `--stats`.
 
-## PR audit comments
+## PR receipt comments
 
-**One-shot receipt (`--post-receipt`).** Leaves one audit-trail comment on the PR after the loop runs: cycles used, threads resolved (outdated + addressed-by-reply), threads still pending, severity breakdown of remaining actionable threads. Preview with `--dry-run --post-receipt`. Right for scripted/batch contexts where each invocation is independent.
+**Automatic (the default since #86).** Every `--cycle-summary` and `--record-run` writes the full receipt into the sticky comment — one comment per PR, edited in place — and prints the one-line chat pointer. Status header: `RUNNING` per cycle, `DONE` at a clean terminal, `STOPPED` otherwise. No flag needed.
 
-**Sticky receipt (`--sticky-receipt`).** Maintains **one comment per PR that the script edits in place** across loop invocations — for long-running interactive loops where the user watches the PR tab, not the chat.
-
-- First invocation posts a fresh comment with status `RUNNING` and stores its id in `~/.config/gh-gemini-review-loop/state.json` (override dir with `GGRL_STATE_DIR`).
-- Subsequent invocations PATCH the same comment — no comment accretion.
-- `--receipt-status {running,done,stopped}` sets the status header (default `RUNNING`). Tag the final invocation `done` (clean exit) or `stopped` (stop-condition) so the user sees the loop finished.
+- The comment id is stored in `~/.config/gh-gemini-review-loop/state.json` (override dir with `GGRL_STATE_DIR`); subsequent invocations PATCH the same comment — no comment accretion.
 - Discovery fallback: if local state is missing, the script finds the receipt by its embedded marker and re-attaches.
+- Delivery fallback: if the comment write fails (network, permissions) or `--dry-run` is set, the full receipt prints to stdout instead — a receipt is never lost.
+
+**One-shot receipt (`--post-receipt`).** Leaves one standalone audit-trail comment: cycles used, threads resolved (outdated + addressed-by-reply), threads still pending, severity breakdown. Preview with `--dry-run --post-receipt`. Right for scripted/batch contexts where each invocation is independent.
+
+**Standalone sticky status (`--sticky-receipt`).** Posts/updates the same sticky comment outside the cycle/record path (e.g. a status-only invocation). `--receipt-status {running,done,stopped}` sets the header.
 
 ## Run metrics (`runs.jsonl`)
 

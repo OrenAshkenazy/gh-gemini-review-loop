@@ -2227,6 +2227,30 @@ def render_receipt(
     return "\n".join(parts) + "\n"
 
 
+def build_receipt_comment_body(
+    blocks: list[str], *, status: str, findings_block: str = ""
+) -> str:
+    """Markdown body carrying the FULL cycle/terminal receipt on the PR.
+
+    This is the single authoritative delivery channel for receipt content
+    (#86): chat gets a one-line pointer, this comment gets everything. The
+    plaintext blocks ride in a code fence; the findings list stays outside it
+    so GitHub auto-links each finding's comment URL.
+    """
+    parts = [f"### gh-review-loop receipt — {status}", ""]
+    content = "\n\n".join(block for block in blocks if block)
+    if content:
+        parts.extend(["```", content, "```", ""])
+    if findings_block:
+        parts.extend([findings_block, ""])
+    parts.append(
+        f"_Last updated: {_now_iso()}. This comment is edited in place as the loop progresses._"
+    )
+    parts.append("")
+    parts.append(STICKY_RECEIPT_MARKER)
+    return "\n".join(parts) + "\n"
+
+
 def thread_fingerprint(threads: list[dict[str, Any]]) -> str:
     payload = []
     for thread in threads:
@@ -3592,10 +3616,74 @@ def main() -> int:
                     print(f"warning: could not stamp summary state: {exc}", file=sys.stderr)
             if args.auto_snapshot:
                 print(color_loop_block(metrics.format_auto_snapshot(record), enabled=color_enabled))
-            else:
+                return 0
+            # Single-channel receipt delivery (#86): the full receipt goes to
+            # the sticky PR comment, chat gets a one-line pointer. stdout keeps
+            # the full receipt only as the fail-open fallback (dry-run, or the
+            # comment write failed) so a receipt can never be lost.
+            summary_block = metrics.format_run_summary(record, terminal=bool(args.record_run))
+            semantic_risk_block = metrics.format_semantic_risk_block(args.semantic_risk)
+            suite_block = metrics.format_suite_block(verification_details)
+            patterns_block = metrics.format_patterns_block(clusters)
+            clustering_advisory = metrics.format_degenerate_clustering_advisory(clusters)
+            convergence_line = convergence["line"]
+            prior_fps = prior_finding_fingerprints(pr)
+            findings_view = []
+            for thread in threads:
+                comments = _iter_comments(thread)
+                line_val = thread.get("line")
+                findings_view.append({
+                    "path": thread.get("path"),
+                    "line": line_val if line_val is not None else thread.get("originalLine"),
+                    "severity": thread_severity(thread),
+                    "url": comments[0].get("url") if comments and isinstance(comments[0], dict) else None,
+                    "carried": finding_fingerprint(thread) in prior_fps,
+                })
+            findings_block = metrics.format_findings_block(findings_view)
+
+            receipt_url = None
+            if not args.dry_run:
+                receipt_status = "RUNNING" if not args.record_run else (
+                    "DONE" if record.get("outcome") == "clean" else "STOPPED"
+                )
+                body = build_receipt_comment_body(
+                    [
+                        summary_block,
+                        semantic_risk_block,
+                        suite_block,
+                        patterns_block,
+                        clustering_advisory,
+                        convergence_line,
+                    ],
+                    status=receipt_status,
+                    findings_block=findings_block,
+                )
+                try:
+                    comment_id = post_or_update_sticky_receipt(pr, body)
+                except (RuntimeError, OSError) as exc:
+                    comment_id = None
+                    print(
+                        f"warning: could not deliver the receipt to the PR comment: {exc}. "
+                        "Printing the full receipt instead.",
+                        file=sys.stderr,
+                    )
+                if comment_id:
+                    receipt_url = (
+                        f"https://github.com/{pr.owner}/{pr.repo}/pull/"
+                        f"{pr.number}#issuecomment-{comment_id}"
+                    )
+
+            if receipt_url:
+                new_count = sum(1 for f in findings_view if not f.get("carried"))
                 print(
                     color_loop_block(
-                        metrics.format_run_summary(record, terminal=bool(args.record_run)),
+                        metrics.format_compact_receipt_line(
+                            record,
+                            terminal=bool(args.record_run),
+                            receipt_url=receipt_url,
+                            findings_new=new_count,
+                            findings_carried=len(findings_view) - new_count,
+                        ),
                         enabled=color_enabled,
                     )
                 )
@@ -3606,36 +3694,33 @@ def main() -> int:
                             enabled=color_enabled,
                         )
                     )
-                # Surface the detected test toolset and the deterministic finding
-                # list inline, so neither stays buried in the collapsed profile
-                # JSON / fetch output. Carried-over findings are marked using the
-                # prior-cycle fingerprint snapshot.
-                semantic_risk_block = metrics.format_semantic_risk_block(args.semantic_risk)
+                # The clustering advisory changes what the agent must do BEFORE
+                # fixing (manual sweep), so it stays in chat alongside the
+                # pointer; everything else lives in the PR comment.
+                if clustering_advisory:
+                    print(clustering_advisory)
+            else:
+                print(color_loop_block(summary_block, enabled=color_enabled))
+                if judge_eval_requested(judge_status):
+                    print(
+                        color_loop_block(
+                            metrics.format_judge_skip(judge_status.get("skip_reason", "")),
+                            enabled=color_enabled,
+                        )
+                    )
                 if semantic_risk_block:
                     print(color_loop_block(semantic_risk_block, enabled=color_enabled))
-                suite_block = metrics.format_suite_block(verification_details)
                 if suite_block:
                     print(suite_block)
                 # Printed directly (like suite_block / findings_block): these
                 # start with "Patterns ("/"Convergence:", not "[loop]", so
                 # color_loop_block would be a no-op wrap.
-                print_clustering_blocks(clusters)
-                convergence_line = convergence["line"]
+                if patterns_block:
+                    print(patterns_block)
+                if clustering_advisory:
+                    print(clustering_advisory)
                 if convergence_line:
                     print(convergence_line)
-                prior_fps = prior_finding_fingerprints(pr)
-                findings_view = []
-                for thread in threads:
-                    comments = _iter_comments(thread)
-                    line_val = thread.get("line")
-                    findings_view.append({
-                        "path": thread.get("path"),
-                        "line": line_val if line_val is not None else thread.get("originalLine"),
-                        "severity": thread_severity(thread),
-                        "url": comments[0].get("url") if comments and isinstance(comments[0], dict) else None,
-                        "carried": finding_fingerprint(thread) in prior_fps,
-                    })
-                findings_block = metrics.format_findings_block(findings_view)
                 if findings_block:
                     print(findings_block)
             return 0

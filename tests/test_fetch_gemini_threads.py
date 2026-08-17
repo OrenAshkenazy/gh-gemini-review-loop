@@ -1966,6 +1966,17 @@ class TestJudgeAccumulation:
         }
 
 
+def _sticky_post_unavailable(fgt, monkeypatch):
+    """Make the receipt-comment write fail, exercising the stdout fallback
+    channel (#86) — the hermetic suite has no GitHub to post to, and the
+    fallback must carry the identical full receipt so nothing is ever lost."""
+
+    def _fail(pr, body, dry_run=False):
+        raise RuntimeError("no network in tests")
+
+    monkeypatch.setattr(fgt, "post_or_update_sticky_receipt", _fail)
+
+
 class TestRecordRunIntegration:
     """Drive main() --record-run with the GitHub seams stubbed, proving the
     eval accumulated across cycles lands in the record at terminal 'clean'.
@@ -1981,6 +1992,7 @@ class TestRecordRunIntegration:
         monkeypatch.setattr(fgt, "rereview_requests", lambda *a, **k: rereviews)
         monkeypatch.setattr(fgt, "addressed_by_reply_threads", lambda *a, **k: [])
         monkeypatch.setattr(fgt, "pagination_warnings", lambda pull_request: [])
+        _sticky_post_unavailable(fgt, monkeypatch)
 
     def test_clean_record_run_reports_accumulated_eval(
         self, tmp_path, monkeypatch, capsys
@@ -2125,6 +2137,7 @@ class TestCycleSummary:
         monkeypatch.setattr(fgt, "rereview_requests", lambda *a, **k: ["c1"])
         monkeypatch.setattr(fgt, "addressed_by_reply_threads", lambda *a, **k: [])
         monkeypatch.setattr(fgt, "pagination_warnings", lambda pull_request: [])
+        _sticky_post_unavailable(fgt, monkeypatch)
 
         monkeypatch.setattr(sys, "argv", [
             "fetch_gemini_threads.py", "--cycle-summary",
@@ -2164,6 +2177,7 @@ class TestCycleSummary:
         monkeypatch.setattr(fgt, "rereview_requests", lambda *a, **k: ["c1"])
         monkeypatch.setattr(fgt, "addressed_by_reply_threads", lambda *a, **k: [])
         monkeypatch.setattr(fgt, "pagination_warnings", lambda pull_request: [])
+        _sticky_post_unavailable(fgt, monkeypatch)
 
         monkeypatch.setattr(sys, "argv", [
             "fetch_gemini_threads.py", "--cycle-summary",
@@ -2221,6 +2235,7 @@ class TestCycleSummary:
         monkeypatch.setattr(fgt, "rereview_requests", lambda *a, **k: ["c1"])
         monkeypatch.setattr(fgt, "addressed_by_reply_threads", lambda *a, **k: [])
         monkeypatch.setattr(fgt, "pagination_warnings", lambda pull_request: [])
+        _sticky_post_unavailable(fgt, monkeypatch)
 
         monkeypatch.setattr(sys, "argv", [
             "fetch_gemini_threads.py", "--cycle-summary",
@@ -2238,6 +2253,166 @@ class TestCycleSummary:
         assert "Convergence:" in out
         # The clustered dict-guard pattern appears as a multi-site cluster.
         assert "2 sites" in out
+
+
+class TestSingleChannelReceiptDelivery:
+    """#86: the full receipt goes to the sticky PR comment exactly once; chat
+    (stdout) carries one [loop] pointer line with counts + verification + the
+    receipt URL."""
+
+    def _stub(self, fgt, monkeypatch, pr, threads, posted, rereviews=None):
+        monkeypatch.setattr(fgt, "resolve_pr", lambda spec: pr)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda p: {"stub": True})
+        monkeypatch.setattr(fgt, "filter_threads", lambda *a, **k: threads)
+        monkeypatch.setattr(fgt, "sort_by_severity", lambda ts: ts)
+        monkeypatch.setattr(fgt, "rereview_requests", lambda *a, **k: rereviews or ["c1"])
+        monkeypatch.setattr(fgt, "addressed_by_reply_threads", lambda *a, **k: [])
+        monkeypatch.setattr(fgt, "pagination_warnings", lambda pull_request: [])
+
+        def _post(pr_arg, body, dry_run=False):
+            posted.append(body)
+            return 99
+
+        monkeypatch.setattr(fgt, "post_or_update_sticky_receipt", _post)
+
+    def test_cycle_summary_posts_full_receipt_and_prints_pointer(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+
+        pr = PullRequest(owner="o", repo="r", number=7)
+        update_run_tracking(pr, [("t1", "a.py"), ("t2", "b.py")])
+        thread = {
+            "id": "t2", "path": "b.py", "line": 4,
+            "comments": [{
+                "author": {"login": BOT},
+                "body": "Guard this lookup.",
+                "url": "https://github.com/o/r/pull/7#discussion_r1",
+            }],
+        }
+        posted: list = []
+        self._stub(fgt, monkeypatch, pr, [thread], posted)
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py", "--cycle-summary",
+            "--judge-mode", "off", "--no-agent-filter",
+            "--no-resolve-outdated", "--no-resolve-addressed-by-reply",
+            "--fixed-count", "1", "--verification", "passed", "--no-color",
+        ])
+
+        assert fgt.main() == 0
+
+        out = capsys.readouterr().out
+        # Chat: one pointer line, not the full receipt.
+        assert "[loop] Cycle receipt:" in out
+        assert "verification passed" in out
+        assert "https://github.com/o/r/pull/7#issuecomment-99" in out
+        assert "Findings fetched:" not in out
+        assert "Cycles used:" not in out
+        # PR comment: the full receipt, delivered once.
+        assert len(posted) == 1
+        body = posted[0]
+        assert "Findings fetched: 2" in body
+        assert "Fixed locally: 1" in body
+        assert "RUNNING" in body
+        assert "https://github.com/o/r/pull/7#discussion_r1" in body
+        assert fgt.STICKY_RECEIPT_MARKER in body
+
+    def test_record_run_posts_terminal_receipt_with_done_status(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+        from metrics import runs_log_path
+
+        pr = PullRequest(owner="o", repo="r", number=7)
+        update_run_tracking(pr, [("t1", "a.py")])
+        posted: list = []
+        self._stub(fgt, monkeypatch, pr, [], posted)
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py", "--record-run",
+            "--judge-mode", "off", "--no-agent-filter",
+            "--no-resolve-outdated", "--no-resolve-addressed-by-reply",
+            "--fixed-count", "1", "--verification", "passed",
+            "--outcome", "clean", "--no-color",
+        ])
+
+        assert fgt.main() == 0
+
+        out = capsys.readouterr().out
+        assert "[loop] Summary:" in out
+        assert "outcome clean" in out
+        assert "#issuecomment-99" in out
+        assert "Time to clean PR" not in out  # full receipt stays off stdout
+        body = posted[0]
+        assert "DONE" in body
+        assert "[loop] Summary" in body
+        # Terminal semantics unchanged: record written, accumulator cleared.
+        assert runs_log_path().exists()
+        assert read_run_tracking(pr) == {}
+
+    def test_record_run_non_clean_outcome_posts_stopped_status(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+
+        pr = PullRequest(owner="o", repo="r", number=7)
+        update_run_tracking(pr, [("t1", "a.py")])
+        posted: list = []
+        self._stub(fgt, monkeypatch, pr, [], posted)
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py", "--record-run",
+            "--judge-mode", "off", "--no-agent-filter",
+            "--no-resolve-outdated", "--no-resolve-addressed-by-reply",
+            "--fixed-count", "0", "--verification", "skipped",
+            "--outcome", "human", "--no-color",
+        ])
+
+        assert fgt.main() == 0
+        assert "STOPPED" in posted[0]
+
+    def test_auto_snapshot_backstop_never_posts(self, tmp_path, monkeypatch, capsys):
+        """The Stop-hook backstop stays a chat-only lapse-catcher (#86) — it
+        must not write PR comments from a Stop hook."""
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+
+        pr = PullRequest(owner="o", repo="r", number=7)
+        update_run_tracking(pr, [("t1", "a.py")])
+        posted: list = []
+        self._stub(fgt, monkeypatch, pr, [], posted)
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py", "--cycle-summary", "--auto-snapshot",
+            "--judge-mode", "off", "--no-agent-filter",
+            "--no-resolve-outdated", "--no-resolve-addressed-by-reply",
+            "--fixed-count", "0", "--verification", "skipped", "--no-color",
+        ])
+
+        assert fgt.main() == 0
+        assert posted == []
+        assert "[loop] Summary (auto" in capsys.readouterr().out
+
+    def test_dry_run_falls_back_to_stdout_receipt(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+
+        pr = PullRequest(owner="o", repo="r", number=7)
+        update_run_tracking(pr, [("t1", "a.py")])
+        posted: list = []
+        self._stub(fgt, monkeypatch, pr, [], posted)
+        monkeypatch.setattr(sys, "argv", [
+            "fetch_gemini_threads.py", "--cycle-summary", "--dry-run",
+            "--judge-mode", "off", "--no-agent-filter",
+            "--no-resolve-outdated", "--no-resolve-addressed-by-reply",
+            "--fixed-count", "0", "--verification", "skipped", "--no-color",
+        ])
+
+        assert fgt.main() == 0
+        assert posted == []
+        out = capsys.readouterr().out
+        assert "[loop] Cycle receipt" in out
+        assert "Findings fetched: 1" in out
 
 
 class TestDeriveRecordFields:
