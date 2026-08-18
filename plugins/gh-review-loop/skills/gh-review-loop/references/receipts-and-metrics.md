@@ -6,7 +6,7 @@ The per-cycle discipline (`--cycle-summary` every non-terminal cycle, one termin
 
 **Automatic (the default since #86).** Every `--cycle-summary` and `--record-run` writes the full receipt into the sticky comment — one comment per PR, edited in place — and prints the one-line chat pointer. Status header: `RUNNING` per cycle, `DONE` at a clean terminal, `STOPPED` otherwise. No flag needed.
 
-- The comment id is stored in `~/.config/gh-gemini-review-loop/state.json` (override dir with `GGRL_STATE_DIR`); subsequent invocations PATCH the same comment — no comment accretion.
+- The comment id is stored in `~/.config/gh-review-loop/state.json` (override dir with `GGRL_STATE_DIR`); subsequent invocations PATCH the same comment — no comment accretion.
 - Discovery fallback: if local state is missing, the script finds the receipt by its embedded marker and re-attaches.
 - Delivery fallback: if the comment write fails (network, permissions) or `--dry-run` is set, the full receipt prints to stdout instead — a receipt is never lost.
 
@@ -16,7 +16,7 @@ The per-cycle discipline (`--cycle-summary` every non-terminal cycle, one termin
 
 ## Run metrics (`runs.jsonl`)
 
-`--record-run` appends one JSON record per completed loop to `~/.config/gh-gemini-review-loop/runs.jsonl` (append-only; never transmitted). Each record holds **counts only**: findings fetched/fixed/needs-human/addressed-by-reply, cycles used, verification result, outcome, duration, finding areas/paths, repo + PR number, and a judge-derived breakdown only when judge mode was on. **No identity is recorded** — no git author, no login — so the data cannot become a productivity score.
+`--record-run` appends one JSON record per completed loop to `~/.config/gh-review-loop/runs.jsonl` (append-only; never transmitted). Each record holds **counts only**: findings fetched/fixed/needs-human/addressed-by-reply, cycles used, verification result, outcome, duration, finding areas/paths, repo + PR number, and a judge-derived breakdown only when judge mode was on. **No identity is recorded** — no git author, no login — so the data cannot become a productivity score.
 
 The run's start timestamp and per-finding accumulation reuse the same per-PR key in `state.json`; no extra state file.
 
@@ -43,4 +43,4 @@ python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py
 
 Options: `--stats-window N` (default 10 most-recent runs), `--stats-all-repos`, `--format json`.
 
-Run metrics and `--stats` are local-only — stored under `~/.config/gh-gemini-review-loop/`, never posted to GitHub, no identity.
+Run metrics and `--stats` are local-only — stored under `~/.config/gh-review-loop/`, never posted to GitHub, no identity.

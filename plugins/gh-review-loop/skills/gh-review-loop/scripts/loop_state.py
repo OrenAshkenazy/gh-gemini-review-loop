@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -33,20 +34,78 @@ SENTINEL_TTL_SECONDS = 24 * 60 * 60
 
 SENTINEL_NAME = "loop-active"
 
+# The plugin was renamed gh-gemini-review-loop -> gh-review-loop. The state
+# dir follows the new name; the legacy dir keeps working two ways: unmigrated
+# installs resolve to it via the fallback below, and migrated installs leave a
+# legacy -> new symlink behind so *older plugin versions* (whose scripts and
+# hook guards hardcode the legacy path) still read the same state.
+STATE_DIR_NAME = "gh-review-loop"
+LEGACY_STATE_DIR_NAME = "gh-gemini-review-loop"
+
+
+def _config_root() -> Path:
+    return Path(os.path.expanduser("~/.config"))
+
 
 def state_dir() -> Path:
-    """Return the per-user state directory (XDG-ish, GGRL_STATE_DIR override)."""
-    base = os.environ.get("GGRL_STATE_DIR") or os.path.expanduser(
-        "~/.config/gh-gemini-review-loop"
-    )
-    return Path(base)
+    """Return the per-user state directory (XDG-ish, GGRL_STATE_DIR override).
+
+    Resolution: explicit ``GGRL_STATE_DIR`` always wins; otherwise the new
+    ``~/.config/gh-review-loop`` when it exists (or when there is nothing to
+    fall back to); otherwise the legacy ``~/.config/gh-gemini-review-loop``
+    left by a pre-rename install that has not been migrated yet.
+    """
+    env = os.environ.get("GGRL_STATE_DIR")
+    if env:
+        return Path(env)
+    new = _config_root() / STATE_DIR_NAME
+    legacy = _config_root() / LEGACY_STATE_DIR_NAME
+    if new.exists() or not legacy.exists():
+        return new
+    return legacy
+
+
+def migrate_legacy_state_dir() -> bool:
+    """One-time move of the legacy state dir to the new name. True if migrated.
+
+    Renames ``~/.config/gh-gemini-review-loop`` to ``~/.config/gh-review-loop``
+    and leaves a symlink at the legacy path, so plugin versions installed
+    before the rename (their scripts and hook guards hardcode the legacy path)
+    keep reading and writing the same state. Idempotent; a no-op under
+    ``GGRL_STATE_DIR``, when there is nothing to migrate, or when the new dir
+    already exists (never merges two dirs). Fails open: any OSError leaves the
+    legacy dir in place, and ``state_dir()`` keeps resolving to it.
+    """
+    if os.environ.get("GGRL_STATE_DIR"):
+        return False
+    new = _config_root() / STATE_DIR_NAME
+    legacy = _config_root() / LEGACY_STATE_DIR_NAME
+    if new.exists() or legacy.is_symlink() or not legacy.is_dir():
+        return False
+    try:
+        legacy.rename(new)
+    except OSError:
+        return False
+    try:
+        legacy.symlink_to(new)
+    except OSError:
+        # Migrated but no compatibility symlink: new-version scripts are fine
+        # (state_dir() finds the new dir); only stale pre-rename installs lose
+        # sight of the state. Say so rather than fail.
+        print(
+            f"warning: state moved to {new} but the compatibility symlink at "
+            f"{legacy} could not be created; plugin versions older than the "
+            "rename will no longer see this state.",
+            file=sys.stderr,
+        )
+    return True
 
 
 def sticky_state_path() -> Path:
     """Return the path to the sticky-receipt/run state file.
 
     Overridable via ``GGRL_STATE_DIR`` (useful for tests). Defaults to
-    ``~/.config/gh-gemini-review-loop/state.json`` per XDG conventions.
+    ``~/.config/gh-review-loop/state.json`` per XDG conventions.
     """
     return state_dir() / "state.json"
 

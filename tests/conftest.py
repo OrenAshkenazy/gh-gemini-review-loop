@@ -40,7 +40,7 @@ def _isolate_user_state(tmp_path_factory, monkeypatch):
     """Point per-user state at a temp directory for every test.
 
     Several scripts resolve their state and preferences under GGRL_STATE_DIR,
-    falling back to ~/.config/gh-gemini-review-loop. load_preferences() creates
+    falling back to the real state dir. load_preferences() creates
     that file when absent, so any test reaching it writes to the developer's
     real config. Tests that need a specific directory still set the variable
     themselves and override this.

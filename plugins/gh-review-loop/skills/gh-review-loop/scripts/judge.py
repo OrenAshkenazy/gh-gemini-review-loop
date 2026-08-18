@@ -50,6 +50,8 @@ from pathlib import Path
 from urllib import error as _urlerror
 from urllib import request as _urlrequest
 
+import loop_state  # noqa: E402 — sibling module, stdlib-only
+
 # Imported as a sibling module so the test invariant (no shell-out from
 # judge.py) still holds — keychain / secret-tool reads live in
 # key_resolver.py, which judge.py only consults via a pure function call.
@@ -163,12 +165,9 @@ def prefs_path() -> Path:
     """Return the path to the per-user preferences file.
 
     Overridable via ``GGRL_STATE_DIR`` to share a directory with the existing
-    sticky-receipt state file. Defaults to ``~/.config/gh-gemini-review-loop/``.
+    sticky-receipt state file. Defaults to ``~/.config/gh-review-loop/``.
     """
-    base = os.environ.get("GGRL_STATE_DIR") or os.path.expanduser(
-        "~/.config/gh-gemini-review-loop"
-    )
-    return Path(base) / "preferences.json"
+    return loop_state.state_dir() / "preferences.json"
 
 
 def _write_prefs(path: Path, prefs: dict[str, t.Any]) -> None:
@@ -470,7 +469,7 @@ class JudgeClient:
         if not self.api_key:
             return False, (
                 "OPENAI_API_KEY not found in any source (CLI flag, env var, "
-                "~/.config/gh-gemini-review-loop/.env, OS keystore). "
+                "~/.config/gh-review-loop/.env, OS keystore). "
                 "Run 'python3 "
                 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/key_resolver.py "
                 "--set' to store one, or 'judge_doctor.py' for full setup guidance."

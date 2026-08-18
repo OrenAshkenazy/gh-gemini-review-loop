@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import subprocess
 import sys
@@ -15,6 +14,8 @@ from typing import Any
 import judge
 import review_vendors
 import reviewer_resolver
+
+import loop_state  # noqa: E402 — sibling module, stdlib-only
 
 
 DEFAULT_REVIEWER_MENTION = review_vendors.DEFAULT_VENDOR.mention
@@ -45,10 +46,7 @@ def no_safe_trigger_payload(reviewer_login: str) -> dict[str, Any]:
 
 
 def state_path() -> Path:
-    base = os.environ.get("GGRL_STATE_DIR") or os.path.expanduser(
-        "~/.config/gh-gemini-review-loop"
-    )
-    return Path(base) / "state.json"
+    return loop_state.state_dir() / "state.json"
 
 
 def load_state() -> dict[str, Any]:
