@@ -18,9 +18,15 @@ from typing import Any
 
 import sweep_siblings
 
-# Local copies of two trivial patterns so this module stays independent of the
-# 2800-line fetch_gemini_threads module.
+# Local copies of trivial patterns so this module stays independent of the
+# 2800-line fetch_gemini_threads module. Both reviewer conventions must be
+# read here, mirroring thread_severity(): Gemini marks severity as image alt
+# text (![high]); Codex as a P0-P3 badge image (![P1 Badge](...)). Reading
+# only one leaves the other's clusters tied at "unknown", which silently
+# collapses the Patterns block's severity ordering.
 _SEVERITY_RE = re.compile(r"!\[(critical|high|medium|low)\]", re.IGNORECASE)
+_CODEX_PRIORITY_RE = re.compile(r"!\[(P[0-3])(?:\s+Badge)?\]", re.IGNORECASE)
+_CODEX_PRIORITY_TO_SEVERITY = {"p0": "critical", "p1": "high", "p2": "medium", "p3": "low"}
 _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "unknown": 4}
 
 _IMG_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")          # ![alt](url) images
@@ -37,6 +43,10 @@ _NUM_RE = re.compile(r"\b\d+\b")
 # it lets single-letter variable names cluster regardless of context.
 _SINGLE_CHAR_VAR_RE = re.compile(r"\b[a-zA-Z]\b")  # bare single-letter identifiers
 _WS_RE = re.compile(r"\s+")
+# Inline HTML wrappers around reviewer markup (Codex wraps its priority badge
+# in <sub><sub>…</sub></sub>). Stripped after _IMG_RE removes the image, so
+# the empty tags don't leak into labels or hash into prose signatures.
+_HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
 
 # Gemini appends a <details>References</details> block of generic boilerplate
 # that mentions every error type; it must be stripped before concept extraction
@@ -133,6 +143,7 @@ def _first_body(thread: Any) -> str:
 
 def _normalize(body: str) -> str:
     body = _IMG_RE.sub(" ", body)
+    body = _HTML_TAG_RE.sub(" ", body)
     body = _FENCED_RE.sub(" ", body)
     body = _INLINE_CODE_RE.sub(" ", body)
     body = _LINE_ECHO_RE.sub(" ", body)
@@ -176,7 +187,12 @@ class Cluster:
 def _severity(thread: Any) -> str:
     body = _first_body(thread)
     match = _SEVERITY_RE.search(body)
-    return match.group(1).lower() if match else "unknown"
+    if match:
+        return match.group(1).lower()
+    codex_match = _CODEX_PRIORITY_RE.search(body)
+    if codex_match:
+        return _CODEX_PRIORITY_TO_SEVERITY[codex_match.group(1).lower()]
+    return "unknown"
 
 
 def _site(thread: dict[str, Any]) -> str:
