@@ -108,11 +108,44 @@ The `-a` flag selects target agents; omit it for the interactive picker. Require
 
 ### Upgrading
 
+**Claude Code:**
+
 ```
 /plugin update gh-review-loop
 ```
 
-> **Upgrading from `gh-gemini-review-loop`?** Uninstall the old plugin (`/plugin uninstall gh-gemini-review-loop`), re-add the marketplace, install `gh-review-loop@gh-review-loop`. Settings, verification profiles, and run history are untouched — they live in `~/.config/gh-gemini-review-loop/`, which the renamed plugin still reads.
+**Codex** — plugins come from a marketplace *snapshot*, so refresh the snapshot:
+
+```bash
+codex plugin marketplace upgrade gh-review-loop
+```
+
+Omit the name to refresh every configured marketplace.
+
+### Upgrading from `gh-gemini-review-loop`
+
+Remove the old **marketplace**, not just the plugin — the stale marketplace entry is what pins you to the old name.
+
+**Claude Code:**
+
+```
+/plugin marketplace remove gh-gemini-review-loop
+/plugin marketplace add OrenAshkenazy/gh-review-loop
+/plugin install gh-review-loop@gh-review-loop
+```
+
+**Codex:**
+
+```bash
+codex plugin remove gh-gemini-review-loop@gh-gemini-review-loop
+codex plugin marketplace remove gh-gemini-review-loop
+codex plugin marketplace add OrenAshkenazy/gh-review-loop
+codex plugin add gh-review-loop@gh-review-loop
+```
+
+Settings, verification profiles, and run history are untouched on both — they live in `~/.config/gh-gemini-review-loop/`, which the renamed plugin still reads.
+
+> **Stuck on an old version?** If your runtime insists you are already current while the [releases page](https://github.com/OrenAshkenazy/gh-review-loop/releases) has moved on, the marketplace is pinned to a branch rather than tracking the default one. Both runtimes let you pin — Claude Code stores it as `ref` in `~/.claude/plugins/known_marketplaces.json`; Codex stores it as `ref` under `[marketplaces.<name>]` in `~/.codex/config.toml`, and accepts `owner/repo@ref` or `--ref` when adding. A pinned entry reports that branch's version as "latest" forever, and refreshing it changes nothing. Check with `codex plugin marketplace list` (Codex) or the config file above (Claude Code), then re-add the marketplace with the commands in this section to track the default branch again.
 
 ---
 
@@ -143,7 +176,7 @@ More specific phrasings:
 | *"Just audit reviewer comments, don't touch anything"* | Read-only pass |
 | *"Show review loop stats for this repo"* | Local aggregates |
 
-See [`SKILL.md`](plugins/gh-review-loop/skills/gh-review-loop/SKILL.md) for the full workflow definition, stop conditions, and every phrasing.
+See [`SKILL.md`](plugins/gh-review-loop/skills/gh-review-loop/SKILL.md) for the workflow definition, stop conditions, and every phrasing; the deeper material (sweep internals, judge eval, recovery, script reference) sits in [`references/`](plugins/gh-review-loop/skills/gh-review-loop/references/) and is loaded only when a run needs it.
 
 ---
 
@@ -174,19 +207,26 @@ Every saved check is a required gate — a failure flips the verify step to `--v
 
 Ask *"Show review loop stats for this repo"* (or run `--stats`). Metrics are local-only (`~/.config/gh-gemini-review-loop/runs.jsonl`), contain repo and PR number but no identity, and are never transmitted.
 
-**Per-run receipt:**
+**Per-run receipt.** The full receipt is delivered to the PR, in the same live-edited comment the loop keeps there — status `RUNNING` per cycle, `DONE` or `STOPPED` at the end:
 
 ```
 [loop] Summary
 Findings fetched: 7
 Fixed: 4
-Remaining actionable: 0
-Needs human: 1
+Human decision required: 1
 Cycles used: 2/3
 Verification: passed
 Outcome: clean
 Time to clean PR: 12m
 ```
+
+Your terminal gets one line pointing at it, so a long loop doesn't bury the conversation in repeated receipts:
+
+```
+[loop] Summary: findings 7 seen this run · fixed 4 · cycles 2/3 · verification passed · outcome clean — full receipt: <link>
+```
+
+`findings N seen this run` is cumulative across the run; when findings are still open, the split rides on that count — `open 3 (1 new, 2 carried over)`. If the comment can't be written (no network, no permission, `--dry-run`), the full receipt prints to the terminal instead, so a receipt is never lost.
 
 **Aggregated stats** *(illustrative shape — the numbers below are an example, not measured telemetry)*:
 
@@ -214,7 +254,7 @@ A second model can label each finding (`valid_actionable`, `false_positive`, `ne
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/judge_doctor.py" --probe
 ```
 
-See [SKILL.md → Optional Judge Eval](plugins/gh-review-loop/skills/gh-review-loop/SKILL.md) for the verdict schema.
+See [`references/judge-eval.md`](plugins/gh-review-loop/skills/gh-review-loop/references/judge-eval.md) for the verdict schema, eval modes, and key setup.
 
 ## Configuring the skill
 
