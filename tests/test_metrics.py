@@ -20,12 +20,22 @@ class TestHelpers:
         assert metrics.top_dir("src/auth/login.py") == "src"
         assert metrics.top_dir("") == "(unknown)"
 
-    def test_runs_log_path_default(self, monkeypatch):
+    def test_runs_log_path_default(self, monkeypatch, tmp_path):
+        # Fresh HOME so the resolver can't fall back to a real legacy dir on
+        # the machine running the tests — a fresh install writes the new name.
         monkeypatch.delenv("GGRL_STATE_DIR", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
         result = metrics.runs_log_path()
         assert result.name == "runs.jsonl"
-        # Config dir keeps the pre-rename name so existing user data stays readable.
-        assert "gh-gemini-review-loop" in str(result)
+        assert "gh-review-loop" in str(result)
+        assert "gh-gemini-review-loop" not in str(result)
+
+    def test_runs_log_path_unmigrated_legacy(self, monkeypatch, tmp_path):
+        # Pre-rename state dir, not yet migrated: existing data stays readable.
+        monkeypatch.delenv("GGRL_STATE_DIR", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".config" / "gh-gemini-review-loop").mkdir(parents=True)
+        assert "gh-gemini-review-loop" in str(metrics.runs_log_path())
 
     def test_format_duration(self):
         assert metrics.format_duration(48) == "48s"
