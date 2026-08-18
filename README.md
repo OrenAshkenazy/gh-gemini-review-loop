@@ -269,8 +269,12 @@ python3 - <<'PY'
 import json
 from pathlib import Path
 
-# New path; the plugin migrates the old gh-gemini-review-loop dir automatically.
-path = Path.home() / ".config" / "gh-review-loop" / "preferences.json"
+# Resolve like the scripts do: new dir, else the not-yet-migrated legacy dir.
+base = Path.home() / ".config" / "gh-review-loop"
+legacy = Path.home() / ".config" / "gh-gemini-review-loop"
+if not base.exists() and legacy.exists():
+    base = legacy
+path = base / "preferences.json"
 path.parent.mkdir(parents=True, exist_ok=True)
 prefs = json.loads(path.read_text()) if path.exists() else {}
 prefs["schema_version"] = 2

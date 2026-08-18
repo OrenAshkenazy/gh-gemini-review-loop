@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- **State directory renamed to `~/.config/gh-review-loop`, with automatic
+  migration.** `~/.config/gh-gemini-review-loop` was the last remnant of the old
+  plugin name, hardcoded independently in six modules and the three hooks.json
+  shell guards. `loop_state.state_dir()` is now the single resolver
+  (`GGRL_STATE_DIR` wins; else the new dir when it exists; else the unmigrated
+  legacy dir), and the first run after upgrading renames the legacy dir and
+  leaves a symlink at the old path so plugin versions installed before the
+  rename keep reading the same state. Settings, verification profiles, run
+  history, and the judge key are untouched: nothing is copied, merged, or
+  transmitted. Migration is idempotent and fails open — if either the rename or
+  the symlink cannot be created, the legacy dir stays and keeps resolving.
+
 ## [0.2.43] - 2026-08-17
 
 Three of the four token/latency issues landed here at once. #88 and #89 were

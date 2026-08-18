@@ -74,7 +74,9 @@ def migrate_legacy_state_dir() -> bool:
     keep reading and writing the same state. Idempotent; a no-op under
     ``GGRL_STATE_DIR``, when there is nothing to migrate, or when the new dir
     already exists (never merges two dirs). Fails open: any OSError leaves the
-    legacy dir in place, and ``state_dir()`` keeps resolving to it.
+    legacy dir in place, and ``state_dir()`` keeps resolving to it — including
+    when the rename succeeds but the symlink cannot be created, which is rolled
+    back rather than left as a move older installs cannot follow.
     """
     if os.environ.get("GGRL_STATE_DIR"):
         return False
@@ -89,15 +91,22 @@ def migrate_legacy_state_dir() -> bool:
     try:
         legacy.symlink_to(new)
     except OSError:
-        # Migrated but no compatibility symlink: new-version scripts are fine
-        # (state_dir() finds the new dir); only stale pre-rename installs lose
-        # sight of the state. Say so rather than fail.
-        print(
-            f"warning: state moved to {new} but the compatibility symlink at "
-            f"{legacy} could not be created; plugin versions older than the "
-            "rename will no longer see this state.",
-            file=sys.stderr,
-        )
+        # A move without the compatibility symlink would strand the state where
+        # pre-rename installs cannot find it, so undo it: the legacy dir keeps
+        # resolving via the fallback, and the next run retries.
+        try:
+            new.rename(legacy)
+            return False
+        except OSError:
+            # Rolled forward and cannot roll back. New-version scripts are fine
+            # (state_dir() finds the new dir); only stale pre-rename installs
+            # lose sight of the state. Say so rather than fail.
+            print(
+                f"warning: state moved to {new} but the compatibility symlink "
+                f"at {legacy} could not be created; plugin versions older than "
+                "the rename will no longer see this state.",
+                file=sys.stderr,
+            )
     return True
 
 

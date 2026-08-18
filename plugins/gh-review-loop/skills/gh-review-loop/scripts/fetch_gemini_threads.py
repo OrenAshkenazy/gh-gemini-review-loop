@@ -8,7 +8,6 @@ import dataclasses
 import datetime as _dt
 import hashlib
 import json
-import os
 import re
 import subprocess
 import sys
@@ -37,6 +36,7 @@ from loop_state import (  # noqa: E402 — sibling module, stdlib-only
     resolve_current_repo,
     save_sticky_state,
     sentinel_path,
+    state_dir,
     sticky_state_path,  # noqa: F401 — re-exported; hooks/tests import via this module
     summary_is_stale,  # noqa: F401 — re-exported; hooks/tests import via this module
     touch_sentinel,
@@ -1011,10 +1011,7 @@ def effective_rereview_limit(cli_value: int | None, prefs: dict[str, Any]) -> in
 
 def _direct_preferences_path() -> Path:
     """Mirror ``judge.prefs_path()`` for the fallback path when ``judge`` is unavailable."""
-    base = os.environ.get("GGRL_STATE_DIR") or os.path.expanduser(
-        "~/.config/gh-review-loop"
-    )
-    return Path(base) / "preferences.json"
+    return state_dir() / "preferences.json"
 
 
 # Defaults that match the canonical ``judge.load_preferences()`` contract. The
