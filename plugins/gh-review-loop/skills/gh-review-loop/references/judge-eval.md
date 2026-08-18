@@ -56,7 +56,7 @@ Mode-specific phrasings need no prompt — see `references/variations.md`.
 
 ## Preference file
 
-`~/.config/gh-gemini-review-loop/preferences.json` — created automatically on first script invocation with safe defaults.
+`~/.config/gh-review-loop/preferences.json` — created automatically on first script invocation with safe defaults.
 
 ```json
 {
@@ -79,7 +79,12 @@ python3 - <<'PY'
 import json
 from pathlib import Path
 
-path = Path.home() / ".config" / "gh-gemini-review-loop" / "preferences.json"
+# Resolve like the scripts do: new dir, else unmigrated legacy dir.
+base = Path.home() / ".config" / "gh-review-loop"
+legacy = Path.home() / ".config" / "gh-gemini-review-loop"
+if not base.exists() and legacy.exists():
+    base = legacy
+path = base / "preferences.json"
 path.parent.mkdir(parents=True, exist_ok=True)
 prefs = json.loads(path.read_text()) if path.exists() else {}
 prefs["schema_version"] = 2

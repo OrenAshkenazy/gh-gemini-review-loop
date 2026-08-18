@@ -2,7 +2,7 @@
 
 Resolution order (first hit wins):
 
-1. ``~/.config/gh-gemini-review-loop/.env`` — a chmod-600 dotfile with
+1. ``~/.config/gh-review-loop/.env`` — a chmod-600 dotfile with
    ``OPENAI_API_KEY=sk-...``. Gitignored, survives shell reloads, easy to
    inspect, and the canonical store for interactive local use.
 2. macOS Keychain (``security find-generic-password -s gh-review-loop
@@ -38,6 +38,8 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+
+import loop_state  # noqa: E402 — sibling module, stdlib-only
 import shutil
 import subprocess
 import sys
@@ -56,10 +58,7 @@ SOURCE_LABELS = ("dotenv", "macos_keychain", "linux_secret_service", "env")
 
 def dotenv_path() -> Path:
     """Where the chmod-600 fallback ``.env`` lives. Override with ``GGRL_STATE_DIR``."""
-    base = os.environ.get("GGRL_STATE_DIR") or os.path.expanduser(
-        "~/.config/gh-gemini-review-loop"
-    )
-    return Path(base) / ".env"
+    return loop_state.state_dir() / ".env"
 
 
 def _read_env() -> str | None:
@@ -313,7 +312,7 @@ def _main(argv: list[str] | None = None) -> int:
         key, source = resolve_api_key()
         if not key:
             print("source: missing")
-            print("checked: dotenv (~/.config/gh-gemini-review-loop/.env), "
+            print("checked: dotenv (~/.config/gh-review-loop/.env), "
                   "macos_keychain, linux_secret_service, env")
             return 1
         print(f"source: {source}")

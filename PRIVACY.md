@@ -82,15 +82,17 @@ The plugin author has no access to the user's OpenAI API key and no access to da
 The plugin may write local state under:
 
 ```text
-~/.config/gh-gemini-review-loop/
+~/.config/gh-review-loop/
 ```
+
+Installs that predate the plugin's rename used `~/.config/gh-gemini-review-loop/`. On its first run after upgrading, the plugin renames that directory to the new name and leaves a symlink at the old path, so older plugin versions keep reading the same files. No data is copied, duplicated, or transmitted by the migration.
 
 Known files:
 
 ```text
-~/.config/gh-gemini-review-loop/preferences.json
-~/.config/gh-gemini-review-loop/state.json
-~/.config/gh-gemini-review-loop/runs.jsonl
+~/.config/gh-review-loop/preferences.json
+~/.config/gh-review-loop/state.json
+~/.config/gh-review-loop/runs.jsonl
 ```
 
 `preferences.json` stores user preferences such as judge mode, judge model, and whether the one time judge eval tip was shown.
@@ -116,25 +118,25 @@ Workflow metrics (the per-run summary and the `--stats` aggregate) are generated
 To disable judge eval, set judge mode to off or remove the preferences file:
 
 ```bash
-rm ~/.config/gh-gemini-review-loop/preferences.json
+rm ~/.config/gh-review-loop/preferences.json
 ```
 
 To remove local sticky receipt and run-tracking state:
 
 ```bash
-rm ~/.config/gh-gemini-review-loop/state.json
+rm ~/.config/gh-review-loop/state.json
 ```
 
 To remove locally stored run metrics:
 
 ```bash
-rm ~/.config/gh-gemini-review-loop/runs.jsonl
+rm ~/.config/gh-review-loop/runs.jsonl
 ```
 
 To remove all local plugin state:
 
 ```bash
-rm -rf ~/.config/gh-gemini-review-loop
+rm -rf ~/.config/gh-review-loop
 ```
 
 To disable or uninstall the plugin, use Claude Code's plugin manager:

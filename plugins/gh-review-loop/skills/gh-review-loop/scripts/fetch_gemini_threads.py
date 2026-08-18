@@ -8,7 +8,6 @@ import dataclasses
 import datetime as _dt
 import hashlib
 import json
-import os
 import re
 import subprocess
 import sys
@@ -33,9 +32,11 @@ from loop_state import (  # noqa: E402 — sibling module, stdlib-only
     clear_sentinel,
     find_active_run,  # noqa: F401 — re-exported; hooks/tests import via this module
     load_sticky_state,
+    migrate_legacy_state_dir,
     resolve_current_repo,
     save_sticky_state,
     sentinel_path,
+    state_dir,
     sticky_state_path,  # noqa: F401 — re-exported; hooks/tests import via this module
     summary_is_stale,  # noqa: F401 — re-exported; hooks/tests import via this module
     touch_sentinel,
@@ -1010,10 +1011,7 @@ def effective_rereview_limit(cli_value: int | None, prefs: dict[str, Any]) -> in
 
 def _direct_preferences_path() -> Path:
     """Mirror ``judge.prefs_path()`` for the fallback path when ``judge`` is unavailable."""
-    base = os.environ.get("GGRL_STATE_DIR") or os.path.expanduser(
-        "~/.config/gh-gemini-review-loop"
-    )
-    return Path(base) / "preferences.json"
+    return state_dir() / "preferences.json"
 
 
 # Defaults that match the canonical ``judge.load_preferences()`` contract. The
@@ -2608,6 +2606,11 @@ def first_value(thread: dict[str, Any], key: str) -> Any:
 
 
 def main() -> int:
+    # Post-rename housekeeping: move ~/.config/gh-gemini-review-loop to
+    # ~/.config/gh-review-loop once, leaving a compatibility symlink for
+    # pre-rename plugin versions. No-op after the first run. Done here (the
+    # loop's single entry point) so the hook gates never pay for it.
+    migrate_legacy_state_dir()
     parser = argparse.ArgumentParser(
         description=__doc__,
         epilog=(
@@ -2730,7 +2733,7 @@ def main() -> int:
         default=None,
         help=(
             "Warn when prior reviewer re-review requests reach this limit. "
-            "Overrides max_rereview_requests in ~/.config/gh-gemini-review-loop/preferences.json "
+            "Overrides max_rereview_requests in ~/.config/gh-review-loop/preferences.json "
             f"(default: {DEFAULT_REREVIEW_LIMIT})."
         ),
     )
@@ -2777,7 +2780,7 @@ def main() -> int:
         action="store_true",
         help=(
             "Like --post-receipt, but maintain ONE comment per PR that is edited in place across loop "
-            "invocations. State persists in ~/.config/gh-gemini-review-loop/state.json "
+            "invocations. State persists in ~/.config/gh-review-loop/state.json "
             "(override with GGRL_STATE_DIR env var). Provides background visibility in the PR UI."
         ),
     )
@@ -2837,7 +2840,7 @@ def main() -> int:
         default=None,
         help=(
             "Override the saved OpenAI-judge preference for this invocation. "
-            "Without this flag the script reads ~/.config/gh-gemini-review-loop/preferences.json "
+            "Without this flag the script reads ~/.config/gh-review-loop/preferences.json "
             "(default: 'off'). Requires an OpenAI API key resolved by key_resolver.py "
             "(env var / dotfile / OS keystore); gracefully skips otherwise."
         ),
@@ -3375,7 +3378,7 @@ def main() -> int:
         # ---- Judge (optional, opt-in via prefs file or --judge-mode) -------
         # The script is the single source of truth for whether the judge
         # runs. The agent supplies --judge-phase; we read the saved mode
-        # from ~/.config/gh-gemini-review-loop/preferences.json (or
+        # from ~/.config/gh-review-loop/preferences.json (or
         # --judge-mode override) and decide.
         try:
             from judge import (  # noqa: PLC0415

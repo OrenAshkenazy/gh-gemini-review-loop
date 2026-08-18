@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
-import os
 from collections import Counter
 from pathlib import Path
 from typing import Any
+
+import loop_state  # noqa: E402 — sibling module, stdlib-only
 
 RECORD_SCHEMA_VERSION = 1
 DEFAULT_WINDOW = 10
@@ -43,10 +44,7 @@ _TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 def runs_log_path() -> Path:
     """Path to runs.jsonl, beside state.json; override via GGRL_STATE_DIR."""
-    base = os.environ.get("GGRL_STATE_DIR") or os.path.expanduser(
-        "~/.config/gh-gemini-review-loop"
-    )
-    return Path(base) / "runs.jsonl"
+    return loop_state.state_dir() / "runs.jsonl"
 
 
 def now_iso() -> str:

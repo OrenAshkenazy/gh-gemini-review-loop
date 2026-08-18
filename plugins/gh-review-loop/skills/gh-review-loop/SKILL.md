@@ -80,7 +80,7 @@ The receipt's `Clustering:` and `Convergence:` lines are advisory. Three or more
 
 ## Verification Profile
 
-Each repo can have a code-derived **verification profile** — the checks the verify step runs. Stored in `~/.config/gh-gemini-review-loop/preferences.json` under `profiles["owner/repo"]`.
+Each repo can have a code-derived **verification profile** — the checks the verify step runs. Stored in `~/.config/gh-review-loop/preferences.json` under `profiles["owner/repo"]`.
 
 **First run** (no profile for the repo yet) — after fetching findings, **before the first fix attempt** (a `PreToolUse` hook blocks edits until a profile decision is saved):
 

@@ -12,7 +12,7 @@ This table is authoritative; if a phrasing isn't here, fall back to defaults.
 | **Audit-only** | "summarize reviewer comments" / "read-only review" / "show me what's pending" | `--dry-run --post-receipt --no-resolve-outdated --no-resolve-addressed-by-reply` |
 | **More cycles once** | "be persistent" / "do 4 cycles" | `--max-rereview-requests 4` |
 | **Fewer cycles once** | "one cycle only" / "don't loop, just fix once" | `--max-rereview-requests 1` |
-| **Persistent cap** | "always use 4 cycles" / "configure the cap max to 4" | Set `max_rereview_requests` in `~/.config/gh-gemini-review-loop/preferences.json` |
+| **Persistent cap** | "always use 4 cycles" / "configure the cap max to 4" | Set `max_rereview_requests` in `~/.config/gh-review-loop/preferences.json` |
 | **Specific PR** | "handle PR https://github.com/..." | `--pr <URL>` |
 | **Select Codex** | "run the Codex loop" / "use Codex for this PR" | `--reviewer chatgpt-codex-connector --reviewer-source confirmed` (name and trigger are known) |
 | **Different reviewer bot** | "handle review comments from coderabbitai" | `--reviewer coderabbitai --review-trigger-mention @coderabbitai --reviewer-name CodeRabbit` |

@@ -143,7 +143,7 @@ codex plugin marketplace add OrenAshkenazy/gh-review-loop
 codex plugin add gh-review-loop@gh-review-loop
 ```
 
-Settings, verification profiles, and run history are untouched on both — they live in `~/.config/gh-gemini-review-loop/`, which the renamed plugin still reads.
+Settings, verification profiles, and run history are untouched on both — the first run after upgrading moves `~/.config/gh-gemini-review-loop/` to `~/.config/gh-review-loop/` and leaves a symlink at the old path for older installs.
 
 > **Stuck on an old version?** If your runtime insists you are already current while the [releases page](https://github.com/OrenAshkenazy/gh-review-loop/releases) has moved on, the marketplace is pinned to a branch rather than tracking the default one. Both runtimes let you pin — Claude Code stores it as `ref` in `~/.claude/plugins/known_marketplaces.json`; Codex stores it as `ref` under `[marketplaces.<name>]` in `~/.codex/config.toml`, and accepts `owner/repo@ref` or `--ref` when adding. A pinned entry reports that branch's version as "latest" forever, and refreshing it changes nothing. Check with `codex plugin marketplace list` (Codex) or the config file above (Claude Code), then re-add the marketplace with the commands in this section to track the default branch again.
 
@@ -182,7 +182,7 @@ See [`SKILL.md`](plugins/gh-review-loop/skills/gh-review-loop/SKILL.md) for the 
 
 ## Verification profiles
 
-On the first cycle with actionable findings, the agent scans for build signals (`pyproject.toml`, `package.json`, `Cargo.toml`, `go.mod`) and offers a short preset menu: **All detected · Tests only · Skip · Customize**. Your pick persists under `profiles["owner/repo"]` in `~/.config/gh-gemini-review-loop/preferences.json`; later runs are prompt-free.
+On the first cycle with actionable findings, the agent scans for build signals (`pyproject.toml`, `package.json`, `Cargo.toml`, `go.mod`) and offers a short preset menu: **All detected · Tests only · Skip · Customize**. Your pick persists under `profiles["owner/repo"]` in `~/.config/gh-review-loop/preferences.json`; later runs are prompt-free.
 
 Every saved check is a required gate — a failure flips the verify step to `--verification failed`. **`Skip` is remembered** and leaves the loop on ad-hoc verification with no gate; saying *"set up a verification profile for this repo"* re-runs detection and overrides it.
 
@@ -205,7 +205,7 @@ Every saved check is a required gate — a failure flips the verify step to `--v
 
 ## Run metrics and local stats
 
-Ask *"Show review loop stats for this repo"* (or run `--stats`). Metrics are local-only (`~/.config/gh-gemini-review-loop/runs.jsonl`), contain repo and PR number but no identity, and are never transmitted.
+Ask *"Show review loop stats for this repo"* (or run `--stats`). Metrics are local-only (`~/.config/gh-review-loop/runs.jsonl`), contain repo and PR number but no identity, and are never transmitted.
 
 **Per-run receipt.** The full receipt is delivered to the PR, in the same live-edited comment the loop keeps there — status `RUNNING` per cycle, `DONE` or `STOPPED` at the end:
 
@@ -258,7 +258,7 @@ See [`references/judge-eval.md`](plugins/gh-review-loop/skills/gh-review-loop/re
 
 ## Configuring the skill
 
-Persistent settings live in `~/.config/gh-gemini-review-loop/preferences.json`.
+Persistent settings live in `~/.config/gh-review-loop/preferences.json`.
 
 ### Set the loop cap
 
@@ -269,7 +269,12 @@ python3 - <<'PY'
 import json
 from pathlib import Path
 
-path = Path.home() / ".config" / "gh-gemini-review-loop" / "preferences.json"
+# Resolve like the scripts do: new dir, else the not-yet-migrated legacy dir.
+base = Path.home() / ".config" / "gh-review-loop"
+legacy = Path.home() / ".config" / "gh-gemini-review-loop"
+if not base.exists() and legacy.exists():
+    base = legacy
+path = base / "preferences.json"
 path.parent.mkdir(parents=True, exist_ok=True)
 prefs = json.loads(path.read_text()) if path.exists() else {}
 prefs["schema_version"] = 2
