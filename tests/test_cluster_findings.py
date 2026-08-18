@@ -91,6 +91,44 @@ def test_cluster_site_preserves_a_flagged_range():
     assert cluster([thread])[0].sites == ("lib/options.ts:5-8",)
 
 
+# Real Codex finding shape from SignalScout PR #222: severity is a P-badge
+# image wrapped in <sub> tags, not Gemini's ![high] alt text.
+_CODEX_BODY = (
+    "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)"
+    "</sub></sub>  Split the change by search layer**\n\n"
+    "Move the extraction changes into separately labeled commits."
+)
+
+
+def test_cluster_reads_codex_priority_badges():
+    """Codex P0-P3 badges must normalize to the shared severity scale here,
+    exactly as thread_severity() already does — otherwise every cluster on a
+    Codex PR ties at 'unknown' and pattern ordering is severity-blind."""
+    clusters = cluster([_thread(_CODEX_BODY)])
+    assert clusters[0].severity == "high"  # P1 -> high
+
+
+def test_cluster_orders_codex_patterns_by_priority():
+    threads = [
+        _thread("**<sub><sub>![P2 Badge](https://x/P2)</sub></sub>  Rename the flag**"),
+        _thread("**<sub><sub>![P0 Badge](https://x/P0)</sub></sub>  Fix the data loss**"),
+    ]
+    clusters = cluster(threads)
+    assert [c.severity for c in clusters] == ["critical", "medium"]
+
+
+def test_cluster_label_drops_badge_markup():
+    """The <sub> wrapper around the badge image must not leak into the label."""
+    label = cluster([_thread(_CODEX_BODY)])[0].label
+    assert "<sub>" not in label
+    assert "split the change by search layer" in label
+
+
+def test_gemini_alt_text_still_wins_over_unknown():
+    # Guard: the Codex path must not regress the existing Gemini parsing.
+    assert cluster([_thread("![critical](x.svg) Broken auth check.")])[0].severity == "critical"
+
+
 def test_cluster_ignores_non_dict_members():
     clusters = cluster([None, "nope", {}])
     assert clusters == []
