@@ -16,9 +16,15 @@ from run_profile import main as run_profile_main
 
 
 def assert_json_stdout(stdout: str) -> dict:
+    """stdout must be exactly one JSON document, with no ANSI escapes.
+
+    json.loads over the whole string is the discipline check: any human block
+    printed before or after the payload fails the parse. "[loop]" may appear
+    *inside* string fields (e.g. humanBlocks, #99) — that is payload, not
+    leakage — so there is deliberately no raw substring check for it.
+    """
     assert stdout.strip()
     assert "\033[" not in stdout
-    assert "[loop]" not in stdout
     return json.loads(stdout)
 
 

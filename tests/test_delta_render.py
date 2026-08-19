@@ -427,3 +427,46 @@ class TestMainDeltaWiring:
         run_fetch(monkeypatch, capsys)  # markdown commits the baseline
         after = run_fetch(monkeypatch, capsys, "--format", "json")
         assert json.loads(after.out)["threads"][0]["changedSinceLastCycle"] is False
+
+
+# ---------------------------------------------------------------------------
+# #99 — fetch output carries the profile-intro and planned-verification blocks
+# ---------------------------------------------------------------------------
+
+FAKE_PROFILE = {
+    "source": "confirmed",
+    "checks": [
+        {"name": "pytest", "command": "pytest -q", "cwd": ".", "required": True},
+    ],
+}
+
+
+class TestMergedHumanBlocks:
+    def test_markdown_fetch_appends_fallback_blocks_without_profile(
+        self, monkeypatch, capsys
+    ):
+        out = run_fetch(monkeypatch, capsys).out
+        assert "[loop] Verification profile: none saved" in out
+        assert "[loop] Verification suite" in out
+
+    def test_markdown_fetch_appends_saved_profile_blocks(self, monkeypatch, capsys):
+        monkeypatch.setattr(fgt, "load_profile_for_repo", lambda repo: FAKE_PROFILE)
+        out = run_fetch(monkeypatch, capsys).out
+        assert "[loop] Repo-aware verification profile" in out
+        assert "pytest -q" in out
+        assert "[loop] Verification suite" in out
+
+    def test_json_fetch_carries_human_blocks(self, monkeypatch, capsys):
+        monkeypatch.setattr(fgt, "load_profile_for_repo", lambda repo: FAKE_PROFILE)
+        payload = json.loads(run_fetch(monkeypatch, capsys, "--format", "json").out)
+        blocks = payload["humanBlocks"]
+        assert "Repo-aware verification profile" in blocks["profileIntro"]
+        assert "Verification suite" in blocks["plannedVerification"]
+
+    def test_profile_lookup_failure_does_not_break_fetch(self, monkeypatch, capsys):
+        def boom(repo):
+            raise RuntimeError("prefs unreadable")
+
+        monkeypatch.setattr(fgt, "load_profile_for_repo", boom)
+        out = run_fetch(monkeypatch, capsys).out
+        assert "Please fix this." in out  # fetch itself unaffected

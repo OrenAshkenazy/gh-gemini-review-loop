@@ -3921,6 +3921,18 @@ def main() -> int:
             jr = judge_results.get(thread_id) if judge_results else None
             current_render_fps[thread_id] = thread_render_fingerprint(thread, jr)
 
+    # Profile blocks ride along with the fetch (#99) so the agent doesn't pay
+    # two extra script invocations per cycle for --profile-intro and
+    # --planned-verification. The formatters handle absent/skipped profiles
+    # with the correct fallback wording.
+    profile_repo = f"{pr.owner}/{pr.repo}"
+    try:
+        saved_profile = load_profile_for_repo(profile_repo)
+    except Exception:  # pragma: no cover - load_profile_for_repo already swallows
+        saved_profile = None
+    profile_intro_block = metrics.format_profile_intro_block(saved_profile, profile_repo)
+    planned_verification_block = metrics.format_planned_verification_block(saved_profile)
+
     if args.format == "json":
         # The machine path stays lossless: full threads, annotated with the
         # delta bit. It never commits the baseline — only markdown emission
@@ -3964,6 +3976,10 @@ def main() -> int:
                         "judge": judge_status,
                     },
                     "judgeResults": judge_results,
+                    "humanBlocks": {
+                        "profileIntro": profile_intro_block,
+                        "plannedVerification": planned_verification_block,
+                    },
                 },
                 indent=2,
                 sort_keys=True,
@@ -4013,6 +4029,8 @@ def main() -> int:
                     enabled=color_enabled,
                 )
             )
+        print(color_loop_block(profile_intro_block, enabled=color_enabled))
+        print(color_loop_block(planned_verification_block, enabled=color_enabled))
         # Commit the delta baseline ONLY after the rendered output has been
         # emitted (#95): render → print → flush → persist. Persisting first
         # would collapse threads the agent never saw if this process dies
