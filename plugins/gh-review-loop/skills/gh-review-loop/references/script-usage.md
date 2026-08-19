@@ -6,7 +6,15 @@ Resolve `$GGRL_PLUGIN_ROOT` first (see SKILL.md — run as its own Bash call). A
 # Default fetch: resolves unresolved outdated reviewer threads AND
 # addressed-by-reply threads (substantive non-bot reply, >=30 chars) before
 # printing current feedback. The re-review cap does not block this cleanup.
+# Delta mode: threads unchanged since the previous cycle collapse to one line;
+# any change (new reply, edited body, moved anchor) renders full. The output
+# ends with the profile-intro + planned-verification blocks (relay from here).
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py"
+
+# Full render, ignoring the delta baseline. Use once after a resumed session
+# or context compaction to re-establish the baseline; diff hunks keep the
+# standard truncation cap.
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --full
 
 # Wait for configured reviewer activity to appear (cycle 1 / initial review).
 # No --after → returns as soon as activity is present; it does NOT wait for a
@@ -43,6 +51,9 @@ python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/request_rereview.py" \
     --review-trigger-mention "$REVIEW_TRIGGER_MENTION" --json
 
 # Render deterministic human-readable formatter blocks for relay.
+# NOTE: the default fetch already appends both blocks to its output (and JSON
+# fetches carry them as humanBlocks.profileIntro/.plannedVerification) — these
+# standalone forms are for out-of-band use only, not part of the normal cycle.
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
     --profile-intro --repo OWNER/REPO
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
