@@ -2527,6 +2527,90 @@ def print_clustering_blocks(clusters: list[Any]) -> None:
         print(clustering_advisory)
 
 
+# Diff hunks are convenience context, not the source of truth — the agent has
+# the checkout and reads files before editing. Cap them so verbose reviewers
+# don't dominate the fetch output.
+HUNK_MAX_LINES = 10
+
+
+def truncate_diff_hunk(hunk: str) -> str:
+    lines = hunk.rstrip().splitlines()
+    if len(lines) <= HUNK_MAX_LINES:
+        return "\n".join(lines)
+    dropped = len(lines) - HUNK_MAX_LINES
+    return "\n".join(lines[:HUNK_MAX_LINES]) + f"\n… (+{dropped} more diff lines)"
+
+
+def render_thread_block(
+    thread: dict[str, Any],
+    judge_result: dict[str, Any] | None = None,
+    *,
+    index: int | None = None,
+    include_confidence: bool = True,
+) -> list[str]:
+    """The full rendered block for one thread.
+
+    Two forms from one renderer, so the delta collapse (#95) can never diverge
+    from what is actually shown:
+
+    - Output form (``index=N``, ``include_confidence=True``) — what
+      ``render_markdown`` emits.
+    - Canonical form (``index=None``, ``include_confidence=False``) — what
+      ``thread_render_fingerprint`` hashes. Index-free because the positional
+      number shifts whenever an earlier thread resolves; confidence-free
+      because the judge's confidence decimal jitters across re-runs. Both are
+      volatile decoration, not semantic change.
+    """
+    path = thread.get("path") or first_value(thread, "path") or "(unknown path)"
+    line = thread.get("line") or first_value(thread, "line") or thread.get("originalLine") or ""
+    status = []
+    severity = thread_severity(thread)
+    if severity != "unknown":
+        status.append(severity)
+    if thread.get("isResolved"):
+        status.append("resolved")
+    if thread.get("isOutdated"):
+        status.append("outdated")
+    status_text = f" [{' '.join(status)}]" if status else ""
+    judge_line = ""
+    if judge_result and judge_result.get("status") == "ok":
+        conf = f"conf {judge_result['confidence']:.2f}, " if include_confidence else ""
+        judge_line = (
+            f"  \n  > **Judge:** `{judge_result['verdict']}` ({conf}"
+            f"severity_override={judge_result['severity_override']}, "
+            f"action={judge_result['recommended_action']}). {judge_result.get('reason', '')}"
+        )
+    elif judge_result and judge_result.get("status") == "skipped":
+        judge_line = f"  \n  > **Judge:** skipped — {judge_result.get('skip_reason', '')}"
+    prefix = f"## {index}. " if index is not None else "## "
+    lines = [f"{prefix}{path}:{line}{status_text}{judge_line}"]
+    for comment in thread["comments"]:
+        body = (comment.get("body") or "").strip()
+        url = comment.get("url") or ""
+        created = comment.get("createdAt") or ""
+        lines.extend(["", f"- {created} {url}".strip(), "", body, ""])
+        hunk = comment.get("diffHunk")
+        if hunk:
+            lines.extend(["```diff", truncate_diff_hunk(hunk), "```", ""])
+    return lines
+
+
+def thread_render_fingerprint(
+    thread: dict[str, Any], judge_result: dict[str, Any] | None = None
+) -> str:
+    """Hash of the canonical rendered block — render first, fingerprint second.
+
+    Distinct from ``finding_fingerprint`` (a deliberately fuzzy identity for
+    carried-over tracking): this is an exact content hash whose only job is
+    "would this thread's block re-render byte-identical to last cycle's?".
+    Any renderer change automatically invalidates stale baselines.
+    """
+    canonical = "\n".join(
+        render_thread_block(thread, judge_result, index=None, include_confidence=False)
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 def render_markdown(
     pr: dict[str, Any],
     threads: list[dict[str, Any]],
@@ -2561,39 +2645,10 @@ def render_markdown(
             lines.append(f"- {state} {submitted} {url}".strip())
         lines.append("")
     for index, thread in enumerate(threads, start=1):
-        path = thread.get("path") or first_value(thread, "path") or "(unknown path)"
-        line = thread.get("line") or first_value(thread, "line") or thread.get("originalLine") or ""
-        status = []
-        severity = thread_severity(thread)
-        if severity != "unknown":
-            status.append(severity)
-        if thread.get("isResolved"):
-            status.append("resolved")
-        if thread.get("isOutdated"):
-            status.append("outdated")
-        status_text = f" [{' '.join(status)}]" if status else ""
         # Optional judge annotation — only present when the user opted in via
         # --judge-mode (or saved preference) AND --judge-phase matched.
-        judge_line = ""
-        if judge_results:
-            jr = judge_results.get(thread.get("id"))
-            if jr and jr.get("status") == "ok":
-                judge_line = (
-                    f"  \n  > **Judge:** `{jr['verdict']}` (conf {jr['confidence']:.2f}, "
-                    f"severity_override={jr['severity_override']}, "
-                    f"action={jr['recommended_action']}). {jr.get('reason', '')}"
-                )
-            elif jr and jr.get("status") == "skipped":
-                judge_line = f"  \n  > **Judge:** skipped — {jr.get('skip_reason', '')}"
-        lines.append(f"## {index}. {path}:{line}{status_text}{judge_line}")
-        for comment in thread["comments"]:
-            body = (comment.get("body") or "").strip()
-            url = comment.get("url") or ""
-            created = comment.get("createdAt") or ""
-            lines.extend(["", f"- {created} {url}".strip(), "", body, ""])
-            hunk = comment.get("diffHunk")
-            if hunk:
-                lines.extend(["```diff", hunk.rstrip(), "```", ""])
+        jr = judge_results.get(thread.get("id")) if judge_results else None
+        lines.extend(render_thread_block(thread, jr, index=index))
     return "\n".join(lines).rstrip() + "\n"
 
 
