@@ -24,6 +24,24 @@ The skill auto-triggers after `gh pr create`. If that was missed, invoke retroac
 - No activity anywhere on the PR → trigger the first review ourselves (cycle 0's opening ping) and then wait. For a reviewer with `auto_reviews: false` this is the normal path, not recovery.
 - Recovery clause only — skip entirely if no reviewer is configured for the repo.
 
+## Recovery: resumed session or compacted context
+
+The fetch collapses threads that are unchanged since the previous cycle to
+one-line stubs (delta mode). That is safe only while the earlier full render
+is still in your context. On a **resumed session** or after **context
+compaction**, the persisted baseline survives but your context does not — the
+stubs would point at content you can no longer see. Re-establish the baseline
+with a single full fetch:
+
+```bash
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --full
+```
+
+`--full` renders every thread completely (diff hunks keep the standard
+truncation cap) and recommits the baseline, so the next fetch collapses
+correctly again. The sticky PR receipt (findings + URLs) is the out-of-context
+backup if you only need anchors, not bodies.
+
 ## Follow-up pushes after the loop stops
 
 New commits pushed to the PR branch after the loop stopped:

@@ -116,6 +116,10 @@ def pattern_history_for_pr(
     the append-only runs.jsonl lets convergence detection survive across resumes:
     a pattern recorded in an earlier run of this same repo+PR still counts as
     "seen before". Returns ``{"seen": set, "swept": set}``; empty on any error.
+
+    Repository keys are compared case-insensitively for backward compatibility:
+    older versions stored the caller's spelling, while new writes use GitHub's
+    canonical ``owner/repo`` casing.
     """
     seen: set[str] = set()
     swept: set[str] = set()
@@ -123,8 +127,10 @@ def pattern_history_for_pr(
         records, _ = load_records(path)
     except (OSError, ValueError):
         return {"seen": seen, "swept": swept}
+    repo_key = repo.casefold()
     for rec in records:
-        if rec.get("repo") != repo:
+        recorded_repo = rec.get("repo")
+        if not isinstance(recorded_repo, str) or recorded_repo.casefold() != repo_key:
             continue
         try:
             if int(rec.get("pr") or 0) != pr_number:
@@ -379,6 +385,33 @@ def format_planned_verification_block(profile: Any) -> str:
     for index, check in enumerate(checks, 1):
         lines.append(f"{index}. {check['name']} — {check['command']} (cwd: {check['cwd']})")
     return "\n".join(lines)
+
+
+def format_pending_profile_block(repo: str, *, script: str) -> str:
+    """First-run notice standing in for the fetch-carried profile blocks (#107).
+
+    On a first run the profile is decided *after* this fetch, so an intro or
+    planned suite rendered now would describe "none saved / ad hoc" while the
+    agent is about to save a real profile and run it. Rather than ship a block
+    that is stale by the time it is relayed, say so and name the regeneration
+    commands.
+
+    ``script`` is the caller's own resolved path. The scripts directory is not
+    on ``PATH`` under a plugin install, so a bare filename here would print a
+    command that fails with ``command not found`` — quote the path the caller
+    was actually invoked from.
+    """
+    invocation = f'python3 "{script}"'
+    return (
+        "[loop] Verification profile: none saved for "
+        f"{repo} yet — this is a first run.\n"
+        "Decide the profile now (detect_profile.py → menu → save_profile), "
+        "before the first fix.\n"
+        "These blocks render from the saved profile, so regenerate them after "
+        "saving instead of relaying this one:\n"
+        f"  {invocation} --repo {repo} --profile-intro\n"
+        f"  {invocation} --repo {repo} --planned-verification"
+    )
 
 
 def format_judge_skip(reason: str) -> str:

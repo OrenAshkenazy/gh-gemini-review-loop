@@ -427,3 +427,128 @@ class TestMainDeltaWiring:
         run_fetch(monkeypatch, capsys)  # markdown commits the baseline
         after = run_fetch(monkeypatch, capsys, "--format", "json")
         assert json.loads(after.out)["threads"][0]["changedSinceLastCycle"] is False
+
+
+# ---------------------------------------------------------------------------
+# #99 — fetch output carries the profile-intro and planned-verification blocks
+# ---------------------------------------------------------------------------
+
+FAKE_PROFILE = {
+    "source": "confirmed",
+    "checks": [
+        {"name": "pytest", "command": "pytest -q", "cwd": ".", "required": True},
+    ],
+}
+
+
+class TestMergedHumanBlocks:
+    def test_markdown_fetch_emits_regenerate_notice_without_profile(
+        self, monkeypatch, capsys
+    ):
+        # First run: the profile is decided after this fetch, so the carried
+        # blocks must not present a suite the agent is about to replace (#107).
+        out = run_fetch(monkeypatch, capsys).out
+        assert "this is a first run" in out
+        assert "--profile-intro" in out
+        assert "--planned-verification" in out
+
+    def test_markdown_fetch_omits_planned_suite_without_profile(
+        self, monkeypatch, capsys
+    ):
+        out = run_fetch(monkeypatch, capsys).out
+        assert "[loop] Verification suite" not in out
+        assert "use ad hoc verification" not in out
+
+    def test_markdown_fetch_appends_saved_profile_blocks(self, monkeypatch, capsys):
+        monkeypatch.setattr(fgt, "load_profile_for_repo", lambda repo: FAKE_PROFILE)
+        out = run_fetch(monkeypatch, capsys).out
+        assert "[loop] Repo-aware verification profile" in out
+        assert "pytest -q" in out
+        assert "[loop] Verification suite" in out
+
+    def test_json_fetch_carries_human_blocks(self, monkeypatch, capsys):
+        monkeypatch.setattr(fgt, "load_profile_for_repo", lambda repo: FAKE_PROFILE)
+        payload = json.loads(run_fetch(monkeypatch, capsys, "--format", "json").out)
+        blocks = payload["humanBlocks"]
+        assert "Repo-aware verification profile" in blocks["profileIntro"]
+        assert "Verification suite" in blocks["plannedVerification"]
+        assert blocks["profileBlocksProvisional"] is False
+
+    def test_json_fetch_flags_provisional_blocks_without_profile(
+        self, monkeypatch, capsys
+    ):
+        payload = json.loads(run_fetch(monkeypatch, capsys, "--format", "json").out)
+        blocks = payload["humanBlocks"]
+        assert blocks["profileBlocksProvisional"] is True
+        # Empty, not a fallback suite: automation must not relay a suite that
+        # has not been chosen yet.
+        assert blocks["plannedVerification"] == ""
+        assert "this is a first run" in blocks["profileIntro"]
+
+    def test_skipped_profile_keeps_its_fallback_wording(self, monkeypatch, capsys):
+        # A `skipped` profile IS a decision — its fallback text is the final
+        # answer, not a placeholder to regenerate.
+        monkeypatch.setattr(fgt, "load_profile_for_repo", lambda repo: {"source": "skipped"})
+        payload = json.loads(run_fetch(monkeypatch, capsys, "--format", "json").out)
+        blocks = payload["humanBlocks"]
+        assert blocks["profileBlocksProvisional"] is False
+        assert "skipped for this repo" in blocks["profileIntro"]
+
+    def test_profile_lookup_failure_does_not_break_fetch(self, monkeypatch, capsys):
+        def boom(repo):
+            raise RuntimeError("prefs unreadable")
+
+        monkeypatch.setattr(fgt, "load_profile_for_repo", boom)
+        out = run_fetch(monkeypatch, capsys).out
+        assert "Please fix this." in out  # fetch itself unaffected
+
+    def test_regeneration_commands_are_runnable(self, monkeypatch, capsys):
+        # The scripts directory is not on PATH under a plugin install, so a
+        # bare filename would print a command that cannot be executed.
+        out = run_fetch(monkeypatch, capsys).out
+        for line in out.splitlines():
+            if "--profile-intro" in line or "--planned-verification" in line:
+                assert line.strip().startswith('python3 "')
+                assert line.strip().split('"')[1].endswith("fetch_gemini_threads.py")
+
+
+# ---------------------------------------------------------------------------
+# #107 — profile/metrics store keys use the repository's canonical spelling
+# ---------------------------------------------------------------------------
+
+class TestCanonicalRepoKey:
+    def test_prefers_base_repository_name(self):
+        pr = fgt.PullRequest(owner="oren", repo="GH-Review-Loop", number=7)
+        pull_request = {"baseRepository": {"nameWithOwner": "OrenAshkenazy/gh-review-loop"}}
+        assert fgt.canonical_repo_full(pull_request, pr) == "OrenAshkenazy/gh-review-loop"
+
+    def test_falls_back_to_input_spelling_when_absent(self):
+        pr = fgt.PullRequest(owner="o", repo="r", number=7)
+        for pull_request in ({}, {"baseRepository": None}, {"baseRepository": {}}):
+            assert fgt.canonical_repo_full(pull_request, pr) == "o/r"
+
+    def test_fetch_looks_up_the_profile_under_the_canonical_key(
+        self, monkeypatch, capsys
+    ):
+        # A noncanonical --pr spelling still resolves the PR, so a caller-spelled
+        # key would miss an existing profile and report a first run.
+        seen = []
+        pr = fgt.PullRequest(owner="OREN", repo="GH-Review-Loop", number=7)
+        pull_request = {
+            "baseRepository": {"nameWithOwner": "OrenAshkenazy/gh-review-loop"},
+            "reviewThreads": {"nodes": [graphql_thread()]},
+            "reviews": {"nodes": []},
+            "comments": {"nodes": []},
+        }
+        monkeypatch.setattr(fgt, "resolve_pr", lambda spec: pr)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda resolved: pull_request)
+        monkeypatch.setattr(fgt, "gh_authenticated_login", lambda: "agent")
+        monkeypatch.setattr(
+            fgt,
+            "load_profile_for_repo",
+            lambda repo: seen.append(repo) or FAKE_PROFILE,
+        )
+        monkeypatch.setattr(sys, "argv", ["fetch_gemini_threads.py", "--judge-mode", "off"])
+        assert fgt.main() == 0
+        capsys.readouterr()
+        assert seen == ["OrenAshkenazy/gh-review-loop"]
