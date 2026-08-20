@@ -1158,6 +1158,44 @@ def clear_reviewer_selection(pr: PullRequest) -> bool:
     return True
 
 
+def read_render_baseline(pr: PullRequest, author: str) -> dict[str, str]:
+    """thread_id → render_fp emitted on the previous cycle, per (pr, author).
+
+    The delta collapse (#95) compares against the *immediately previous* cycle,
+    never a seen-ever set — that is what makes an A→B→A thread render full on
+    the third cycle. Empty when never saved (cycle 1 → everything full).
+    """
+    entry = load_sticky_state().get(_state_key(pr), {})
+    if not isinstance(entry, dict):
+        return {}
+    baselines = entry.get("render_baseline")
+    if not isinstance(baselines, dict):
+        return {}
+    fps = baselines.get(author)
+    if not isinstance(fps, dict):
+        return {}
+    return {k: v for k, v in fps.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def save_render_baseline(pr: PullRequest, author: str, fps: dict[str, str]) -> None:
+    """Replace the (pr, author) render baseline with this cycle's fingerprints.
+
+    Call ONLY after the rendered output was successfully emitted — persisting
+    before emission would collapse threads the agent never saw. Replacement
+    (not merge) keeps the baseline scoped to the previous cycle.
+    """
+    state = load_sticky_state()
+    key = _state_key(pr)
+    entry = state.get(key)
+    entry = dict(entry) if isinstance(entry, dict) else {}
+    baselines = entry.get("render_baseline")
+    baselines = dict(baselines) if isinstance(baselines, dict) else {}
+    baselines[author] = dict(fps)
+    entry["render_baseline"] = baselines
+    state[key] = entry
+    save_sticky_state(state)
+
+
 def reviewer_selection_state(record: dict[str, Any], *, source: str) -> dict[str, Any]:
     """Project a persisted reviewer record into the loop's selection state.
 
@@ -1282,11 +1320,23 @@ def read_run_tracking(pr: PullRequest) -> dict[str, Any]:
 
 
 def clear_run_tracking(pr: PullRequest) -> None:
+    """Tear down the run accumulator and the delta baseline for this PR.
+
+    The render baseline (#95) is only meaningful while the full render it
+    fingerprints is still in the agent's context. Terminal completion ends that
+    context, so leaving the baseline behind would collapse threads a *later*
+    session has never seen down to URL-only stubs on its very first fetch.
+    Clearing both together makes the next run start from a full render.
+    """
     state = load_sticky_state()
     key = _state_key(pr)
-    if key in state and "run" in state[key]:
-        del state[key]["run"]
-        save_sticky_state(state)
+    entry = state.get(key)
+    if isinstance(entry, dict):
+        stale = [field for field in ("run", "render_baseline") if field in entry]
+        for field in stale:
+            del entry[field]
+        if stale:
+            save_sticky_state(state)
     # Drop the sentinel only when no loop remains anywhere — another repo's
     # concurrent loop still needs the hooks live.
     if not any_active_run():
@@ -2527,6 +2577,110 @@ def print_clustering_blocks(clusters: list[Any]) -> None:
         print(clustering_advisory)
 
 
+# Diff hunks are convenience context, not the source of truth — the agent has
+# the checkout and reads files before editing. Cap them so verbose reviewers
+# don't dominate the fetch output.
+HUNK_MAX_LINES = 10
+
+
+def truncate_diff_hunk(hunk: str) -> str:
+    lines = hunk.rstrip().splitlines()
+    if len(lines) <= HUNK_MAX_LINES:
+        return "\n".join(lines)
+    dropped = len(lines) - HUNK_MAX_LINES
+    return "\n".join(lines[:HUNK_MAX_LINES]) + f"\n… (+{dropped} more diff lines)"
+
+
+def _thread_header_parts(thread: dict[str, Any]) -> tuple[str, Any, str]:
+    """(path, line, status_text) shared by the full block and the collapsed line."""
+    path = thread.get("path") or first_value(thread, "path") or "(unknown path)"
+    line = thread.get("line") or first_value(thread, "line") or thread.get("originalLine") or ""
+    status = []
+    severity = thread_severity(thread)
+    if severity != "unknown":
+        status.append(severity)
+    if thread.get("isResolved"):
+        status.append("resolved")
+    if thread.get("isOutdated"):
+        status.append("outdated")
+    status_text = f" [{' '.join(status)}]" if status else ""
+    return path, line, status_text
+
+
+def render_thread_block(
+    thread: dict[str, Any],
+    judge_result: dict[str, Any] | None = None,
+    *,
+    index: int | None = None,
+    include_confidence: bool = True,
+) -> list[str]:
+    """The full rendered block for one thread.
+
+    Two forms from one renderer, so the delta collapse (#95) can never diverge
+    from what is actually shown:
+
+    - Output form (``index=N``, ``include_confidence=True``) — what
+      ``render_markdown`` emits.
+    - Canonical form (``index=None``, ``include_confidence=False``) — what
+      ``thread_render_fingerprint`` hashes. Index-free because the positional
+      number shifts whenever an earlier thread resolves; confidence-free
+      because the judge's confidence decimal jitters across re-runs. Both are
+      volatile decoration, not semantic change.
+    """
+    path, line, status_text = _thread_header_parts(thread)
+    judge_line = ""
+    if judge_result and judge_result.get("status") == "ok":
+        conf = f"conf {judge_result['confidence']:.2f}, " if include_confidence else ""
+        judge_line = (
+            f"  \n  > **Judge:** `{judge_result['verdict']}` ({conf}"
+            f"severity_override={judge_result['severity_override']}, "
+            f"action={judge_result['recommended_action']}). {judge_result.get('reason', '')}"
+        )
+    elif judge_result and judge_result.get("status") == "skipped":
+        judge_line = f"  \n  > **Judge:** skipped — {judge_result.get('skip_reason', '')}"
+    prefix = f"## {index}. " if index is not None else "## "
+    lines = [f"{prefix}{path}:{line}{status_text}{judge_line}"]
+    for comment in thread["comments"]:
+        body = (comment.get("body") or "").strip()
+        url = comment.get("url") or ""
+        created = comment.get("createdAt") or ""
+        lines.extend(["", f"- {created} {url}".strip(), "", body, ""])
+        hunk = comment.get("diffHunk")
+        if hunk:
+            lines.extend(["```diff", truncate_diff_hunk(hunk), "```", ""])
+    return lines
+
+
+def thread_render_fingerprint(
+    thread: dict[str, Any], judge_result: dict[str, Any] | None = None
+) -> str:
+    """Hash of the canonical rendered block — render first, fingerprint second.
+
+    Distinct from ``finding_fingerprint`` (a deliberately fuzzy identity for
+    carried-over tracking): this is an exact content hash whose only job is
+    "would this thread's block re-render byte-identical to last cycle's?".
+    Any renderer change automatically invalidates stale baselines.
+    """
+    canonical = "\n".join(
+        render_thread_block(thread, judge_result, index=None, include_confidence=False)
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def render_collapsed_thread_line(thread: dict[str, Any], *, index: int) -> list[str]:
+    """One-line stand-in for a thread whose full block is unchanged (#95).
+
+    Keeps everything needed to act without the body: anchor, severity, and the
+    comment URL for recovery after context loss.
+    """
+    path, line, status_text = _thread_header_parts(thread)
+    comments = thread.get("comments") or []
+    first = comments[0] if comments and isinstance(comments[0], dict) else {}
+    url = first.get("url") or ""
+    suffix = f" ({url})" if url else ""
+    return [f"## {index}. {path}:{line}{status_text} — unchanged since last cycle{suffix}", ""]
+
+
 def render_markdown(
     pr: dict[str, Any],
     threads: list[dict[str, Any]],
@@ -2535,6 +2689,8 @@ def render_markdown(
     reviewer_name: str = DEFAULT_PROVIDER_NAME,
     review_trigger_mention: str = DEFAULT_REVIEW_TRIGGER_MENTION,
     judge_results: dict[str, dict[str, Any]] | None = None,
+    baseline: dict[str, str] | None = None,
+    full: bool = False,
 ) -> str:
     reviews = filter_reviews(pr, author)
     rereviews = rereview_requests(pr, review_trigger_mention=review_trigger_mention)
@@ -2561,39 +2717,19 @@ def render_markdown(
             lines.append(f"- {state} {submitted} {url}".strip())
         lines.append("")
     for index, thread in enumerate(threads, start=1):
-        path = thread.get("path") or first_value(thread, "path") or "(unknown path)"
-        line = thread.get("line") or first_value(thread, "line") or thread.get("originalLine") or ""
-        status = []
-        severity = thread_severity(thread)
-        if severity != "unknown":
-            status.append(severity)
-        if thread.get("isResolved"):
-            status.append("resolved")
-        if thread.get("isOutdated"):
-            status.append("outdated")
-        status_text = f" [{' '.join(status)}]" if status else ""
         # Optional judge annotation — only present when the user opted in via
         # --judge-mode (or saved preference) AND --judge-phase matched.
-        judge_line = ""
-        if judge_results:
-            jr = judge_results.get(thread.get("id"))
-            if jr and jr.get("status") == "ok":
-                judge_line = (
-                    f"  \n  > **Judge:** `{jr['verdict']}` (conf {jr['confidence']:.2f}, "
-                    f"severity_override={jr['severity_override']}, "
-                    f"action={jr['recommended_action']}). {jr.get('reason', '')}"
-                )
-            elif jr and jr.get("status") == "skipped":
-                judge_line = f"  \n  > **Judge:** skipped — {jr.get('skip_reason', '')}"
-        lines.append(f"## {index}. {path}:{line}{status_text}{judge_line}")
-        for comment in thread["comments"]:
-            body = (comment.get("body") or "").strip()
-            url = comment.get("url") or ""
-            created = comment.get("createdAt") or ""
-            lines.extend(["", f"- {created} {url}".strip(), "", body, ""])
-            hunk = comment.get("diffHunk")
-            if hunk:
-                lines.extend(["```diff", hunk.rstrip(), "```", ""])
+        jr = judge_results.get(thread.get("id")) if judge_results else None
+        thread_id = thread.get("id")
+        if (
+            not full
+            and baseline is not None
+            and isinstance(thread_id, str)
+            and baseline.get(thread_id) == thread_render_fingerprint(thread, jr)
+        ):
+            lines.extend(render_collapsed_thread_line(thread, index=index))
+            continue
+        lines.extend(render_thread_block(thread, jr, index=index))
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -2688,6 +2824,15 @@ def main() -> int:
     )
     parser.add_argument("--include-resolved", action="store_true")
     parser.add_argument("--include-outdated", action="store_true")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help=(
+            "Render every thread in full, ignoring the delta baseline. Use after "
+            "context loss or compaction to re-establish the baseline. Diff hunks "
+            "still use the standard truncation cap."
+        ),
+    )
     parser.add_argument("--wait", action="store_true", help="Poll until reviewer activity appears and is stable.")
     parser.add_argument("--timeout", type=int, default=900, help="Seconds to wait with --wait. Default: 900.")
     parser.add_argument("--interval", type=int, default=20, help="Polling interval in seconds with --wait. Default: 20.")
@@ -3762,12 +3907,38 @@ def main() -> int:
     )
     clustering_advisory = metrics.format_degenerate_clustering_advisory(fetch_clusters)
 
+    # Delta collapse baseline (#95): thread_id → render_fp emitted last cycle.
+    # Read fails open to {} (everything renders full — the safe direction).
+    try:
+        render_baseline = read_render_baseline(pr, args.author)
+    except OSError as exc:
+        print(f"warning: could not read render baseline: {exc}", file=sys.stderr)
+        render_baseline = {}
+    current_render_fps: dict[str, str] = {}
+    for thread in threads:
+        thread_id = thread.get("id")
+        if isinstance(thread_id, str):
+            jr = judge_results.get(thread_id) if judge_results else None
+            current_render_fps[thread_id] = thread_render_fingerprint(thread, jr)
+
     if args.format == "json":
+        # The machine path stays lossless: full threads, annotated with the
+        # delta bit. It never commits the baseline — only markdown emission
+        # (what the agent actually consumed) moves it.
+        threads_payload = []
+        for thread in threads:
+            copied = dict(thread)
+            thread_id = thread.get("id")
+            copied["changedSinceLastCycle"] = not (
+                isinstance(thread_id, str)
+                and render_baseline.get(thread_id) == current_render_fps.get(thread_id)
+            )
+            threads_payload.append(copied)
         print(
             json.dumps(
                 {
                     "pullRequest": pull_request,
-                    "threads": threads,
+                    "threads": threads_payload,
                     "clustering": {
                         "clusterCount": len(fetch_clusters),
                         "maxClusterSize": max(
@@ -3807,6 +3978,8 @@ def main() -> int:
                 reviewer_name=args.reviewer_name,
                 review_trigger_mention=args.review_trigger_mention,
                 judge_results=judge_results,
+                baseline=render_baseline,
+                full=args.full,
             ),
             end="",
         )
@@ -3840,6 +4013,15 @@ def main() -> int:
                     enabled=color_enabled,
                 )
             )
+        # Commit the delta baseline ONLY after the rendered output has been
+        # emitted (#95): render → print → flush → persist. Persisting first
+        # would collapse threads the agent never saw if this process dies
+        # mid-emission. Save failure fails open — next cycle renders full.
+        sys.stdout.flush()
+        try:
+            save_render_baseline(pr, args.author, current_render_fps)
+        except OSError as exc:
+            print(f"warning: could not save render baseline: {exc}", file=sys.stderr)
     return 0
 
 
