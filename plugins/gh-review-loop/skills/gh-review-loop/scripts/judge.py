@@ -256,8 +256,28 @@ PROFILE_SOURCES = frozenset({"confirmed", "customized", "skipped"})
 
 
 def get_profile(repo: str) -> dict[str, t.Any] | None:
-    """Return the saved verification profile for ``repo`` (``owner/repo``), or None."""
-    return load_preferences().get("profiles", {}).get(repo)
+    """Return the saved verification profile for ``repo`` (``owner/repo``), or None.
+
+    New writes use GitHub's canonical repository spelling, but profiles saved by
+    older versions may still be keyed with caller-supplied casing. Prefer the
+    exact key and then fall back case-insensitively so an upgrade never turns an
+    existing profile into a false first run.
+    """
+    profiles = load_preferences().get("profiles", {})
+    if not isinstance(profiles, dict):
+        return None
+    exact = profiles.get(repo)
+    if isinstance(exact, dict):
+        return exact
+    repo_key = repo.casefold()
+    for saved_repo, profile in profiles.items():
+        if (
+            isinstance(saved_repo, str)
+            and saved_repo.casefold() == repo_key
+            and isinstance(profile, dict)
+        ):
+            return profile
+    return None
 
 
 def save_profile(

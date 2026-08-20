@@ -116,6 +116,10 @@ def pattern_history_for_pr(
     the append-only runs.jsonl lets convergence detection survive across resumes:
     a pattern recorded in an earlier run of this same repo+PR still counts as
     "seen before". Returns ``{"seen": set, "swept": set}``; empty on any error.
+
+    Repository keys are compared case-insensitively for backward compatibility:
+    older versions stored the caller's spelling, while new writes use GitHub's
+    canonical ``owner/repo`` casing.
     """
     seen: set[str] = set()
     swept: set[str] = set()
@@ -123,8 +127,10 @@ def pattern_history_for_pr(
         records, _ = load_records(path)
     except (OSError, ValueError):
         return {"seen": seen, "swept": swept}
+    repo_key = repo.casefold()
     for rec in records:
-        if rec.get("repo") != repo:
+        recorded_repo = rec.get("repo")
+        if not isinstance(recorded_repo, str) or recorded_repo.casefold() != repo_key:
             continue
         try:
             if int(rec.get("pr") or 0) != pr_number:
