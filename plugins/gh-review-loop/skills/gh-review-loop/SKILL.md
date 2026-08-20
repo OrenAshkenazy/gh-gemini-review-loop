@@ -85,7 +85,7 @@ Each repo can have a code-derived **verification profile** — the checks the ve
 **First run** (no profile for the repo yet) — after fetching findings, **before the first fix attempt** (a `PreToolUse` hook blocks edits until a profile decision is saved):
 
 1. Run `detect_profile.py <repo_root>` → `{stack, confidence, reasons, candidate_checks, presets}`. `presets` is the code-built option list — do not hand-roll the menu.
-2. `stack == "unknown"` → do not prompt or persist; use ad-hoc verification.
+2. `stack == "unknown"` → do not prompt, but still **record the decision**: `judge.save_profile(repo, source="skipped", detected_stack="unknown")`, then use ad-hoc verification. The marker is what distinguishes "decided: ad hoc" from "not decided yet" — without it the edit gate never clears and every later fetch re-reports a first run.
 3. Reconcile against repo docs (`CLAUDE.md`, `CONTRIBUTING`, `README`). If docs pin a non-standard invocation, surface it as a note beside the menu; never auto-persist an absolute path from prose.
 4. Prompt once, using each `presets[i].label` verbatim as an option.
 5. Persist via `judge.save_profile(...)`: `customize == true` → free-form customize path, `source="customized"`; otherwise persist `preset["checks"]` with `source=preset["source"]`. Every persisted check is `required: true`.

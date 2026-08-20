@@ -501,3 +501,54 @@ class TestMergedHumanBlocks:
         monkeypatch.setattr(fgt, "load_profile_for_repo", boom)
         out = run_fetch(monkeypatch, capsys).out
         assert "Please fix this." in out  # fetch itself unaffected
+
+    def test_regeneration_commands_are_runnable(self, monkeypatch, capsys):
+        # The scripts directory is not on PATH under a plugin install, so a
+        # bare filename would print a command that cannot be executed.
+        out = run_fetch(monkeypatch, capsys).out
+        for line in out.splitlines():
+            if "--profile-intro" in line or "--planned-verification" in line:
+                assert line.strip().startswith('python3 "')
+                assert line.strip().split('"')[1].endswith("fetch_gemini_threads.py")
+
+
+# ---------------------------------------------------------------------------
+# #107 — profile/metrics store keys use the repository's canonical spelling
+# ---------------------------------------------------------------------------
+
+class TestCanonicalRepoKey:
+    def test_prefers_base_repository_name(self):
+        pr = fgt.PullRequest(owner="oren", repo="GH-Review-Loop", number=7)
+        pull_request = {"baseRepository": {"nameWithOwner": "OrenAshkenazy/gh-review-loop"}}
+        assert fgt.canonical_repo_full(pull_request, pr) == "OrenAshkenazy/gh-review-loop"
+
+    def test_falls_back_to_input_spelling_when_absent(self):
+        pr = fgt.PullRequest(owner="o", repo="r", number=7)
+        for pull_request in ({}, {"baseRepository": None}, {"baseRepository": {}}):
+            assert fgt.canonical_repo_full(pull_request, pr) == "o/r"
+
+    def test_fetch_looks_up_the_profile_under_the_canonical_key(
+        self, monkeypatch, capsys
+    ):
+        # A noncanonical --pr spelling still resolves the PR, so a caller-spelled
+        # key would miss an existing profile and report a first run.
+        seen = []
+        pr = fgt.PullRequest(owner="OREN", repo="GH-Review-Loop", number=7)
+        pull_request = {
+            "baseRepository": {"nameWithOwner": "OrenAshkenazy/gh-review-loop"},
+            "reviewThreads": {"nodes": [graphql_thread()]},
+            "reviews": {"nodes": []},
+            "comments": {"nodes": []},
+        }
+        monkeypatch.setattr(fgt, "resolve_pr", lambda spec: pr)
+        monkeypatch.setattr(fgt, "fetch_threads", lambda resolved: pull_request)
+        monkeypatch.setattr(fgt, "gh_authenticated_login", lambda: "agent")
+        monkeypatch.setattr(
+            fgt,
+            "load_profile_for_repo",
+            lambda repo: seen.append(repo) or FAKE_PROFILE,
+        )
+        monkeypatch.setattr(sys, "argv", ["fetch_gemini_threads.py", "--judge-mode", "off"])
+        assert fgt.main() == 0
+        capsys.readouterr()
+        assert seen == ["OrenAshkenazy/gh-review-loop"]

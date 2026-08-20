@@ -1749,6 +1749,23 @@ def repo_root(cwd: str | None = None) -> Path | None:
     return Path(top) if top else None
 
 
+def canonical_repo_full(pull_request: dict[str, Any], pr: PullRequest) -> str:
+    """``owner/repo`` as GitHub spells it, for use as an exact-match store key.
+
+    ``--pr OWNER/REPO#NUMBER`` keeps whatever casing the caller typed, and the
+    GraphQL lookup is case-insensitive, so the fetch succeeds. Verification
+    profiles and run metrics are keyed by an *exact* string, though: a
+    noncanonical spelling silently misses the existing entry and reads as "no
+    profile saved" / "no prior runs" (#107). The API's own ``nameWithOwner`` is
+    the authority; fall back to the input spelling only when it is absent.
+    """
+    base = pull_request.get("baseRepository")
+    name = base.get("nameWithOwner") if isinstance(base, dict) else None
+    if isinstance(name, str) and name:
+        return name
+    return f"{pr.owner}/{pr.repo}"
+
+
 def _canonical_pr_repositories(pull_request: dict[str, Any]) -> set[str]:
     repositories = set()
     for key in ("baseRepository", "headRepository"):
@@ -3707,11 +3724,15 @@ def main() -> int:
             # Cross-run history: --record-run clears the live accumulator, so a
             # resumed loop folds in pattern signatures recorded by prior runs of
             # this PR (runs.jsonl) — otherwise recurrence resets to 0 on resume.
-            history = metrics.pattern_history_for_pr(f"{pr.owner}/{pr.repo}", pr.number)
+            # Canonical on both sides: records are matched by exact repo
+            # string, so the read key and the write key must agree regardless
+            # of how the caller spelled --pr.
+            metrics_repo = canonical_repo_full(pull_request, pr)
+            history = metrics.pattern_history_for_pr(metrics_repo, pr.number)
             convergence = build_convergence(pr, clusters, history)
             conv_stats = convergence["stats"]
             record = metrics.build_record(
-                repo=f"{pr.owner}/{pr.repo}",
+                repo=metrics_repo,
                 pr=pr.number,
                 provider=args.author,
                 fixed_count=args.fixed_count,
@@ -3932,14 +3953,16 @@ def main() -> int:
     # the regenerate notice for that path and keep the standalone flags as the
     # post-decision source. A `skipped` or malformed profile is *not* this
     # case: a decision exists, and its fallback wording is the final answer.
-    profile_repo = f"{pr.owner}/{pr.repo}"
+    profile_repo = canonical_repo_full(pull_request, pr)
     try:
         saved_profile = load_profile_for_repo(profile_repo)
     except Exception:  # pragma: no cover - load_profile_for_repo already swallows
         saved_profile = None
     profile_blocks_provisional = saved_profile is None
     if profile_blocks_provisional:
-        profile_intro_block = metrics.format_pending_profile_block(profile_repo)
+        profile_intro_block = metrics.format_pending_profile_block(
+            profile_repo, script=str(Path(__file__).resolve())
+        )
         planned_verification_block = ""
     else:
         profile_intro_block = metrics.format_profile_intro_block(saved_profile, profile_repo)
