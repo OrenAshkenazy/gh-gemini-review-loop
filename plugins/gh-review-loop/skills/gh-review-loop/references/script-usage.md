@@ -52,8 +52,12 @@ python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/request_rereview.py" \
 
 # Render deterministic human-readable formatter blocks for relay.
 # NOTE: the default fetch already appends both blocks to its output (and JSON
-# fetches carry them as humanBlocks.profileIntro/.plannedVerification) — these
-# standalone forms are for out-of-band use only, not part of the normal cycle.
+# fetches carry them as humanBlocks.profileIntro/.plannedVerification), so on a
+# repo that already has a profile these standalone forms are out-of-band only.
+# They ARE part of the first-run cycle: with no profile saved, the fetch emits
+# a regenerate notice instead of the blocks (humanBlocks.profileBlocksProvisional
+# is true, plannedVerification is empty), because the profile decision lands
+# after that fetch. Save the profile, then run these two to get the real blocks.
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
     --profile-intro --repo OWNER/REPO
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \

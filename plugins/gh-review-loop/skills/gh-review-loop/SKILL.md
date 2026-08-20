@@ -89,10 +89,11 @@ Each repo can have a code-derived **verification profile** — the checks the ve
 3. Reconcile against repo docs (`CLAUDE.md`, `CONTRIBUTING`, `README`). If docs pin a non-standard invocation, surface it as a note beside the menu; never auto-persist an absolute path from prose.
 4. Prompt once, using each `presets[i].label` verbatim as an option.
 5. Persist via `judge.save_profile(...)`: `customize == true` → free-form customize path, `source="customized"`; otherwise persist `preset["checks"]` with `source=preset["source"]`. Every persisted check is `required: true`.
+6. The fetch that preceded this decision could not describe a profile that did not exist, so it emitted a regenerate notice instead of the usual blocks (`humanBlocks.profileBlocksProvisional: true`, empty `plannedVerification`). Do not relay that notice as the intro — regenerate both blocks from the saved profile with `--profile-intro --repo <owner/repo>` and `--planned-verification --repo <owner/repo>`, and relay those.
 
 **Subsequent runs** — a profile (even `skipped`) exists → no prompt. The fetch output ends with the profile intro and planned-verification blocks — relay the intro from there (no separate `--profile-intro` call), then for `confirmed`/`customized` run `run_profile.py <owner/repo> <repo_root>`; feed its `verification` field into `--verification` and its JSON into `--verification-details`. On `skipped`/unknown, relay the fallback intro and use ad-hoc narrowest-meaningful checks.
 
-**Gate semantics.** Verify fails iff any `required` check fails or times out. Before running checks, relay the planned-verification block from the fetch output (standalone `--planned-verification` exists only for out-of-band use). Route all verification through `run_profile.py` when a profile is confirmed — never call the test runner directly; the runner times checks, captures structured output, and sets the exit code.
+**Gate semantics.** Verify fails iff any `required` check fails or times out. Before running checks, relay the planned-verification block from the fetch output — except on a first run, where the fetch predates the profile and carries no suite, so regenerate it with `--planned-verification --repo <owner/repo>` after saving. Route all verification through `run_profile.py` when a profile is confirmed — never call the test runner directly; the runner times checks, captures structured output, and sets the exit code.
 
 **Customizing / un-skipping.** `skipped` suppresses automatic prompts only. Explicit user intent overrides: "add mypy to the checks" → `save_profile(..., source="customized")`; "set up a verification profile" → re-run detect → menu → save even over a `skipped` marker.
 
@@ -179,7 +180,7 @@ At the cap, still run cleanup, terminal classification, metrics recording, and t
 7. **Acknowledge.** Summarize actionable findings grouped by file/behavior. None → report clean and stop. **Profile gate:** first run for the repo → make the profile decision NOW, before any edit (see Verification Profile). Then relay the profile intro block from the fetch output.
 8. **Classify.** Actionable vs informational/duplicate/conflicting; explanation requests get a reply draft, not a forced edit; conflicts or regression risk → stop and surface the tradeoff.
 9. **Implement fixes.** Scoped to feedback; read before editing; each change traceable to a feedback cluster. Sweep multi-site patterns per Pattern → Sweep → Converge.
-10. **Verify.** Relay the planned-verification block (already in the fetch output), run `run_profile.py`, feed results into `--verification`/`--verification-details`. No profile → narrowest meaningful checks. Checks can't run → report why.
+10. **Verify.** Relay the planned-verification block (already in the fetch output; on a first run, regenerate it from the just-saved profile instead), run `run_profile.py`, feed results into `--verification`/`--verification-details`. No profile → narrowest meaningful checks. Checks can't run → report why.
 11. **Commit, push, re-review, wait, record.**
     - Commit with a clear message (e.g. `fix: address AI reviewer findings`).
     - Non-terminal cycle: run `--cycle-summary` (delivers the full receipt to the PR comment), relay its `[loop]` pointer line, then push.
@@ -229,7 +230,7 @@ Default fetch (resolves stale threads, prints current feedback):
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" [--pr <URL>]
 ```
 
-**Delta mode.** Threads whose rendered block is unchanged since the previous cycle collapse to one line (anchor, severity, URL) — that is not missing data; the full body was already shown last cycle. Any change (new reply, edited body, moved anchor) renders full automatically. On a resumed session or after context compaction, run one fetch with `--full` to re-establish the baseline (see `references/resume-and-recovery.md`). The fetch output also ends with the profile intro + planned-verification blocks — relay them from there; no separate calls needed.
+**Delta mode.** Threads whose rendered block is unchanged since the previous cycle collapse to one line (anchor, severity, URL) — that is not missing data; the full body was already shown last cycle. Any change (new reply, edited body, moved anchor) renders full automatically. On a resumed session or after context compaction, run one fetch with `--full` to re-establish the baseline (see `references/resume-and-recovery.md`). The fetch output also ends with the profile intro + planned-verification blocks — relay them from there; no separate calls needed, except on a first run, where the fetch predates the profile decision and emits a regenerate notice instead.
 
 The full option catalog (waits, discovery, read-only/dry-run, JSON, history) is in `references/script-usage.md`. The script warns on stderr when a GraphQL page limit is hit — older items may be missing.
 

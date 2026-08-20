@@ -3923,15 +3923,27 @@ def main() -> int:
 
     # Profile blocks ride along with the fetch (#99) so the agent doesn't pay
     # two extra script invocations per cycle for --profile-intro and
-    # --planned-verification. The formatters handle absent/skipped profiles
-    # with the correct fallback wording.
+    # --planned-verification.
+    #
+    # They can only describe a profile that already exists. On a first run the
+    # decision happens after this fetch, so blocks built here would say "none
+    # saved / ad hoc" while the agent goes on to save a profile and run it —
+    # the relayed text would contradict the suite actually used (#107). Emit
+    # the regenerate notice for that path and keep the standalone flags as the
+    # post-decision source. A `skipped` or malformed profile is *not* this
+    # case: a decision exists, and its fallback wording is the final answer.
     profile_repo = f"{pr.owner}/{pr.repo}"
     try:
         saved_profile = load_profile_for_repo(profile_repo)
     except Exception:  # pragma: no cover - load_profile_for_repo already swallows
         saved_profile = None
-    profile_intro_block = metrics.format_profile_intro_block(saved_profile, profile_repo)
-    planned_verification_block = metrics.format_planned_verification_block(saved_profile)
+    profile_blocks_provisional = saved_profile is None
+    if profile_blocks_provisional:
+        profile_intro_block = metrics.format_pending_profile_block(profile_repo)
+        planned_verification_block = ""
+    else:
+        profile_intro_block = metrics.format_profile_intro_block(saved_profile, profile_repo)
+        planned_verification_block = metrics.format_planned_verification_block(saved_profile)
 
     if args.format == "json":
         # The machine path stays lossless: full threads, annotated with the
@@ -3978,7 +3990,11 @@ def main() -> int:
                     "judgeResults": judge_results,
                     "humanBlocks": {
                         "profileIntro": profile_intro_block,
+                        # Empty (not a fallback string) while provisional, so
+                        # automation cannot relay a suite that has not been
+                        # chosen yet.
                         "plannedVerification": planned_verification_block,
+                        "profileBlocksProvisional": profile_blocks_provisional,
                     },
                 },
                 indent=2,
@@ -4030,7 +4046,8 @@ def main() -> int:
                 )
             )
         print(color_loop_block(profile_intro_block, enabled=color_enabled))
-        print(color_loop_block(planned_verification_block, enabled=color_enabled))
+        if planned_verification_block:
+            print(color_loop_block(planned_verification_block, enabled=color_enabled))
         # Commit the delta baseline ONLY after the rendered output has been
         # emitted (#95): render → print → flush → persist. Persisting first
         # would collapse threads the agent never saw if this process dies

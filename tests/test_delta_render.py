@@ -442,12 +442,22 @@ FAKE_PROFILE = {
 
 
 class TestMergedHumanBlocks:
-    def test_markdown_fetch_appends_fallback_blocks_without_profile(
+    def test_markdown_fetch_emits_regenerate_notice_without_profile(
+        self, monkeypatch, capsys
+    ):
+        # First run: the profile is decided after this fetch, so the carried
+        # blocks must not present a suite the agent is about to replace (#107).
+        out = run_fetch(monkeypatch, capsys).out
+        assert "this is a first run" in out
+        assert "--profile-intro" in out
+        assert "--planned-verification" in out
+
+    def test_markdown_fetch_omits_planned_suite_without_profile(
         self, monkeypatch, capsys
     ):
         out = run_fetch(monkeypatch, capsys).out
-        assert "[loop] Verification profile: none saved" in out
-        assert "[loop] Verification suite" in out
+        assert "[loop] Verification suite" not in out
+        assert "use ad hoc verification" not in out
 
     def test_markdown_fetch_appends_saved_profile_blocks(self, monkeypatch, capsys):
         monkeypatch.setattr(fgt, "load_profile_for_repo", lambda repo: FAKE_PROFILE)
@@ -462,6 +472,27 @@ class TestMergedHumanBlocks:
         blocks = payload["humanBlocks"]
         assert "Repo-aware verification profile" in blocks["profileIntro"]
         assert "Verification suite" in blocks["plannedVerification"]
+        assert blocks["profileBlocksProvisional"] is False
+
+    def test_json_fetch_flags_provisional_blocks_without_profile(
+        self, monkeypatch, capsys
+    ):
+        payload = json.loads(run_fetch(monkeypatch, capsys, "--format", "json").out)
+        blocks = payload["humanBlocks"]
+        assert blocks["profileBlocksProvisional"] is True
+        # Empty, not a fallback suite: automation must not relay a suite that
+        # has not been chosen yet.
+        assert blocks["plannedVerification"] == ""
+        assert "this is a first run" in blocks["profileIntro"]
+
+    def test_skipped_profile_keeps_its_fallback_wording(self, monkeypatch, capsys):
+        # A `skipped` profile IS a decision — its fallback text is the final
+        # answer, not a placeholder to regenerate.
+        monkeypatch.setattr(fgt, "load_profile_for_repo", lambda repo: {"source": "skipped"})
+        payload = json.loads(run_fetch(monkeypatch, capsys, "--format", "json").out)
+        blocks = payload["humanBlocks"]
+        assert blocks["profileBlocksProvisional"] is False
+        assert "skipped for this repo" in blocks["profileIntro"]
 
     def test_profile_lookup_failure_does_not_break_fetch(self, monkeypatch, capsys):
         def boom(repo):
