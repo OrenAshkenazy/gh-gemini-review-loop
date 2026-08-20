@@ -381,6 +381,33 @@ def format_planned_verification_block(profile: Any) -> str:
     return "\n".join(lines)
 
 
+def format_pending_profile_block(repo: str, *, script: str) -> str:
+    """First-run notice standing in for the fetch-carried profile blocks (#107).
+
+    On a first run the profile is decided *after* this fetch, so an intro or
+    planned suite rendered now would describe "none saved / ad hoc" while the
+    agent is about to save a real profile and run it. Rather than ship a block
+    that is stale by the time it is relayed, say so and name the regeneration
+    commands.
+
+    ``script`` is the caller's own resolved path. The scripts directory is not
+    on ``PATH`` under a plugin install, so a bare filename here would print a
+    command that fails with ``command not found`` — quote the path the caller
+    was actually invoked from.
+    """
+    invocation = f'python3 "{script}"'
+    return (
+        "[loop] Verification profile: none saved for "
+        f"{repo} yet — this is a first run.\n"
+        "Decide the profile now (detect_profile.py → menu → save_profile), "
+        "before the first fix.\n"
+        "These blocks render from the saved profile, so regenerate them after "
+        "saving instead of relaying this one:\n"
+        f"  {invocation} --repo {repo} --profile-intro\n"
+        f"  {invocation} --repo {repo} --planned-verification"
+    )
+
+
 def format_judge_skip(reason: str) -> str:
     reason = reason.strip() if isinstance(reason, str) else ""
     return f"[loop] judge eval skipped: {reason or 'unknown reason'}"

@@ -170,7 +170,14 @@ def select_stats_records(
     records: list[dict[str, Any]], *, repo: str, window: int, all_repos: bool
 ) -> list[dict[str, Any]]:
     if not all_repos:
-        records = [r for r in records if r.get("repo") == repo]
+        repo_key = repo.casefold()
+        records = [
+            record
+            for record in records
+            if isinstance(record.get("repo"), str)
+            and record["repo"].casefold() == repo_key
+        ]
+
     return records[-window:] if window > 0 else records
 
 
@@ -1747,6 +1754,23 @@ def repo_root(cwd: str | None = None) -> Path | None:
     """
     top = _git_stdout(["rev-parse", "--show-toplevel"], cwd=cwd)
     return Path(top) if top else None
+
+
+def canonical_repo_full(pull_request: dict[str, Any], pr: PullRequest) -> str:
+    """``owner/repo`` as GitHub spells it, for use as an exact-match store key.
+
+    ``--pr OWNER/REPO#NUMBER`` keeps whatever casing the caller typed, and the
+    GraphQL lookup is case-insensitive, so the fetch succeeds. Verification
+    profiles and run metrics are keyed by an *exact* string, though: a
+    noncanonical spelling silently misses the existing entry and reads as "no
+    profile saved" / "no prior runs" (#107). The API's own ``nameWithOwner`` is
+    the authority; fall back to the input spelling only when it is absent.
+    """
+    base = pull_request.get("baseRepository")
+    name = base.get("nameWithOwner") if isinstance(base, dict) else None
+    if isinstance(name, str) and name:
+        return name
+    return f"{pr.owner}/{pr.repo}"
 
 
 def _canonical_pr_repositories(pull_request: dict[str, Any]) -> set[str]:
@@ -3707,11 +3731,15 @@ def main() -> int:
             # Cross-run history: --record-run clears the live accumulator, so a
             # resumed loop folds in pattern signatures recorded by prior runs of
             # this PR (runs.jsonl) — otherwise recurrence resets to 0 on resume.
-            history = metrics.pattern_history_for_pr(f"{pr.owner}/{pr.repo}", pr.number)
+            # Canonical on both sides: records are matched by exact repo
+            # string, so the read key and the write key must agree regardless
+            # of how the caller spelled --pr.
+            metrics_repo = canonical_repo_full(pull_request, pr)
+            history = metrics.pattern_history_for_pr(metrics_repo, pr.number)
             convergence = build_convergence(pr, clusters, history)
             conv_stats = convergence["stats"]
             record = metrics.build_record(
-                repo=f"{pr.owner}/{pr.repo}",
+                repo=metrics_repo,
                 pr=pr.number,
                 provider=args.author,
                 fixed_count=args.fixed_count,
@@ -3921,6 +3949,32 @@ def main() -> int:
             jr = judge_results.get(thread_id) if judge_results else None
             current_render_fps[thread_id] = thread_render_fingerprint(thread, jr)
 
+    # Profile blocks ride along with the fetch (#99) so the agent doesn't pay
+    # two extra script invocations per cycle for --profile-intro and
+    # --planned-verification.
+    #
+    # They can only describe a profile that already exists. On a first run the
+    # decision happens after this fetch, so blocks built here would say "none
+    # saved / ad hoc" while the agent goes on to save a profile and run it —
+    # the relayed text would contradict the suite actually used (#107). Emit
+    # the regenerate notice for that path and keep the standalone flags as the
+    # post-decision source. A `skipped` or malformed profile is *not* this
+    # case: a decision exists, and its fallback wording is the final answer.
+    profile_repo = canonical_repo_full(pull_request, pr)
+    try:
+        saved_profile = load_profile_for_repo(profile_repo)
+    except Exception:  # pragma: no cover - load_profile_for_repo already swallows
+        saved_profile = None
+    profile_blocks_provisional = saved_profile is None
+    if profile_blocks_provisional:
+        profile_intro_block = metrics.format_pending_profile_block(
+            profile_repo, script=str(Path(__file__).resolve())
+        )
+        planned_verification_block = ""
+    else:
+        profile_intro_block = metrics.format_profile_intro_block(saved_profile, profile_repo)
+        planned_verification_block = metrics.format_planned_verification_block(saved_profile)
+
     if args.format == "json":
         # The machine path stays lossless: full threads, annotated with the
         # delta bit. It never commits the baseline — only markdown emission
@@ -3964,6 +4018,14 @@ def main() -> int:
                         "judge": judge_status,
                     },
                     "judgeResults": judge_results,
+                    "humanBlocks": {
+                        "profileIntro": profile_intro_block,
+                        # Empty (not a fallback string) while provisional, so
+                        # automation cannot relay a suite that has not been
+                        # chosen yet.
+                        "plannedVerification": planned_verification_block,
+                        "profileBlocksProvisional": profile_blocks_provisional,
+                    },
                 },
                 indent=2,
                 sort_keys=True,
@@ -4013,6 +4075,9 @@ def main() -> int:
                     enabled=color_enabled,
                 )
             )
+        print(color_loop_block(profile_intro_block, enabled=color_enabled))
+        if planned_verification_block:
+            print(color_loop_block(planned_verification_block, enabled=color_enabled))
         # Commit the delta baseline ONLY after the rendered output has been
         # emitted (#95): render → print → flush → persist. Persisting first
         # would collapse threads the agent never saw if this process dies
