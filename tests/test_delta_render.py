@@ -215,6 +215,29 @@ class TestRenderBaseline:
         assert fgt.read_render_baseline(PR, BOT) == {"T1": "fp1"}
         assert fgt.read_render_baseline(PR, "chatgpt-codex-connector") == {"T1": "other"}
 
+    def test_terminal_run_completion_clears_the_baseline(self):
+        # A later session has never seen the bodies these fingerprints stand
+        # for, so a baseline surviving --record-run would collapse unseen
+        # threads to URL-only stubs on that session's first fetch.
+        fgt.update_run_tracking(PR, [("T1", "a.py")])
+        fgt.save_render_baseline(PR, BOT, {"T1": "fp1"})
+        fgt.save_render_baseline(PR, "chatgpt-codex-connector", {"T1": "other"})
+
+        fgt.clear_run_tracking(PR)
+
+        assert fgt.read_render_baseline(PR, BOT) == {}
+        assert fgt.read_render_baseline(PR, "chatgpt-codex-connector") == {}
+
+    def test_clearing_one_pr_leaves_another_pr_baseline_intact(self):
+        other = fgt.PullRequest(owner="o", repo="r", number=8)
+        fgt.save_render_baseline(PR, BOT, {"T1": "fp1"})
+        fgt.save_render_baseline(other, BOT, {"T2": "fp2"})
+
+        fgt.clear_run_tracking(PR)
+
+        assert fgt.read_render_baseline(PR, BOT) == {}
+        assert fgt.read_render_baseline(other, BOT) == {"T2": "fp2"}
+
 
 # ---------------------------------------------------------------------------
 # render_markdown delta collapse

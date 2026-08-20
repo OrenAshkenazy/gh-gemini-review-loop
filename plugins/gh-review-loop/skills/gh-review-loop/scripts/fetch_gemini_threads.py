@@ -1320,11 +1320,23 @@ def read_run_tracking(pr: PullRequest) -> dict[str, Any]:
 
 
 def clear_run_tracking(pr: PullRequest) -> None:
+    """Tear down the run accumulator and the delta baseline for this PR.
+
+    The render baseline (#95) is only meaningful while the full render it
+    fingerprints is still in the agent's context. Terminal completion ends that
+    context, so leaving the baseline behind would collapse threads a *later*
+    session has never seen down to URL-only stubs on its very first fetch.
+    Clearing both together makes the next run start from a full render.
+    """
     state = load_sticky_state()
     key = _state_key(pr)
-    if key in state and "run" in state[key]:
-        del state[key]["run"]
-        save_sticky_state(state)
+    entry = state.get(key)
+    if isinstance(entry, dict):
+        stale = [field for field in ("run", "render_baseline") if field in entry]
+        for field in stale:
+            del entry[field]
+        if stale:
+            save_sticky_state(state)
     # Drop the sentinel only when no loop remains anywhere — another repo's
     # concurrent loop still needs the hooks live.
     if not any_active_run():
