@@ -170,7 +170,14 @@ def select_stats_records(
     records: list[dict[str, Any]], *, repo: str, window: int, all_repos: bool
 ) -> list[dict[str, Any]]:
     if not all_repos:
-        records = [r for r in records if r.get("repo") == repo]
+        repo_key = repo.casefold()
+        records = [
+            record
+            for record in records
+            if isinstance(record.get("repo"), str)
+            and record["repo"].casefold() == repo_key
+        ]
+
     return records[-window:] if window > 0 else records
 
 
