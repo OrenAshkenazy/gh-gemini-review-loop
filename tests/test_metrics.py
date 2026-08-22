@@ -954,6 +954,22 @@ def test_pattern_history_unions_signatures_and_swept_for_matching_pr(tmp_path):
     assert "other-pattern" not in hist["seen"]
 
 
+def test_pattern_history_matches_repo_case_insensitively(tmp_path):
+    # Records written before the key was canonicalized carry the caller's
+    # casing; an exact compare would drop that history and reset recurrence.
+    log = tmp_path / "runs.jsonl"
+    _write_run(log, "Oren/GH-Review-Loop", 46, ["type-guard"], ["type-guard"])
+    hist = pattern_history_for_pr("oren/gh-review-loop", 46, path=log)
+    assert hist["seen"] == {"type-guard"}
+    assert hist["swept"] == {"type-guard"}
+
+
+def test_pattern_history_still_excludes_a_different_repo(tmp_path):
+    log = tmp_path / "runs.jsonl"
+    _write_run(log, "other/repo", 46, ["type-guard"], [])
+    assert pattern_history_for_pr("o/r", 46, path=log) == {"seen": set(), "swept": set()}
+
+
 def test_pattern_history_empty_when_no_log(tmp_path):
     hist = pattern_history_for_pr("o/r", 46, path=tmp_path / "missing.jsonl")
     assert hist == {"seen": set(), "swept": set()}

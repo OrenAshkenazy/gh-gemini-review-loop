@@ -123,8 +123,14 @@ def pattern_history_for_pr(
         records, _ = load_records(path)
     except (OSError, ValueError):
         return {"seen": seen, "swept": swept}
+    # Case-insensitive, like the stats selector: repository names are
+    # case-insensitive on GitHub, and records written before the key was
+    # canonicalized carry whatever casing the caller typed. An exact compare
+    # would silently drop that history and reset recurrence to 0.
+    repo_key = repo.casefold() if isinstance(repo, str) else repo
     for rec in records:
-        if rec.get("repo") != repo:
+        rec_repo = rec.get("repo")
+        if not isinstance(rec_repo, str) or rec_repo.casefold() != repo_key:
             continue
         try:
             if int(rec.get("pr") or 0) != pr_number:
