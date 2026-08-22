@@ -502,6 +502,39 @@ class TestMergedHumanBlocks:
         out = run_fetch(monkeypatch, capsys).out
         assert "Please fix this." in out  # fetch itself unaffected
 
+    def test_lookup_failure_is_not_reported_as_a_first_run(self, monkeypatch, capsys):
+        # A profile may exist and merely be unreadable; sending the agent into
+        # detect → save would overwrite it.
+        def boom(repo):
+            raise RuntimeError("prefs unreadable")
+
+        monkeypatch.setattr(fgt, "load_profile_for_repo", boom)
+        payload = json.loads(run_fetch(monkeypatch, capsys, "--format", "json").out)
+        blocks = payload["humanBlocks"]
+        assert blocks["profileBlocksProvisional"] is False
+        assert "could not be read" in blocks["profileIntro"]
+        assert "NOT a first run" in blocks["profileIntro"]
+        assert "ad hoc" in blocks["plannedVerification"]
+
+    def test_clean_fetch_does_not_ask_for_a_profile(self, monkeypatch, capsys):
+        # Zero actionable threads means no edit, so nothing needs to clear the
+        # profile gate — prompting would interrupt a clean stop.
+        payload = json.loads(
+            run_fetch(
+                monkeypatch,
+                capsys,
+                "--format",
+                "json",
+                "--min-severity",
+                "critical",
+                "--drop-unknown-severity",
+            ).out
+        )
+        assert payload["threads"] == []
+        blocks = payload["humanBlocks"]
+        assert blocks["profileBlocksProvisional"] is False
+        assert "this is a first run" not in blocks["profileIntro"]
+
     def test_regeneration_commands_are_runnable(self, monkeypatch, capsys):
         # The scripts directory is not on PATH under a plugin install, so a
         # bare filename would print a command that cannot be executed.

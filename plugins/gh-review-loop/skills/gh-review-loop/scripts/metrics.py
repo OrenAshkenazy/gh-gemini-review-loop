@@ -387,6 +387,22 @@ def format_planned_verification_block(profile: Any) -> str:
     return "\n".join(lines)
 
 
+def format_profile_lookup_error_block(repo: str) -> str:
+    """The profile could not be read — which is not the same as absent (#107).
+
+    Absence means "decide one now"; a failed read means "we cannot tell". Say
+    so and fall back to ad hoc, so the agent does not detect-and-save over a
+    profile that exists but was momentarily unreadable.
+    """
+    return (
+        f"[loop] Verification profile: could not be read for {repo} — "
+        "using ad hoc verification for this cycle.\n"
+        "This is NOT a first run: a saved profile may exist. Do not run "
+        "detect_profile.py / save_profile here, or it would overwrite it. "
+        "Check the preferences file, then re-run."
+    )
+
+
 def format_pending_profile_block(repo: str, *, script: str) -> str:
     """First-run notice standing in for the fetch-carried profile blocks (#107).
 

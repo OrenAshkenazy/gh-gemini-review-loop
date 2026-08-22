@@ -3960,13 +3960,26 @@ def main() -> int:
     # the regenerate notice for that path and keep the standalone flags as the
     # post-decision source. A `skipped` or malformed profile is *not* this
     # case: a decision exists, and its fallback wording is the final answer.
+    # Two states must NOT be read as "first run", because both would send the
+    # agent into detect → menu → save when it should not go there:
+    #   * lookup failed (unreadable prefs, judge import error) — a profile may
+    #     well exist; re-saving would overwrite it. Fail open to ad hoc.
+    #   * nothing actionable to fix — no edit will happen, so nothing has to
+    #     clear the profile gate, and prompting would interrupt a clean stop.
     profile_repo = canonical_repo_full(pull_request, pr)
+    profile_lookup_failed = False
     try:
         saved_profile = load_profile_for_repo(profile_repo)
     except Exception:  # pragma: no cover - load_profile_for_repo already swallows
         saved_profile = None
-    profile_blocks_provisional = saved_profile is None
-    if profile_blocks_provisional:
+        profile_lookup_failed = True
+    profile_blocks_provisional = (
+        saved_profile is None and not profile_lookup_failed and bool(threads)
+    )
+    if profile_lookup_failed:
+        profile_intro_block = metrics.format_profile_lookup_error_block(profile_repo)
+        planned_verification_block = metrics.format_planned_verification_block(None)
+    elif profile_blocks_provisional:
         profile_intro_block = metrics.format_pending_profile_block(
             profile_repo, script=str(Path(__file__).resolve())
         )
