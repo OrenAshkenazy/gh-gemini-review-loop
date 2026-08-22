@@ -13,8 +13,10 @@ python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py
 
 # Full render, ignoring the delta baseline. Use once after a resumed session
 # or context compaction to re-establish the baseline; diff hunks keep the
-# standard truncation cap.
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --full
+# standard truncation cap. Pass the selector the loop was started with —
+# without --pr this re-baselines the checkout's current-branch PR instead.
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
+    --pr "$PR_URL" --full
 
 # Wait for configured reviewer activity to appear (cycle 1 / initial review).
 # No --after → returns as soon as activity is present; it does NOT wait for a

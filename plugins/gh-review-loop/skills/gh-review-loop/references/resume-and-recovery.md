@@ -34,7 +34,11 @@ stubs would point at content you can no longer see. Re-establish the baseline
 with a single full fetch:
 
 ```bash
-python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" --full
+# Keep the PR selector the loop was started with. Omitting --pr falls back to
+# the checkout's current-branch PR, which re-baselines — and runs the default
+# stale-thread cleanup against — the wrong PR, or fails when there is none.
+python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
+    --pr "$PR_URL" --full
 ```
 
 `--full` renders every thread completely (diff hunks keep the standard
