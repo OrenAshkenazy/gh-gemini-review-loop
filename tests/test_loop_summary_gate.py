@@ -152,6 +152,24 @@ class TestStaleSentinelReap:
         assert summary_gate_main() == 0
         assert not sentinel_path().exists()
 
+    def test_stale_sentinel_reaped_on_non_push_command(self, tmp_path, monkeypatch):
+        # PR #110 review finding: the reap must run BEFORE the git-push filter,
+        # or ordinary Bash calls keep spawning this gate off a dead loop's
+        # sentinel until a push happens.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        touch_sentinel()
+        old = time.time() - SENTINEL_TTL_SECONDS - 60
+        os.utime(sentinel_path(), (old, old))
+        monkeypatch.setattr(
+            "sys.stdin",
+            io.StringIO(json.dumps(
+                {"tool_name": "Bash", "tool_input": {"command": "ls -la"}}
+            )),
+        )
+
+        assert summary_gate_main() == 0
+        assert not sentinel_path().exists()
+
 
 class TestBlockMessage:
     def test_block_is_one_instruction_without_snapshot(

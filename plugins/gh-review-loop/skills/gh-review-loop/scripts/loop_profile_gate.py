@@ -59,6 +59,13 @@ BLOCK_MESSAGE = (
 
 
 def main() -> int:
+    # The shell guard only checks the sentinel exists (#103); a stale one
+    # means a crashed/abandoned loop. Reap BEFORE the tool filter so even a
+    # payload that doesn't match still disarms the stale loop (mirror of the
+    # ordering in loop_summary_gate).
+    if reap_stale_sentinel():
+        return 0
+
     try:
         raw_payload = sys.stdin.read() if sys.stdin is not None else ""
         payload = load_hook_payload(raw_payload)
@@ -70,10 +77,6 @@ def main() -> int:
         return 0
 
     try:
-        # The shell guard only checks the sentinel exists (#103); a stale one
-        # means a crashed/abandoned loop — reap it and stand down.
-        if reap_stale_sentinel():
-            return 0
         if not any_active_run():
             return 0
         repo = resolve_current_repo()

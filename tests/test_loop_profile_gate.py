@@ -87,3 +87,18 @@ class TestStaleSentinelReap:
 
         assert profile_gate_main() == 0
         assert not sentinel_path().exists()
+
+    def test_stale_sentinel_reaped_on_non_matching_tool(self, tmp_path, monkeypatch):
+        # Mirror of the summary gate's reap-before-filter ordering (PR #110):
+        # even a payload that doesn't match the edit tools must disarm a
+        # stale loop.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        touch_sentinel()
+        old = time.time() - SENTINEL_TTL_SECONDS - 60
+        os.utime(sentinel_path(), (old, old))
+        monkeypatch.setattr(
+            "sys.stdin", io.StringIO(json.dumps({"tool_name": "SomeOtherTool"}))
+        )
+
+        assert profile_gate_main() == 0
+        assert not sentinel_path().exists()

@@ -83,6 +83,13 @@ def stale_summary_for_push(repo: str) -> dict[str, Any] | None:
 
 
 def main() -> int:
+    # The shell guard only checks the sentinel exists (#103); a stale one
+    # means a crashed/abandoned loop. Reap BEFORE the command filter — most
+    # Bash calls are not `git push`, and returning early on them would leave
+    # the stale marker spawning this gate on every call until a push.
+    if reap_stale_sentinel():
+        return 0
+
     try:
         raw_payload = sys.stdin.read() if sys.stdin is not None else ""
         payload = load_hook_payload(raw_payload)
@@ -97,10 +104,6 @@ def main() -> int:
         return 0
 
     try:
-        # The shell guard only checks the sentinel exists (#103); a stale one
-        # means a crashed/abandoned loop — reap it and stand down.
-        if reap_stale_sentinel():
-            return 0
         if not any_active_run():
             return 0
         repo = resolve_current_repo()
