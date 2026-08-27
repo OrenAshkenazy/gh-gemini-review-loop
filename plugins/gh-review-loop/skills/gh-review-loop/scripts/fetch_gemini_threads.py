@@ -1326,15 +1326,28 @@ def update_run_tracking(
     # review). Summary staleness is deliberately NOT part of this test: a
     # recovery fetch advances update_seq past last_summary_seq, which would
     # then block the legitimate bump for the rest of the run.
-    seen_rereviews = _safe_int(run.get("rereviews_at_cycle_start", 0))
-    if rereview_count is not None:
-        observed_rereviews = _safe_int(rereview_count)
-    else:
-        # No observation available (callers that cannot see the PR's comments):
-        # never infer a transition, so the ordinal holds rather than drifting.
-        observed_rereviews = seen_rereviews
+    # The baseline stays ABSENT until a real observation arrives. Seeding it
+    # with 0 on an unobserved fetch was wrong: `clear_run_tracking()` drops
+    # local state while the PR's historical re-review comments remain, so the
+    # first fetch that *can* count them would read them as brand-new activity
+    # and advance the ordinal on a returning run that has pushed nothing
+    # (#111 review). An unknown baseline is established by the first
+    # observation without advancing.
+    raw_baseline = run.get("rereviews_at_cycle_start")
+    baseline_known = isinstance(raw_baseline, int) and not isinstance(raw_baseline, bool)
+    seen_rereviews = raw_baseline if baseline_known else 0
+    # No observation available (login detection failed, or a caller that cannot
+    # see the PR's comments): never infer a transition.
+    observed_rereviews = None if rereview_count is None else _safe_int(rereview_count)
     if "session_cycle" not in run:
         run["session_cycle"] = 1
+        if observed_rereviews is not None:
+            run["rereviews_at_cycle_start"] = observed_rereviews
+    elif observed_rereviews is None:
+        pass  # nothing observed — hold the ordinal rather than drift
+    elif not baseline_known:
+        # First observation for this cycle: establish the baseline, do not
+        # treat pre-existing history as a transition.
         run["rereviews_at_cycle_start"] = observed_rereviews
     elif (
         bump_session_cycle
@@ -3519,14 +3532,19 @@ def main() -> int:
             agent_login,
             review_trigger_mention=args.review_trigger_mention,
         )
-        # Cycle-boundary evidence must be AGENT-only. Without a resolved agent
-        # login, `rereviews` deliberately falls back to counting every user's
-        # pings — passing that as evidence would let a stranger's ping advance
-        # the ordinal, and a large all-user baseline recorded before login
-        # detection recovers would then sit above later agent-only counts and
-        # block genuine cycles forever. Withhold it instead; the fallback count
-        # still drives the cap warning (#111 review).
-        rereview_evidence = len(rereviews) if agent_login else None
+        # Cycle-boundary evidence must match the caller's chosen counting rule.
+        # `--no-agent-filter` explicitly asks to count ANY reviewer re-review
+        # comment, so that count IS the evidence. A *failed* login detection
+        # falls back to the same all-user count without being asked: passing it
+        # as evidence would let a stranger's ping advance the ordinal, and an
+        # all-user baseline recorded before detection recovers would sit above
+        # later agent-only counts and block genuine cycles forever. Only the
+        # unrequested fallback is withheld; the count still drives the cap
+        # warning either way (#111 review).
+        if args.no_agent_filter or agent_login:
+            rereview_evidence: int | None = len(rereviews)
+        else:
+            rereview_evidence = None
         _limit_reached = len(rereviews) >= args.max_rereview_requests
         if args.resolve_outdated:
             resolved_outdated = resolve_outdated_threads(
