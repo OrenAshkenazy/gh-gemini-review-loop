@@ -1285,7 +1285,6 @@ def update_run_tracking(
     findings: list[tuple[str, str | None]],
     *,
     bump_session_cycle: bool = True,
-    rereview_count: int | None = None,
 ) -> None:
     """Merge this invocation's findings into the run's tracking state.
 
@@ -1296,10 +1295,9 @@ def update_run_tracking(
     session-cycle ordinal frozen: a read-only summary re-run must not start a
     new cycle.
 
-    ``rereview_count`` is the agent-posted re-review count observed by this
-    fetch. It is the evidence that the previous cycle actually *transitioned*
-    (pushed and asked for a re-review) rather than merely emitting a summary —
-    see the session-cycle rules below.
+    The session-cycle ordinal advances on evidence that the previous cycle
+    actually *transitioned* (pushed and asked for a re-review), not merely
+    that it emitted a summary — see the rules below.
     """
     state = load_sticky_state()
     key = _state_key(pr)
@@ -1326,36 +1324,32 @@ def update_run_tracking(
     # review). Summary staleness is deliberately NOT part of this test: a
     # recovery fetch advances update_seq past last_summary_seq, which would
     # then block the legitimate bump for the rest of the run.
-    # The baseline stays ABSENT until a real observation arrives. Seeding it
-    # with 0 on an unobserved fetch was wrong: `clear_run_tracking()` drops
-    # local state while the PR's historical re-review comments remain, so the
-    # first fetch that *can* count them would read them as brand-new activity
-    # and advance the ordinal on a returning run that has pushed nothing
-    # (#111 review). An unknown baseline is established by the first
-    # observation without advancing.
-    raw_baseline = run.get("rereviews_at_cycle_start")
-    baseline_known = isinstance(raw_baseline, int) and not isinstance(raw_baseline, bool)
-    seen_rereviews = raw_baseline if baseline_known else 0
-    # No observation available (login detection failed, or a caller that cannot
-    # see the PR's comments): never infer a transition.
-    observed_rereviews = None if rereview_count is None else _safe_int(rereview_count)
+    # Transition evidence is LOCAL: `request_rereview.py` bumps
+    # `rereviews_posted` exactly once per request it actually posts. Deriving
+    # it from the PR's comments failed three different ways (#111 review) —
+    # `comments(last:100)` makes the count non-monotonic on busy PRs, the
+    # all-user fallback count leaks other people's pings when the agent login
+    # cannot be resolved, and PR history outlives `clear_run_tracking()`.
+    #
+    # The summary is CONSUMED when it advances a cycle. `last_summary_seq > 0`
+    # was a permanently-true flag once any summary had been emitted, so a
+    # second re-review arriving before the new cycle wrote its own summary
+    # advanced the ordinal twice off one stale summary (#111 review).
+    posted = _safe_int(run.get("rereviews_posted", 0))
+    posted_baseline = _safe_int(run.get("rereviews_posted_at_cycle_start", 0))
+    summary_seq = _safe_int(run.get("last_summary_seq", 0))
+    summary_consumed = _safe_int(run.get("summary_consumed_seq", 0))
     if "session_cycle" not in run:
         run["session_cycle"] = 1
-        if observed_rereviews is not None:
-            run["rereviews_at_cycle_start"] = observed_rereviews
-    elif observed_rereviews is None:
-        pass  # nothing observed — hold the ordinal rather than drift
-    elif not baseline_known:
-        # First observation for this cycle: establish the baseline, do not
-        # treat pre-existing history as a transition.
-        run["rereviews_at_cycle_start"] = observed_rereviews
+        run["rereviews_posted_at_cycle_start"] = posted
     elif (
         bump_session_cycle
-        and _safe_int(run.get("last_summary_seq", 0)) > 0
-        and observed_rereviews > seen_rereviews
+        and summary_seq > summary_consumed
+        and posted > posted_baseline
     ):
         run["session_cycle"] = _safe_int(run.get("session_cycle")) + 1
-        run["rereviews_at_cycle_start"] = observed_rereviews
+        run["rereviews_posted_at_cycle_start"] = posted
+        run["summary_consumed_seq"] = summary_seq
     ids = set(run.get("finding_ids", []))
     paths = set(run.get("finding_paths", []))
     for thread_id, path in findings:
@@ -3532,19 +3526,6 @@ def main() -> int:
             agent_login,
             review_trigger_mention=args.review_trigger_mention,
         )
-        # Cycle-boundary evidence must match the caller's chosen counting rule.
-        # `--no-agent-filter` explicitly asks to count ANY reviewer re-review
-        # comment, so that count IS the evidence. A *failed* login detection
-        # falls back to the same all-user count without being asked: passing it
-        # as evidence would let a stranger's ping advance the ordinal, and an
-        # all-user baseline recorded before detection recovers would sit above
-        # later agent-only counts and block genuine cycles forever. Only the
-        # unrequested fallback is withheld; the count still drives the cap
-        # warning either way (#111 review).
-        if args.no_agent_filter or agent_login:
-            rereview_evidence: int | None = len(rereviews)
-        else:
-            rereview_evidence = None
         _limit_reached = len(rereviews) >= args.max_rereview_requests
         if args.resolve_outdated:
             resolved_outdated = resolve_outdated_threads(
@@ -3585,7 +3566,6 @@ def main() -> int:
                     pr,
                     [(t["id"], t.get("path", "")) for t in threads],
                     bump_session_cycle=not args.cycle_summary,
-                    rereview_count=rereview_evidence,
                 )
             except OSError as exc:
                 print(f"warning: could not update run tracking: {exc}", file=sys.stderr)
@@ -3747,7 +3727,6 @@ def main() -> int:
                         pr,
                         [(t["id"], t.get("path", "")) for t in threads],
                         bump_session_cycle=False,
-                        rereview_count=rereview_evidence,
                     )
                 run = read_run_tracking(pr)
             except OSError as exc:

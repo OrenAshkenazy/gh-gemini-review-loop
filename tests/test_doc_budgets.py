@@ -30,7 +30,11 @@ RAISE_HINT = (
 )
 
 
-REFERENCE_LINK_RE = re.compile(r"references/([A-Za-z0-9._-]+\.md)")
+# The trailing lookahead is load-bearing: without it, `references/foo.md.bak`
+# and `references/foo.md-notes` both parse as a pointer to `foo.md`, so an
+# orphan passes the reachability guard on a stale or malformed path
+# (#111 review).
+REFERENCE_LINK_RE = re.compile(r"references/([A-Za-z0-9._-]+\.md)(?![A-Za-z0-9._-])")
 
 
 def referenced_names(skill_text: str) -> set[str]:
@@ -133,6 +137,14 @@ class TestReferencesBudget:
         skill_text = "| `references/receipts-and-metrics.md` | Load when ... |"
         assert orphan_references(skill_text, ["metrics.md"]) == ["metrics.md"]
         assert orphan_references(skill_text, ["receipts-and-metrics.md"]) == []
+
+    def test_orphan_check_rejects_stale_or_malformed_paths(self):
+        # A `.md` followed by more filename characters is a different path;
+        # parsing `foo.md` out of `references/foo.md.bak` let an orphan
+        # `foo.md` pass on a stale pointer (#111 review, third pass).
+        for stale in ("references/foo.md.bak", "references/foo.md-notes"):
+            assert orphan_references(f"| `{stale}` |", ["foo.md"]) == ["foo.md"]
+        assert orphan_references("| `references/foo.md` |", ["foo.md"]) == []
 
     def test_orphan_check_requires_a_filename_boundary(self):
         # Adding the `references/` prefix does not stop prefix collisions:

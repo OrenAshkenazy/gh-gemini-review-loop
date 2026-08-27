@@ -60,6 +60,39 @@ def load_state() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def record_rereview_posted(repo: str, pr: int) -> None:
+    """Stamp the cycle transition this re-review request completes.
+
+    The session-cycle ordinal (#104) needs to know that a cycle actually
+    pushed and asked for a re-review. Deriving that from the PR's comments was
+    unreliable in three separate ways (#111 review): the count is not
+    monotonic under ``comments(last:100)`` on busy PRs, it silently includes
+    other people's pings whenever the agent login cannot be resolved, and it
+    reflects history that outlives ``clear_run_tracking()``. This write is the
+    event itself — local, script-owned, exactly once per posted request.
+
+    Fails open: a state write failure must never block the re-review that was
+    already posted. The ordinal simply holds instead of drifting.
+    """
+    path = state_path()
+    state = load_state()
+    key = f"{repo}#{pr}"
+    entry = state.get(key)
+    entry = dict(entry) if isinstance(entry, dict) else {}
+    run = entry.get("run")
+    run = dict(run) if isinstance(run, dict) else {}
+    posted = run.get("rereviews_posted")
+    posted = posted if isinstance(posted, int) and not isinstance(posted, bool) else 0
+    run["rereviews_posted"] = posted + 1
+    entry["run"] = run
+    state[key] = entry
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    except OSError as exc:
+        print(f"warning: could not record the re-review stamp: {exc}", file=sys.stderr)
+
+
 def read_persisted_reviewer(repo: str, pr: int) -> dict[str, Any] | None:
     entry = load_state().get(f"{repo}#{pr}")
     reviewer = entry.get("reviewer") if isinstance(entry, dict) else None
@@ -475,6 +508,9 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"[loop] {payload['message']}")
                 return 0
         payload = post_rereview(args.repo, args.pr, phrase, dry_run=args.dry_run)
+        # A dry run posts nothing, so it closes no cycle.
+        if payload.get("posted") is not False and not payload.get("dry_run"):
+            record_rereview_posted(args.repo, args.pr)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

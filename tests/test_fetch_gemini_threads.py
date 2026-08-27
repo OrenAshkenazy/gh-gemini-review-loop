@@ -1721,15 +1721,23 @@ class TestRunTracking:
         update_run_tracking(pr, [("t1", "a.py"), ("t2", "b.py")])
         assert read_run_tracking(pr)["session_cycle"] == 1
 
-    def test_fetch_after_cycle_summary_and_rereview_starts_next_cycle(
+    def _post_rereview(self, pr):
+        """Mimic request_rereview.py's local cycle-transition stamp."""
+        from fetch_gemini_threads import load_sticky_state, save_sticky_state, _state_key
+        state = load_sticky_state()
+        run = state.setdefault(_state_key(pr), {}).setdefault("run", {})
+        run["rereviews_posted"] = run.get("rereviews_posted", 0) + 1
+        save_sticky_state(state)
+
+    def test_fetch_after_summary_and_rereview_starts_next_cycle(
         self, tmp_path, monkeypatch
     ):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         pr = self._pr()
-        update_run_tracking(pr, [("t1", "a.py")], rereview_count=0)
+        update_run_tracking(pr, [("t1", "a.py")])
         stamp_summary_emitted(pr)
-        # Summary emitted AND the cycle transitioned through a re-review.
-        update_run_tracking(pr, [("t2", "b.py")], rereview_count=1)
+        self._post_rereview(pr)
+        update_run_tracking(pr, [("t2", "b.py")])
         assert read_run_tracking(pr)["session_cycle"] == 2
 
     def test_recovery_fetch_after_summary_before_rereview_stays_in_cycle(
@@ -1740,75 +1748,49 @@ class TestRunTracking:
         # finishing the SAME cycle, so the ordinal must hold (#111 review).
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         pr = self._pr()
-        update_run_tracking(pr, [("t1", "a.py")], rereview_count=0)
-        stamp_summary_emitted(pr)
-        update_run_tracking(pr, [("t1", "a.py")], rereview_count=0)
-        assert read_run_tracking(pr)["session_cycle"] == 1
-        # Once the re-review actually lands, the next fetch advances.
-        update_run_tracking(pr, [("t2", "b.py")], rereview_count=1)
-        assert read_run_tracking(pr)["session_cycle"] == 2
-
-    def test_unobserved_rereview_count_never_advances_the_ordinal(
-        self, tmp_path, monkeypatch
-    ):
-        # A caller that cannot see the PR's comments passes no count; the
-        # ordinal must hold rather than drift on an inferred transition.
-        # This is the path taken when `gh api user` cannot resolve the agent
-        # login: the all-user fallback count must never be used as cycle
-        # evidence, or a stranger's ping would advance the ordinal and a large
-        # all-user baseline would block genuine cycles (#111 review).
-        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
-        pr = self._pr()
-        update_run_tracking(pr, [("t1", "a.py")], rereview_count=0)
+        update_run_tracking(pr, [("t1", "a.py")])
         stamp_summary_emitted(pr)
         update_run_tracking(pr, [("t1", "a.py")])
         assert read_run_tracking(pr)["session_cycle"] == 1
+        self._post_rereview(pr)
+        update_run_tracking(pr, [("t2", "b.py")])
+        assert read_run_tracking(pr)["session_cycle"] == 2
 
-    def test_unobserved_first_fetch_leaves_the_baseline_unknown(
+    def test_second_rereview_without_a_new_summary_does_not_advance_twice(
         self, tmp_path, monkeypatch
     ):
-        # Seeding the baseline with 0 on an unobserved fetch let a returning
-        # run's PRE-EXISTING re-review comments read as new activity:
-        # clear_run_tracking() drops local state while the PR's comments
-        # remain (#111 review). The baseline must stay absent.
-        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
-        pr = self._pr()
-        update_run_tracking(pr, [("t1", "a.py")])  # login unknown on first fetch
-        assert "rereviews_at_cycle_start" not in read_run_tracking(pr)
-
-    def test_recovered_login_establishes_baseline_without_advancing(
-        self, tmp_path, monkeypatch
-    ):
-        # First fetch cannot count; the PR already carries 5 historical agent
-        # re-reviews. Once detection recovers, that history must establish the
-        # baseline — not advance the ordinal on a run that pushed nothing.
+        # `last_summary_seq > 0` was permanently true once any summary had
+        # been emitted, so a second re-review arriving before the new cycle
+        # wrote its own summary advanced the ordinal off a stale one (#111
+        # review). The summary must be consumed when it advances a cycle.
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         pr = self._pr()
         update_run_tracking(pr, [("t1", "a.py")])
         stamp_summary_emitted(pr)
-        update_run_tracking(pr, [("t1", "a.py")], rereview_count=5)
-        run = read_run_tracking(pr)
-        assert run["session_cycle"] == 1
-        assert run["rereviews_at_cycle_start"] == 5
-        # A genuine new re-review past that baseline still advances.
-        update_run_tracking(pr, [("t2", "b.py")], rereview_count=6)
+        self._post_rereview(pr)
+        update_run_tracking(pr, [("t2", "b.py")])
         assert read_run_tracking(pr)["session_cycle"] == 2
+        # Cycle 2 has NOT emitted its own summary yet.
+        self._post_rereview(pr)
+        update_run_tracking(pr, [("t3", "c.py")])
+        assert read_run_tracking(pr)["session_cycle"] == 2
+        # Once cycle 2 summarizes and transitions, cycle 3 begins.
+        stamp_summary_emitted(pr)
+        self._post_rereview(pr)
+        update_run_tracking(pr, [("t4", "d.py")])
+        assert read_run_tracking(pr)["session_cycle"] == 3
 
-    def test_corrupt_baseline_is_re_established_without_advancing(
+    def test_preexisting_pr_history_cannot_advance_the_ordinal(
         self, tmp_path, monkeypatch
     ):
+        # Evidence is local, so a PR carrying many historical @codex pings
+        # cannot advance a fresh run's ordinal (#111 review).
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         pr = self._pr()
-        update_run_tracking(pr, [("t1", "a.py")], rereview_count=0)
+        update_run_tracking(pr, [("t1", "a.py")])
         stamp_summary_emitted(pr)
-        from fetch_gemini_threads import load_sticky_state, save_sticky_state, _state_key
-        state = load_sticky_state()
-        state[_state_key(pr)]["run"]["rereviews_at_cycle_start"] = "garbage"
-        save_sticky_state(state)
-        update_run_tracking(pr, [("t1", "a.py")], rereview_count=4)
-        run = read_run_tracking(pr)
-        assert run["session_cycle"] == 1
-        assert run["rereviews_at_cycle_start"] == 4
+        update_run_tracking(pr, [("t1", "a.py")])
+        assert read_run_tracking(pr)["session_cycle"] == 1
 
     def test_summary_reruns_do_not_advance_session_cycle(self, tmp_path, monkeypatch):
         # --cycle-summary / --record-run pass bump_session_cycle=False: a
@@ -1824,17 +1806,13 @@ class TestRunTracking:
     def test_full_three_cycle_sequence(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         pr = self._pr()
-        rereviews = 0
         for expected in (1, 2, 3):
-            update_run_tracking(pr, [("t", "a.py")], rereview_count=rereviews)
+            update_run_tracking(pr, [("t", "a.py")])
             assert read_run_tracking(pr)["session_cycle"] == expected
             # cycle-summary invocation: tracking update without a bump, then stamp
-            update_run_tracking(
-                pr, [("t", "a.py")], bump_session_cycle=False,
-                rereview_count=rereviews,
-            )
+            update_run_tracking(pr, [("t", "a.py")], bump_session_cycle=False)
             stamp_summary_emitted(pr)
-            rereviews += 1  # the cycle then pushes and requests a re-review
+            self._post_rereview(pr)  # the cycle pushes and requests a re-review
 
     def test_clear_removes_run_but_keeps_other_state(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
@@ -2403,16 +2381,17 @@ class TestSingleChannelReceiptDelivery:
 
         monkeypatch.setattr(fgt, "post_or_update_sticky_receipt", _post)
 
-    def test_no_agent_filter_supplies_cycle_evidence(
+    def test_cycle_ordinal_is_independent_of_agent_filtering(
         self, tmp_path, monkeypatch, capsys
     ):
-        # `--no-agent-filter` explicitly asks to count ANY reviewer re-review
-        # comment, so that count IS valid cycle evidence. A blanket
-        # "agent_login is None -> withhold" check also silenced this
-        # explicitly requested mode, pinning narration at session cycle 1
-        # while the displayed cap climbed (#111 review).
+        # The ordinal must advance the same way under `--no-agent-filter`.
+        # An earlier design derived it from the PR's re-review comments, where
+        # the filtering mode changed the answer and pinned narration at
+        # session cycle 1 while the displayed cap climbed (#111 review).
+        # Evidence is now the local stamp, so filtering cannot affect it.
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         import fetch_gemini_threads as fgt
+        import request_rereview
 
         pr = PullRequest(owner="o", repo="r", number=7)
         posted: list = []
@@ -2426,9 +2405,11 @@ class TestSingleChannelReceiptDelivery:
         monkeypatch.setattr(sys, "argv", argv)
         assert fgt.main() == 0
         assert read_run_tracking(pr)["session_cycle"] == 1
-        stamp_summary_emitted(pr)
 
-        # A second re-review lands: the next fetch must advance the ordinal.
+        # The cycle summarizes, pushes, and requests a re-review.
+        stamp_summary_emitted(pr)
+        request_rereview.record_rereview_posted("o/r", 7)
+
         self._stub(fgt, monkeypatch, pr, [], posted, rereviews=["c1", "c2"])
         monkeypatch.setattr(sys, "argv", argv)
         assert fgt.main() == 0
