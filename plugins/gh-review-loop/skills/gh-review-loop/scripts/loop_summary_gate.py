@@ -34,6 +34,7 @@ if HERE not in sys.path:
 from loop_state import (  # noqa: E402 — slim, stdlib-only (see #83)
     any_active_run,
     find_active_run,
+    reap_stale_sentinel,
     resolve_current_repo,
     summary_is_stale,
 )
@@ -96,6 +97,10 @@ def main() -> int:
         return 0
 
     try:
+        # The shell guard only checks the sentinel exists (#103); a stale one
+        # means a crashed/abandoned loop — reap it and stand down.
+        if reap_stale_sentinel():
+            return 0
         if not any_active_run():
             return 0
         repo = resolve_current_repo()

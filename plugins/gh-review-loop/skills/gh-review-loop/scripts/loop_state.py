@@ -16,8 +16,9 @@ path. Lifecycle:
   run behind.
 - A sentinel older than ``SENTINEL_TTL_SECONDS`` (24h) is stale — a crashed
   or abandoned loop must not keep the hooks live forever. The shell guard
-  deletes it and skips; ``sentinel_is_stale()`` mirrors that rule for tests
-  and Python callers.
+  only checks existence (`[ -f ]`, the cheapest possible test — #103); the
+  Python gates it spawns call ``reap_stale_sentinel()`` to delete a stale
+  marker and stand down, so staleness costs nothing on the idle path.
 """
 
 from __future__ import annotations
@@ -288,9 +289,7 @@ def clear_sentinel() -> None:
 def sentinel_is_stale(now: float | None = None) -> bool:
     """True when the sentinel exists but is older than the 24h TTL.
 
-    Mirrors the hooks.json shell guard (``find -mmin +1440``) so tests can
-    assert the two rules agree. A missing sentinel is not "stale" — it is
-    simply absent.
+    A missing sentinel is not "stale" — it is simply absent.
     """
     try:
         mtime = sentinel_path().stat().st_mtime
@@ -298,3 +297,16 @@ def sentinel_is_stale(now: float | None = None) -> bool:
         return False
     reference = time.time() if now is None else now
     return (reference - mtime) > SENTINEL_TTL_SECONDS
+
+
+def reap_stale_sentinel(now: float | None = None) -> bool:
+    """Delete the sentinel if it is past the TTL. True when it was reaped.
+
+    The hooks.json shell guard spawns a gate on bare existence; each gate
+    calls this first so a crashed or abandoned loop disarms itself on the
+    next hook fire instead of blocking edits/pushes for a dead run (#103).
+    """
+    if not sentinel_is_stale(now):
+        return False
+    clear_sentinel()
+    return True

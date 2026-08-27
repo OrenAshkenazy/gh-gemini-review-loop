@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"$GGRL_STATE_DIR\" ]; then s=\"$GGRL_STATE_DIR/loop-active\"; else s=\"$HOME/.config/gh-review-loop/loop-active\"; [ -f \"$s\" ] || s=\"$HOME/.config/gh-gemini-review-loop/loop-active\"; fi; [ -f \"$s\" ] || exit 0; [ -n \"$(find \"$s\" -mmin +1440 2>/dev/null)\" ] && { rm -f \"$s\"; exit 0; }; exec python3 \"${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/skills/gh-review-loop/scripts/loop_profile_gate.py\"",
+            "command": "if [ -n \"$GGRL_STATE_DIR\" ]; then s=\"$GGRL_STATE_DIR/loop-active\"; else s=\"$HOME/.config/gh-review-loop/loop-active\"; [ -f \"$s\" ] || s=\"$HOME/.config/gh-gemini-review-loop/loop-active\"; fi; [ -f \"$s\" ] || exit 0; exec python3 \"${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/skills/gh-review-loop/scripts/loop_profile_gate.py\"",
             "timeout": 15
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"$GGRL_STATE_DIR\" ]; then s=\"$GGRL_STATE_DIR/loop-active\"; else s=\"$HOME/.config/gh-review-loop/loop-active\"; [ -f \"$s\" ] || s=\"$HOME/.config/gh-gemini-review-loop/loop-active\"; fi; [ -f \"$s\" ] || exit 0; [ -n \"$(find \"$s\" -mmin +1440 2>/dev/null)\" ] && { rm -f \"$s\"; exit 0; }; exec python3 \"${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/skills/gh-review-loop/scripts/loop_summary_gate.py\"",
+            "command": "if [ -n \"$GGRL_STATE_DIR\" ]; then s=\"$GGRL_STATE_DIR/loop-active\"; else s=\"$HOME/.config/gh-review-loop/loop-active\"; [ -f \"$s\" ] || s=\"$HOME/.config/gh-gemini-review-loop/loop-active\"; fi; [ -f \"$s\" ] || exit 0; exec python3 \"${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/skills/gh-review-loop/scripts/loop_summary_gate.py\"",
             "timeout": 15
           }
         ]
@@ -27,8 +27,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"$GGRL_STATE_DIR\" ]; then s=\"$GGRL_STATE_DIR/loop-active\"; else s=\"$HOME/.config/gh-review-loop/loop-active\"; [ -f \"$s\" ] || s=\"$HOME/.config/gh-gemini-review-loop/loop-active\"; fi; [ -f \"$s\" ] || exit 0; [ -n \"$(find \"$s\" -mmin +1440 2>/dev/null)\" ] && { rm -f \"$s\"; exit 0; }; exec python3 \"${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/skills/gh-review-loop/scripts/loop_summary_hook.py\"",
-            "timeout": 130
+            "command": "if [ -n \"$GGRL_STATE_DIR\" ]; then s=\"$GGRL_STATE_DIR/loop-active\"; else s=\"$HOME/.config/gh-review-loop/loop-active\"; [ -f \"$s\" ] || s=\"$HOME/.config/gh-gemini-review-loop/loop-active\"; fi; [ -f \"$s\" ] || exit 0; exec python3 \"${GGRL_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}/skills/gh-review-loop/scripts/loop_summary_hook.py\"",
+            "timeout": 70
           }
         ]
       }

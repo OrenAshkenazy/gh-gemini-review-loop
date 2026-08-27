@@ -27,6 +27,7 @@ from loop_state import (
     SENTINEL_TTL_SECONDS,
     any_active_run,
     clear_sentinel,
+    reap_stale_sentinel,
     sentinel_is_stale,
     sentinel_path,
     touch_sentinel,
@@ -293,6 +294,24 @@ class TestSentinelTtl:
         os.utime(sentinel_path(), (old, old))
         assert sentinel_is_stale()
 
+    def test_reap_removes_stale_sentinel(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        touch_sentinel()
+        old = time.time() - SENTINEL_TTL_SECONDS - 60
+        os.utime(sentinel_path(), (old, old))
+        assert reap_stale_sentinel()
+        assert not sentinel_path().exists()
+
+    def test_reap_keeps_fresh_sentinel(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        touch_sentinel()
+        assert not reap_stale_sentinel()
+        assert sentinel_path().exists()
+
+    def test_reap_on_missing_sentinel_is_noop(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        assert not reap_stale_sentinel()
+
 
 class TestSlimImports:
     def test_hook_entrypoints_do_not_import_fetch_module(self, tmp_path):
@@ -374,15 +393,18 @@ class TestHooksJsonGuard:
         assert guard_env["marker"].exists(), "python3 not spawned during loop"
 
     @pytest.mark.parametrize(("event", "command"), _hook_commands())
-    def test_stale_sentinel_is_removed_and_skipped(self, guard_env, event, command):
+    def test_stale_sentinel_still_spawns_python_for_reaping(
+        self, guard_env, event, command
+    ):
+        # #103: the guard is existence-only; staleness moved into the Python
+        # gates (reap_stale_sentinel), which only run when the file exists.
         sentinel = guard_env["state_dir"] / "loop-active"
         sentinel.touch()
         old = time.time() - SENTINEL_TTL_SECONDS - 3600
         os.utime(sentinel, (old, old))
         proc = _run_guard(command, guard_env["env"])
         assert proc.returncode == 0, proc.stderr
-        assert not guard_env["marker"].exists(), "python3 spawned on stale sentinel"
-        assert not sentinel.exists(), "stale sentinel not cleaned up"
+        assert guard_env["marker"].exists(), "python3 not spawned to reap stale sentinel"
 
     @pytest.mark.parametrize(("event", "command"), _hook_commands())
     def test_default_state_dir_uses_new_home_path(self, guard_env, event, command):
@@ -425,11 +447,21 @@ class TestHooksJsonGuard:
         assert proc.returncode == 0, proc.stderr
         assert not guard_env["marker"].exists(), "legacy fallback overrode GGRL_STATE_DIR"
 
-    def test_guard_ttl_matches_python_ttl(self):
-        """hooks.json uses find -mmin +1440; keep it in sync with the constant."""
-        minutes = SENTINEL_TTL_SECONDS // 60
+    def test_guard_is_existence_check_only(self):
+        """#103: the always-on shell guard must stay a bare [ -f ] test — no
+        find/stat subprocesses on the per-tool-call hot path. Staleness lives
+        in the Python gates (reap_stale_sentinel)."""
         for _event, command in _hook_commands():
-            assert f"-mmin +{minutes}" in command
+            assert "find" not in command
+            assert "mmin" not in command
+
+    def test_stop_hook_timeout_is_bounded(self):
+        """#103: a stuck Stop hook must not stall session end for 2+ minutes.
+        The 70s budget covers the summary subprocess's own 60s timeout."""
+        data = json.loads(HOOKS_JSON.read_text())
+        (stop_entry,) = data["hooks"]["Stop"]
+        (stop_hook,) = stop_entry["hooks"]
+        assert stop_hook["timeout"] <= 70
 
     def test_no_status_messages(self):
         """statusMessage rendered on every matching tool call in every project;

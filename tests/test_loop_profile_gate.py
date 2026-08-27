@@ -7,10 +7,16 @@ where a loop is active for the repo and no profile decision has been saved yet.
 Choosing any profile (including Skip) satisfies it.
 """
 
+import io
+import json
+import os
+import time
+
 import judge
 from fetch_gemini_threads import save_sticky_state
 from loop_profile_gate import main as profile_gate_main
 from loop_profile_gate import profile_required_for_repo
+from loop_state import SENTINEL_TTL_SECONDS, sentinel_path, touch_sentinel
 
 
 class _UnreadableStdin:
@@ -63,3 +69,21 @@ class TestProfileRequiredForRepo:
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         _active("other/repo")
         assert profile_required_for_repo("o/r") is False
+
+
+class TestStaleSentinelReap:
+    def test_stale_sentinel_allows_edit_and_is_reaped(self, tmp_path, monkeypatch):
+        # #103: the shell guard is existence-only, so the gate must disarm a
+        # crashed loop itself — and stand down before any repo resolution
+        # (resolve_current_repo would trip the hermetic-gh guard here).
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        _active("o/r")
+        touch_sentinel()
+        old = time.time() - SENTINEL_TTL_SECONDS - 60
+        os.utime(sentinel_path(), (old, old))
+        monkeypatch.setattr(
+            "sys.stdin", io.StringIO(json.dumps({"tool_name": "Edit"}))
+        )
+
+        assert profile_gate_main() == 0
+        assert not sentinel_path().exists()
