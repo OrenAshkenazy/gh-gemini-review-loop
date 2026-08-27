@@ -30,6 +30,15 @@ RAISE_HINT = (
 )
 
 
+def orphan_references(skill_text: str, names: list[str]) -> list[str]:
+    """Reference filenames SKILL.md never points to.
+
+    Matches the full ``references/<name>`` path — see
+    ``test_no_orphan_references`` for why a bare basename is not enough.
+    """
+    return [n for n in names if f"references/{n}" not in skill_text]
+
+
 def _frontmatter_description(text: str) -> str:
     """The frontmatter description, including YAML continuation lines."""
     match = re.search(r"^---\n(.*?)\n---", text, re.DOTALL)
@@ -92,13 +101,23 @@ class TestReferencesBudget:
     def test_no_orphan_references(self):
         # Every references/*.md must be reachable from SKILL.md — an orphan
         # is documentation the agent can never be told to load.
+        #
+        # Match the full `references/<name>` path, not the bare basename: a
+        # basename substring lets an orphan pass whenever its name is
+        # contained in another referenced filename (an unreferenced
+        # `metrics.md` would be "found" inside `receipts-and-metrics.md`).
         skill_text = SKILL_MD.read_text()
-        orphans = [
-            f.name
-            for f in sorted(REFERENCES_DIR.glob("*.md"))
-            if f.name not in skill_text
-        ]
+        orphans = orphan_references(
+            skill_text, [f.name for f in sorted(REFERENCES_DIR.glob("*.md"))]
+        )
         assert not orphans, (
             f"references never pointed to from SKILL.md: {orphans}. "
             "Add a load-when pointer line or delete the file."
         )
+
+    def test_orphan_check_is_not_fooled_by_a_substring_filename(self):
+        # A bare-basename match let an unreferenced `metrics.md` pass because
+        # SKILL.md mentions `receipts-and-metrics.md` (#111 review).
+        skill_text = "| `references/receipts-and-metrics.md` | Load when ... |"
+        assert orphan_references(skill_text, ["metrics.md"]) == ["metrics.md"]
+        assert orphan_references(skill_text, ["receipts-and-metrics.md"]) == []

@@ -1285,6 +1285,7 @@ def update_run_tracking(
     findings: list[tuple[str, str | None]],
     *,
     bump_session_cycle: bool = True,
+    rereview_count: int | None = None,
 ) -> None:
     """Merge this invocation's findings into the run's tracking state.
 
@@ -1294,6 +1295,11 @@ def update_run_tracking(
     ``bump_session_cycle=False`` (the --cycle-summary path) keeps the
     session-cycle ordinal frozen: a read-only summary re-run must not start a
     new cycle.
+
+    ``rereview_count`` is the agent-posted re-review count observed by this
+    fetch. It is the evidence that the previous cycle actually *transitioned*
+    (pushed and asked for a re-review) rather than merely emitting a summary —
+    see the session-cycle rules below.
     """
     state = load_sticky_state()
     key = _state_key(pr)
@@ -1307,14 +1313,36 @@ def update_run_tracking(
     prev_seq = _safe_int(run.get("update_seq", 0))
     run["update_seq"] = prev_seq + 1
     # Script-owned session-cycle ordinal (#104): 1 on the run's first fetch,
-    # +1 on the first fetch after each --cycle-summary. A recovery re-fetch
-    # mid-cycle (no summary in between) stays in the same cycle. Narration
-    # copies this number; the model must never compute it — model-tracked
-    # counters drift across context compaction.
+    # +1 only once the previous cycle has demonstrably ENDED. Narration copies
+    # this number; the model must never compute it — model-tracked counters
+    # drift across context compaction.
+    #
+    # A cycle ends when it emitted its summary AND transitioned through a new
+    # re-review request. The re-review count is the transition evidence: a
+    # session interrupted after `--cycle-summary` but before the push/re-review
+    # resumes with a `--full` recovery fetch, which is still *finishing the
+    # same cycle*. Treating the summary alone as the boundary mislabeled that
+    # fetch (and every later narration line and metric) as a new cycle (#111
+    # review). Summary staleness is deliberately NOT part of this test: a
+    # recovery fetch advances update_seq past last_summary_seq, which would
+    # then block the legitimate bump for the rest of the run.
+    seen_rereviews = _safe_int(run.get("rereviews_at_cycle_start", 0))
+    if rereview_count is not None:
+        observed_rereviews = _safe_int(rereview_count)
+    else:
+        # No observation available (callers that cannot see the PR's comments):
+        # never infer a transition, so the ordinal holds rather than drifting.
+        observed_rereviews = seen_rereviews
     if "session_cycle" not in run:
         run["session_cycle"] = 1
-    elif bump_session_cycle and _safe_int(run.get("last_summary_seq", 0)) >= prev_seq > 0:
+        run["rereviews_at_cycle_start"] = observed_rereviews
+    elif (
+        bump_session_cycle
+        and _safe_int(run.get("last_summary_seq", 0)) > 0
+        and observed_rereviews > seen_rereviews
+    ):
         run["session_cycle"] = _safe_int(run.get("session_cycle")) + 1
+        run["rereviews_at_cycle_start"] = observed_rereviews
     ids = set(run.get("finding_ids", []))
     paths = set(run.get("finding_paths", []))
     for thread_id, path in findings:
@@ -3524,6 +3552,7 @@ def main() -> int:
                     pr,
                     [(t["id"], t.get("path", "")) for t in threads],
                     bump_session_cycle=not args.cycle_summary,
+                    rereview_count=len(rereviews),
                 )
             except OSError as exc:
                 print(f"warning: could not update run tracking: {exc}", file=sys.stderr)
@@ -3685,6 +3714,7 @@ def main() -> int:
                         pr,
                         [(t["id"], t.get("path", "")) for t in threads],
                         bump_session_cycle=False,
+                        rereview_count=len(rereviews),
                     )
                 run = read_run_tracking(pr)
             except OSError as exc:

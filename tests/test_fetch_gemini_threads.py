@@ -1721,13 +1721,44 @@ class TestRunTracking:
         update_run_tracking(pr, [("t1", "a.py"), ("t2", "b.py")])
         assert read_run_tracking(pr)["session_cycle"] == 1
 
-    def test_fetch_after_cycle_summary_starts_next_cycle(self, tmp_path, monkeypatch):
+    def test_fetch_after_cycle_summary_and_rereview_starts_next_cycle(
+        self, tmp_path, monkeypatch
+    ):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         pr = self._pr()
-        update_run_tracking(pr, [("t1", "a.py")])
+        update_run_tracking(pr, [("t1", "a.py")], rereview_count=0)
         stamp_summary_emitted(pr)
-        update_run_tracking(pr, [("t2", "b.py")])
+        # Summary emitted AND the cycle transitioned through a re-review.
+        update_run_tracking(pr, [("t2", "b.py")], rereview_count=1)
         assert read_run_tracking(pr)["session_cycle"] == 2
+
+    def test_recovery_fetch_after_summary_before_rereview_stays_in_cycle(
+        self, tmp_path, monkeypatch
+    ):
+        # A session interrupted after --cycle-summary but before its push /
+        # re-review resumes with a --full recovery fetch: that fetch is still
+        # finishing the SAME cycle, so the ordinal must hold (#111 review).
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")], rereview_count=0)
+        stamp_summary_emitted(pr)
+        update_run_tracking(pr, [("t1", "a.py")], rereview_count=0)
+        assert read_run_tracking(pr)["session_cycle"] == 1
+        # Once the re-review actually lands, the next fetch advances.
+        update_run_tracking(pr, [("t2", "b.py")], rereview_count=1)
+        assert read_run_tracking(pr)["session_cycle"] == 2
+
+    def test_unobserved_rereview_count_never_advances_the_ordinal(
+        self, tmp_path, monkeypatch
+    ):
+        # A caller that cannot see the PR's comments passes no count; the
+        # ordinal must hold rather than drift on an inferred transition.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")], rereview_count=0)
+        stamp_summary_emitted(pr)
+        update_run_tracking(pr, [("t1", "a.py")])
+        assert read_run_tracking(pr)["session_cycle"] == 1
 
     def test_summary_reruns_do_not_advance_session_cycle(self, tmp_path, monkeypatch):
         # --cycle-summary / --record-run pass bump_session_cycle=False: a
@@ -1743,12 +1774,17 @@ class TestRunTracking:
     def test_full_three_cycle_sequence(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         pr = self._pr()
+        rereviews = 0
         for expected in (1, 2, 3):
-            update_run_tracking(pr, [("t", "a.py")])
+            update_run_tracking(pr, [("t", "a.py")], rereview_count=rereviews)
             assert read_run_tracking(pr)["session_cycle"] == expected
             # cycle-summary invocation: tracking update without a bump, then stamp
-            update_run_tracking(pr, [("t", "a.py")], bump_session_cycle=False)
+            update_run_tracking(
+                pr, [("t", "a.py")], bump_session_cycle=False,
+                rereview_count=rereviews,
+            )
             stamp_summary_emitted(pr)
+            rereviews += 1  # the cycle then pushes and requests a re-review
 
     def test_clear_removes_run_but_keeps_other_state(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
