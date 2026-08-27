@@ -1519,18 +1519,25 @@ def wait_elapsed_seconds(
 
 
 def suggested_next_wait_seconds(checks: int) -> int:
-    """Decay schedule: 60s for the first chunk, 300s for the second, 900s after.
+    """Duration for the NEXT chunk, given how many chunks have already run.
 
-    Chunked waits are the fallback for runtimes without background-task
-    completion notifications; every chunk costs a full agent turn. One early
-    heartbeat shows the loop is alive, one mid-length chunk catches fast
-    reviewers, then chunks stretch to 900s so a 30-minute reviewer wait costs
-    ~4 turns instead of ~8 (#102). Tradeoff: staler liveness signal late in a
-    long wait.
+    Schedule: 60s → 300s → 900s. Chunked waits are the fallback for runtimes
+    without background-task completion notifications; every chunk costs a full
+    agent turn. One early heartbeat shows the loop is alive, one mid-length
+    chunk catches fast reviewers, then chunks stretch to 900s so a 30-minute
+    reviewer wait costs ~4 turns instead of ~8 (#102). Tradeoff: staler
+    liveness signal late in a long wait.
+
+    ``checks`` follows the persisted counter in ``begin_wait_chunk``, which
+    increments at the START of each chunk — so at the end of the first chunk
+    ``checks == 1``. That chunk has already served the 60s heartbeat, so the
+    next one is 300s. Reading ``checks <= 1`` as "still the first chunk"
+    silently produced 60s → 60s → 300s → 900s and burned an extra turn on
+    every long wait (#111 review).
     """
-    if checks <= 1:
+    if checks <= 0:
         return WAIT_FIRST_CHUNK_SECONDS
-    if checks == 2:
+    if checks == 1:
         return WAIT_SECOND_CHUNK_SECONDS
     return WAIT_LATER_CHUNK_SECONDS
 
@@ -3512,6 +3519,14 @@ def main() -> int:
             agent_login,
             review_trigger_mention=args.review_trigger_mention,
         )
+        # Cycle-boundary evidence must be AGENT-only. Without a resolved agent
+        # login, `rereviews` deliberately falls back to counting every user's
+        # pings — passing that as evidence would let a stranger's ping advance
+        # the ordinal, and a large all-user baseline recorded before login
+        # detection recovers would then sit above later agent-only counts and
+        # block genuine cycles forever. Withhold it instead; the fallback count
+        # still drives the cap warning (#111 review).
+        rereview_evidence = len(rereviews) if agent_login else None
         _limit_reached = len(rereviews) >= args.max_rereview_requests
         if args.resolve_outdated:
             resolved_outdated = resolve_outdated_threads(
@@ -3552,7 +3567,7 @@ def main() -> int:
                     pr,
                     [(t["id"], t.get("path", "")) for t in threads],
                     bump_session_cycle=not args.cycle_summary,
-                    rereview_count=len(rereviews),
+                    rereview_count=rereview_evidence,
                 )
             except OSError as exc:
                 print(f"warning: could not update run tracking: {exc}", file=sys.stderr)
@@ -3714,7 +3729,7 @@ def main() -> int:
                         pr,
                         [(t["id"], t.get("path", "")) for t in threads],
                         bump_session_cycle=False,
-                        rereview_count=len(rereviews),
+                        rereview_count=rereview_evidence,
                     )
                 run = read_run_tracking(pr)
             except OSError as exc:

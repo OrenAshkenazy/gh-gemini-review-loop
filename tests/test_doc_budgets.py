@@ -30,13 +30,25 @@ RAISE_HINT = (
 )
 
 
+REFERENCE_LINK_RE = re.compile(r"references/([A-Za-z0-9._-]+\.md)")
+
+
+def referenced_names(skill_text: str) -> set[str]:
+    """Every ``references/<name>.md`` path SKILL.md actually points to."""
+    return set(REFERENCE_LINK_RE.findall(skill_text))
+
+
 def orphan_references(skill_text: str, names: list[str]) -> list[str]:
     """Reference filenames SKILL.md never points to.
 
-    Matches the full ``references/<name>`` path — see
-    ``test_no_orphan_references`` for why a bare basename is not enough.
+    Compares parsed paths by exact name rather than testing whether the name
+    appears somewhere in the text. Substring tests fail in both directions: a
+    bare basename lets an orphan ``metrics.md`` hide inside
+    ``receipts-and-metrics.md``, and even a ``references/``-prefixed substring
+    lets it hide inside ``references/metrics.md-notes.md`` (#111 review).
     """
-    return [n for n in names if f"references/{n}" not in skill_text]
+    pointed_to = referenced_names(skill_text)
+    return [n for n in names if n not in pointed_to]
 
 
 def _frontmatter_description(text: str) -> str:
@@ -121,3 +133,11 @@ class TestReferencesBudget:
         skill_text = "| `references/receipts-and-metrics.md` | Load when ... |"
         assert orphan_references(skill_text, ["metrics.md"]) == ["metrics.md"]
         assert orphan_references(skill_text, ["receipts-and-metrics.md"]) == []
+
+    def test_orphan_check_requires_a_filename_boundary(self):
+        # Adding the `references/` prefix does not stop prefix collisions:
+        # `references/metrics.md` is a substring of
+        # `references/metrics.md-notes.md` (#111 review, second pass).
+        skill_text = "| `references/metrics.md-notes.md` | Load when ... |"
+        assert orphan_references(skill_text, ["metrics.md"]) == ["metrics.md"]
+        assert orphan_references(skill_text, ["metrics.md-notes.md"]) == []

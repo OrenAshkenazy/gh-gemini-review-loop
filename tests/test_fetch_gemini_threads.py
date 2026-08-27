@@ -1753,12 +1753,29 @@ class TestRunTracking:
     ):
         # A caller that cannot see the PR's comments passes no count; the
         # ordinal must hold rather than drift on an inferred transition.
+        # This is the path taken when `gh api user` cannot resolve the agent
+        # login: the all-user fallback count must never be used as cycle
+        # evidence, or a stranger's ping would advance the ordinal and a large
+        # all-user baseline would block genuine cycles (#111 review).
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         pr = self._pr()
         update_run_tracking(pr, [("t1", "a.py")], rereview_count=0)
         stamp_summary_emitted(pr)
         update_run_tracking(pr, [("t1", "a.py")])
         assert read_run_tracking(pr)["session_cycle"] == 1
+
+    def test_withheld_evidence_does_not_poison_the_cycle_baseline(
+        self, tmp_path, monkeypatch
+    ):
+        # Withholding must not record a baseline either: once the agent login
+        # resolves, the real agent-only count has to be able to exceed it.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")])  # login unknown on first fetch
+        stamp_summary_emitted(pr)
+        assert read_run_tracking(pr)["rereviews_at_cycle_start"] == 0
+        update_run_tracking(pr, [("t2", "b.py")], rereview_count=1)
+        assert read_run_tracking(pr)["session_cycle"] == 2
 
     def test_summary_reruns_do_not_advance_session_cycle(self, tmp_path, monkeypatch):
         # --cycle-summary / --record-run pass bump_session_cycle=False: a
@@ -3193,23 +3210,26 @@ class TestWaitElapsedAndDecay:
         assert fgt.wait_elapsed_seconds({}, None, now=now) == 0
         assert fgt.wait_elapsed_seconds({"started_at": "garbage"}, "also-garbage", now=now) == 0
 
-    def test_decay_schedule(self):
-        # 60s first chunk (early liveness), 300s second (catches fast
-        # reviewers), then 900s: each chunk costs a full agent turn on
-        # fallback runtimes, so later chunks stretch out (#85, #102).
+    def test_decay_schedule_follows_persisted_checks_semantics(self):
+        # `checks` is incremented at the START of each chunk by
+        # begin_wait_chunk, so at the end of the first chunk checks == 1 and
+        # the 60s heartbeat has already been served — the next chunk is 300s.
+        # Reading `checks <= 1` as "still the first chunk" produced
+        # 60 -> 60 -> 300 -> 900 and burned an extra turn (#111 review).
         assert fgt.suggested_next_wait_seconds(0) == 60
-        assert fgt.suggested_next_wait_seconds(1) == 60
-        assert fgt.suggested_next_wait_seconds(2) == 300
-        assert fgt.suggested_next_wait_seconds(3) == 900
+        assert fgt.suggested_next_wait_seconds(1) == 300
+        assert fgt.suggested_next_wait_seconds(2) == 900
         assert fgt.suggested_next_wait_seconds(10) == 900
 
-    def test_thirty_minute_wait_costs_at_most_five_chunks(self):
+    def test_thirty_minute_wait_costs_at_most_four_chunks(self):
         # The #102 acceptance shape: a 30-minute wait must not burn ~8 turns.
+        # Mirrors the real loop: chunk k runs for the duration suggested after
+        # k-1 chunks have completed.
         elapsed, chunks = 0, 0
         while elapsed < 1800:
-            chunks += 1
             elapsed += fgt.suggested_next_wait_seconds(chunks)
-        assert chunks <= 5
+            chunks += 1
+        assert chunks <= 4
 
 
 class TestRunWaitChunk:
@@ -3245,7 +3265,9 @@ class TestRunWaitChunk:
         )
         assert result["status"] == "waiting"
         assert result["checks"] == 1
-        assert result["next_wait_seconds"] == 60
+        # The 60s heartbeat chunk just ran; the next one steps up to 300s.
+        # This assertion previously encoded the 60 -> 60 off-by-one (#111).
+        assert result["next_wait_seconds"] == 300
         assert result["pull_request"] is None
 
     def test_settling_when_activity_not_yet_stable(self, tmp_path, monkeypatch):
