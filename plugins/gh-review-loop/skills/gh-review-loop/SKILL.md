@@ -1,6 +1,6 @@
 ---
 name: gh-review-loop
-description: Use after a GitHub PR is opened, or when the user asks to handle AI reviewer feedback from Codex, CodeRabbit, Copilot, or another configured reviewer bot, run the review loop, fix reviewer comments, sweep sibling instances of a flagged pattern, or request re-review. Waits, fixes, verifies against the repo's own tests, pushes, re-asks. Capped by user preference, default 3 cycles.
+description: Use after a GitHub PR is opened or to handle AI reviewer feedback (Codex, CodeRabbit, Copilot, or any reviewer bot) - run the review loop, fix reviewer comments, sweep sibling instances, verify, push, request re-review.
 ---
 
 # AI Reviewer PR Review Loop
