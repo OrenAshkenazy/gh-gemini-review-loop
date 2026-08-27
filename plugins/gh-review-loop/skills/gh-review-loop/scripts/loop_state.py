@@ -299,14 +299,45 @@ def sentinel_is_stale(now: float | None = None) -> bool:
     return (reference - mtime) > SENTINEL_TTL_SECONDS
 
 
+def _reap_candidates() -> list[Path]:
+    """Sentinel paths the reap must inspect — the same set the shell guard can
+    arm from. With no ``GGRL_STATE_DIR`` the guard falls back from the new
+    config dir to the legacy one, so in a split-directory state (both dirs
+    exist, marker only under legacy) ``sentinel_path()`` alone would inspect
+    a different, absent file and the stale marker would survive forever
+    (PR #110 review)."""
+    if os.environ.get("GGRL_STATE_DIR"):
+        return [sentinel_path()]
+    return [
+        _config_root() / STATE_DIR_NAME / SENTINEL_NAME,
+        _config_root() / LEGACY_STATE_DIR_NAME / SENTINEL_NAME,
+    ]
+
+
 def reap_stale_sentinel(now: float | None = None) -> bool:
-    """Delete the sentinel if it is past the TTL. True when it was reaped.
+    """Delete stale sentinel(s); True when no fresh sentinel remains.
 
     The hooks.json shell guard spawns a gate on bare existence; each gate
     calls this first so a crashed or abandoned loop disarms itself on the
     next hook fire instead of blocking edits/pushes for a dead run (#103).
+    Returns False while any candidate sentinel is still fresh — an active
+    loop must keep its gates armed even when a stale twin was just cleaned
+    up from the other config dir.
     """
-    if not sentinel_is_stale(now):
-        return False
-    clear_sentinel()
-    return True
+    reference = time.time() if now is None else now
+    reaped = False
+    fresh = False
+    for path in _reap_candidates():
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if (reference - mtime) > SENTINEL_TTL_SECONDS:
+            try:
+                path.unlink()
+                reaped = True
+            except OSError:
+                pass
+        else:
+            fresh = True
+    return reaped and not fresh

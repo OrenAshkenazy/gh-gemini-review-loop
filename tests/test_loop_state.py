@@ -312,6 +312,47 @@ class TestSentinelTtl:
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         assert not reap_stale_sentinel()
 
+    def test_reap_finds_stale_legacy_sentinel_in_split_dir_state(
+        self, tmp_path, monkeypatch
+    ):
+        # PR #110 review: both config dirs exist, marker only under legacy.
+        # The shell guard arms from the legacy marker, so the reap must
+        # inspect it too — not just state_dir()'s preferred new dir.
+        monkeypatch.delenv("GGRL_STATE_DIR", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        new_dir = tmp_path / ".config" / "gh-review-loop"
+        legacy_dir = tmp_path / ".config" / "gh-gemini-review-loop"
+        new_dir.mkdir(parents=True)
+        legacy_dir.mkdir(parents=True)
+        legacy = legacy_dir / "loop-active"
+        legacy.touch()
+        old = time.time() - SENTINEL_TTL_SECONDS - 60
+        os.utime(legacy, (old, old))
+
+        assert reap_stale_sentinel()
+        assert not legacy.exists()
+
+    def test_reap_keeps_gates_armed_when_new_sentinel_is_fresh(
+        self, tmp_path, monkeypatch
+    ):
+        # A stale legacy twin is cleaned up, but the fresh new-dir sentinel
+        # means a loop is active — the gate must NOT stand down.
+        monkeypatch.delenv("GGRL_STATE_DIR", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        new_dir = tmp_path / ".config" / "gh-review-loop"
+        legacy_dir = tmp_path / ".config" / "gh-gemini-review-loop"
+        new_dir.mkdir(parents=True)
+        legacy_dir.mkdir(parents=True)
+        (new_dir / "loop-active").touch()
+        legacy = legacy_dir / "loop-active"
+        legacy.touch()
+        old = time.time() - SENTINEL_TTL_SECONDS - 60
+        os.utime(legacy, (old, old))
+
+        assert not reap_stale_sentinel()
+        assert not legacy.exists(), "stale legacy twin should still be cleaned"
+        assert (new_dir / "loop-active").exists()
+
 
 class TestSlimImports:
     def test_hook_entrypoints_do_not_import_fetch_module(self, tmp_path):
