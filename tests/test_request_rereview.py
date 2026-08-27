@@ -761,3 +761,42 @@ class TestCycleTransitionStamp:
         assert state["o/r#7"]["commentId"] == 42
         assert state["o/r#7"]["run"]["session_cycle"] == 3
         assert state["o/r#7"]["run"]["rereviews_posted"] == 1
+
+
+class TestStateKeyCasing:
+    """A case-mismatched --repo must not split the shared state (#111 review)."""
+
+    def test_existing_entry_wins_regardless_of_casing(self):
+        state = {"OrenAshkenazy/gh-review-loop#7": {"run": {}}}
+        assert (
+            request_rereview.state_key_for(state, "orenashkenazy/GH-Review-Loop", 7)
+            == "OrenAshkenazy/gh-review-loop#7"
+        )
+
+    def test_literal_key_when_no_entry_exists(self):
+        assert request_rereview.state_key_for({}, "o/r", 7) == "o/r#7"
+
+    def test_a_different_pr_number_is_not_matched(self):
+        state = {"o/r#8": {"run": {}}}
+        assert request_rereview.state_key_for(state, "o/r", 7) == "o/r#7"
+
+    def test_the_stamp_lands_on_the_fetchs_entry(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "state.json").write_text(
+            json.dumps({"OrenAshkenazy/gh-review-loop#7": {"run": {"session_cycle": 1}}})
+        )
+        monkeypatch.setattr(
+            request_rereview, "post_rereview",
+            lambda repo, pr, phrase, **kw: {
+                "created_at": CREATED_AT, "repo": repo, "pr": pr,
+                "phrase": phrase, "posted": True,
+            },
+        )
+        assert request_rereview.main([
+            "--repo", "orenashkenazy/GH-Review-Loop", "--pr", "7",
+            "--reviewer-mention", "@codex", "--json",
+        ]) == 0
+        capsys.readouterr()
+        state = json.loads((tmp_path / "state.json").read_text())
+        assert list(state) == ["OrenAshkenazy/gh-review-loop#7"]
+        assert state["OrenAshkenazy/gh-review-loop#7"]["run"]["rereviews_posted"] == 1

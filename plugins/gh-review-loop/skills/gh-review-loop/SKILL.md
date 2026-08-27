@@ -63,7 +63,7 @@ Each repo can have a code-derived verification profile — the checks the verify
 Before `git push` on a non-terminal cycle: run `--cycle-summary` and relay its printed `[loop]` pointer line. For a terminal cycle **that follows a final push**: request re-review, capture `REREVIEW_AT`, wait with `--wait --after "$REREVIEW_AT"`, and set the terminal reviewer-confirmation flag from that wait result before `--record-run`. Terminal paths that publish nothing (already clean, cap reached, human decision, regression, no progress) record directly — no push, re-review, or wait. Enforced mechanically on hook runtimes: `loop_summary_gate.py` blocks `git push` while the summary is stale (exit 2 names the exact fix); `--record-run` is exempt. Violating the letter violates the spirit.
 </HARD-GATE>
 
-Emit one-line status updates at each phase transition (N = session cycle — copy it from the script's `[loop] session cycle N` line / `loopStatus.sessionCycle` / the receipt header, never count it yourself; M/K = re-review cap consumed — always show both). The ordinal is only known once a fetch has run, so the pre-fetch line omits it:
+Emit one-line status updates at each phase transition. **N** = session cycle: copy it from the script (`[loop] session cycle N`, `loopStatus.sessionCycle`, or the receipt header) — never count it yourself. It exists only after a fetch, so the pre-fetch line omits it. **M/K** = cap consumed.
 
 | Phase | Narration line |
 |---|---|
@@ -75,7 +75,7 @@ Emit one-line status updates at each phase transition (N = session cycle — cop
 | After push | `[loop] session cycle N — pushed. Requesting reviewer re-review. Cap now M/K.` |
 | Reviewer wait | Background task (primary) or chunked heartbeats (fallback) — Workflow step 8 |
 | Stop | `[loop] STOP — <stop-condition>: <one-line explanation>.` |
-| Done | `[loop] DONE — 0 actionable threads remaining. Cycles used: N/<cap>.` + relay the `--record-run` pointer; `remaining_actionable > 0` → `references/terminal-report.md` |
+| Done | `[loop] DONE — 0 actionable threads remaining. Cycles used: M/K.` (cap consumption, not N — a clean PR ends at `0/K`) + relay the `--record-run` pointer; `remaining_actionable > 0` → `references/terminal-report.md` |
 
 Skip narration only in pure non-interactive batch mode. User stepping away → pair with `--sticky-receipt`.
 

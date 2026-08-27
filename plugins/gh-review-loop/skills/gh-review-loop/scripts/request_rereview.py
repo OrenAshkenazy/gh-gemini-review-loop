@@ -60,6 +60,22 @@ def load_state() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def state_key_for(state: dict[str, Any], repo: str, pr: int) -> str:
+    """The key this PR's state already lives under, whatever its casing.
+
+    GitHub accepts `--repo owner/Repo` for a PR the fetch resolved as
+    `owner/repo`, but the shared state key is built from the raw string. A
+    case-mismatched write lands in a second entry, so the fetch never sees it
+    — the re-review stamp goes missing and the session ordinal sticks (#111
+    review). Prefer the existing entry; fall back to the literal key.
+    """
+    target = f"{repo}#{pr}".casefold()
+    for key in state:
+        if isinstance(key, str) and key.casefold() == target:
+            return key
+    return f"{repo}#{pr}"
+
+
 def record_rereview_posted(repo: str, pr: int) -> None:
     """Stamp the cycle transition this re-review request completes.
 
@@ -76,7 +92,7 @@ def record_rereview_posted(repo: str, pr: int) -> None:
     """
     path = state_path()
     state = load_state()
-    key = f"{repo}#{pr}"
+    key = state_key_for(state, repo, pr)
     entry = state.get(key)
     entry = dict(entry) if isinstance(entry, dict) else {}
     run = entry.get("run")
@@ -94,7 +110,8 @@ def record_rereview_posted(repo: str, pr: int) -> None:
 
 
 def read_persisted_reviewer(repo: str, pr: int) -> dict[str, Any] | None:
-    entry = load_state().get(f"{repo}#{pr}")
+    state = load_state()
+    entry = state.get(state_key_for(state, repo, pr))
     reviewer = entry.get("reviewer") if isinstance(entry, dict) else None
     if not isinstance(reviewer, dict):
         return None
