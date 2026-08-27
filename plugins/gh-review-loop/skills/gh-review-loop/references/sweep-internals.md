@@ -60,3 +60,7 @@ rg -n --fixed-strings -e '<stable identifier or code fragment>' -- \
 Repeat the `rg` search for every singleton and report (a) the complete changed file list inspected, (b) each fragment searched, and (c) every suspected sibling before editing. Do not combine unrelated singleton sites as inputs to `sweep_siblings.py`; its two-site intersection is reserved for actual multi-site clusters.
 
 The same `Clustering:` guard appears on the initial thread fetch, repeats in the cycle receipt, and is appended compactly by the Stop-hook snapshot. JSON fetches expose it under `clustering` as `clusterCount`, `maxClusterSize`, and `advisory`.
+
+## Advisory receipt lines
+
+The receipt's `Clustering:` and `Convergence:` lines are advisory. Three or more singleton clusters → `Clustering:` warns the signatures are likely prose-hash fallbacks and requires the manual singleton sweep procedure above before fixing. A `⚠ … RECURRED after sweep` means the sweep missed a variant — decide whether to refine, stop, or continue. Neither line changes control flow; the cap remains the only hard stop.
