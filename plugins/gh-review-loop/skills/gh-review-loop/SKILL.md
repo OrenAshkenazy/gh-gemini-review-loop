@@ -63,7 +63,7 @@ Each repo can have a code-derived verification profile — the checks the verify
 Before `git push` on a non-terminal cycle: run `--cycle-summary` and relay its printed `[loop]` pointer line. For a terminal cycle **that follows a final push**: request re-review, capture `REREVIEW_AT`, wait with `--wait --after "$REREVIEW_AT"`, and set the terminal reviewer-confirmation flag from that wait result before `--record-run`. Terminal paths that publish nothing (already clean, cap reached, human decision, regression, no progress) record directly — no push, re-review, or wait. Enforced mechanically on hook runtimes: `loop_summary_gate.py` blocks `git push` while the summary is stale (exit 2 names the exact fix); `--record-run` is exempt. Violating the letter violates the spirit.
 </HARD-GATE>
 
-Emit one-line status updates at each phase transition (N = session cycle; M/K = re-review cap consumed — always show both):
+Emit one-line status updates at each phase transition (N = session cycle — copy it from the script's `[loop] session cycle N` line / `loopStatus.sessionCycle` / the receipt header, never count it yourself; M/K = re-review cap consumed — always show both):
 
 | Phase | Narration line |
 |---|---|

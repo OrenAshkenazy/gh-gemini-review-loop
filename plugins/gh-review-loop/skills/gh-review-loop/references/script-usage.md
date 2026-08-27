@@ -36,7 +36,7 @@ python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py
 # Chunked wait (fallback for runtimes without background-task completion
 # notifications, e.g. Codex): return within the chunk with a deterministic
 # status instead of blocking. Relay the one-line heartbeat verbatim, then run
-# the next chunk with the suggested next_wait_seconds (60s first, then 300s).
+# the next chunk with the suggested next_wait_seconds (60s, then 300s, then 900s).
 python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
     --wait --after "$REREVIEW_AT" --wait-chunk-seconds 60
 

@@ -1,0 +1,11 @@
+{
+  "_comment": "Doc size ratchet (#109). Raising any budget requires editing this file in the same PR — a visible, reviewable line instead of silent drift. Ratchet DOWN when a trim lands; never raise without saying why in the PR body.",
+  "skill_md": {
+    "max_bytes": 14000,
+    "max_lines": 140,
+    "description_max_words": 35
+  },
+  "references": {
+    "max_bytes_per_file": 7000
+  }
+}

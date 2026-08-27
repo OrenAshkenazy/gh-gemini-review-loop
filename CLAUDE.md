@@ -1,5 +1,9 @@
 # CLAUDE.md
 
+## SKILL.md placement rule
+
+New behavior docs go in `plugins/gh-review-loop/skills/gh-review-loop/references/<topic>.md`; SKILL.md gets at most one pointer line. Inline in SKILL.md only what the agent needs every cycle. Size budgets are enforced by `tests/test_doc_budgets.py` against `tests/budgets.json` — raising a budget must happen in the same PR, with justification.
+
 ## Test runner
 
 ```bash

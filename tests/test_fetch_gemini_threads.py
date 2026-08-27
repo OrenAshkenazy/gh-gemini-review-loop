@@ -1708,6 +1708,48 @@ class TestRunTracking:
         assert run["started_at"] == first_started
         assert run["finding_ids"] == ["t1", "t2"]
 
+    def test_first_fetch_starts_session_cycle_one(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        update_run_tracking(self._pr(), [("t1", "a.py")])
+        assert read_run_tracking(self._pr())["session_cycle"] == 1
+
+    def test_refetch_without_summary_stays_in_same_cycle(self, tmp_path, monkeypatch):
+        # A recovery re-fetch mid-cycle must not advance the ordinal (#104).
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")])
+        update_run_tracking(pr, [("t1", "a.py"), ("t2", "b.py")])
+        assert read_run_tracking(pr)["session_cycle"] == 1
+
+    def test_fetch_after_cycle_summary_starts_next_cycle(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")])
+        stamp_summary_emitted(pr)
+        update_run_tracking(pr, [("t2", "b.py")])
+        assert read_run_tracking(pr)["session_cycle"] == 2
+
+    def test_summary_reruns_do_not_advance_session_cycle(self, tmp_path, monkeypatch):
+        # --cycle-summary / --record-run pass bump_session_cycle=False: a
+        # read-only summary re-run after the stamp must not start a new cycle.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")])
+        stamp_summary_emitted(pr)
+        update_run_tracking(pr, [("t1", "a.py")], bump_session_cycle=False)
+        update_run_tracking(pr, [("t1", "a.py")], bump_session_cycle=False)
+        assert read_run_tracking(pr)["session_cycle"] == 1
+
+    def test_full_three_cycle_sequence(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        for expected in (1, 2, 3):
+            update_run_tracking(pr, [("t", "a.py")])
+            assert read_run_tracking(pr)["session_cycle"] == expected
+            # cycle-summary invocation: tracking update without a bump, then stamp
+            update_run_tracking(pr, [("t", "a.py")], bump_session_cycle=False)
+            stamp_summary_emitted(pr)
+
     def test_clear_removes_run_but_keeps_other_state(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         pr = self._pr()
@@ -2303,8 +2345,9 @@ class TestSingleChannelReceiptDelivery:
         assert fgt.main() == 0
 
         out = capsys.readouterr().out
-        # Chat: one pointer line, not the full receipt.
-        assert "[loop] Cycle receipt:" in out
+        # Chat: one pointer line, not the full receipt. The header carries the
+        # script-owned session-cycle ordinal (#104).
+        assert "[loop] Cycle receipt (session cycle 1):" in out
         assert "verification passed" in out
         assert "https://github.com/o/r/pull/7#issuecomment-99" in out
         assert "Findings fetched:" not in out
@@ -2424,7 +2467,7 @@ class TestSingleChannelReceiptDelivery:
         assert fgt.main() == 0
 
         out = capsys.readouterr().out
-        assert "[loop] Summary:" in out
+        assert "[loop] Summary (session cycle 1):" in out
         assert "outcome clean" in out
         assert "#issuecomment-99" in out
         assert "Time to clean PR" not in out  # full receipt stays off stdout
@@ -3115,12 +3158,22 @@ class TestWaitElapsedAndDecay:
         assert fgt.wait_elapsed_seconds({"started_at": "garbage"}, "also-garbage", now=now) == 0
 
     def test_decay_schedule(self):
-        # 60s first chunk (early liveness), then 300s: each chunk costs a full
-        # agent turn on fallback runtimes, so later chunks stretch out (#85).
+        # 60s first chunk (early liveness), 300s second (catches fast
+        # reviewers), then 900s: each chunk costs a full agent turn on
+        # fallback runtimes, so later chunks stretch out (#85, #102).
         assert fgt.suggested_next_wait_seconds(0) == 60
         assert fgt.suggested_next_wait_seconds(1) == 60
         assert fgt.suggested_next_wait_seconds(2) == 300
-        assert fgt.suggested_next_wait_seconds(10) == 300
+        assert fgt.suggested_next_wait_seconds(3) == 900
+        assert fgt.suggested_next_wait_seconds(10) == 900
+
+    def test_thirty_minute_wait_costs_at_most_five_chunks(self):
+        # The #102 acceptance shape: a 30-minute wait must not burn ~8 turns.
+        elapsed, chunks = 0, 0
+        while elapsed < 1800:
+            chunks += 1
+            elapsed += fgt.suggested_next_wait_seconds(chunks)
+        assert chunks <= 5
 
 
 class TestRunWaitChunk:
