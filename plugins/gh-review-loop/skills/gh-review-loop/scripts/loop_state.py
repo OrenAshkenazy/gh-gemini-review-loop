@@ -16,8 +16,9 @@ path. Lifecycle:
   run behind.
 - A sentinel older than ``SENTINEL_TTL_SECONDS`` (24h) is stale — a crashed
   or abandoned loop must not keep the hooks live forever. The shell guard
-  deletes it and skips; ``sentinel_is_stale()`` mirrors that rule for tests
-  and Python callers.
+  only checks existence (`[ -f ]`, the cheapest possible test — #103); the
+  Python gates it spawns call ``reap_stale_sentinel()`` to delete a stale
+  marker and stand down, so staleness costs nothing on the idle path.
 """
 
 from __future__ import annotations
@@ -288,9 +289,7 @@ def clear_sentinel() -> None:
 def sentinel_is_stale(now: float | None = None) -> bool:
     """True when the sentinel exists but is older than the 24h TTL.
 
-    Mirrors the hooks.json shell guard (``find -mmin +1440``) so tests can
-    assert the two rules agree. A missing sentinel is not "stale" — it is
-    simply absent.
+    A missing sentinel is not "stale" — it is simply absent.
     """
     try:
         mtime = sentinel_path().stat().st_mtime
@@ -298,3 +297,52 @@ def sentinel_is_stale(now: float | None = None) -> bool:
         return False
     reference = time.time() if now is None else now
     return (reference - mtime) > SENTINEL_TTL_SECONDS
+
+
+def _reap_candidates() -> list[Path]:
+    """Sentinel paths the reap must inspect — the same set the shell guard can
+    arm from. With no ``GGRL_STATE_DIR`` the guard falls back from the new
+    config dir to the legacy one, so in a split-directory state (both dirs
+    exist, marker only under legacy) ``sentinel_path()`` alone would inspect
+    a different, absent file and the stale marker would survive forever
+    (PR #110 review)."""
+    if os.environ.get("GGRL_STATE_DIR"):
+        return [sentinel_path()]
+    return [
+        _config_root() / STATE_DIR_NAME / SENTINEL_NAME,
+        _config_root() / LEGACY_STATE_DIR_NAME / SENTINEL_NAME,
+    ]
+
+
+def reap_stale_sentinel(now: float | None = None) -> bool:
+    """Reap stale sentinel(s); True when the gate should stand down.
+
+    The hooks.json shell guard spawns a gate on bare existence; each gate
+    calls this first so a crashed or abandoned loop disarms itself on the
+    next hook fire instead of blocking edits/pushes for a dead run (#103).
+
+    Mirrors the guard's selection exactly (PR #110 review): the first
+    candidate that exists is the marker that armed this gate, and only its
+    staleness decides the verdict — a fresh sentinel in the *other* config
+    dir must not keep the gates armed for the guard-selected dead run, and
+    a stale twin being cleaned up must not disarm an active loop. A stale
+    selected sentinel stands the gate down even when deletion fails
+    (read-only state dir): fail open, like the shell guard's old ``rm -f``.
+    Every stale candidate is unlinked best-effort along the way.
+    """
+    reference = time.time() if now is None else now
+    selected_stale: bool | None = None
+    for path in _reap_candidates():
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        stale = (reference - mtime) > SENTINEL_TTL_SECONDS
+        if selected_stale is None:
+            selected_stale = stale
+        if stale:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    return bool(selected_stale)

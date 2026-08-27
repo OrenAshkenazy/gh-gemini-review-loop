@@ -34,6 +34,7 @@ if HERE not in sys.path:
 from loop_state import (  # noqa: E402 — slim, stdlib-only (see #83)
     any_active_run,
     find_active_run,
+    reap_stale_sentinel,
     resolve_current_repo,
     summary_is_stale,
 )
@@ -82,6 +83,13 @@ def stale_summary_for_push(repo: str) -> dict[str, Any] | None:
 
 
 def main() -> int:
+    # The shell guard only checks the sentinel exists (#103); a stale one
+    # means a crashed/abandoned loop. Reap BEFORE the command filter — most
+    # Bash calls are not `git push`, and returning early on them would leave
+    # the stale marker spawning this gate on every call until a push.
+    if reap_stale_sentinel():
+        return 0
+
     try:
         raw_payload = sys.stdin.read() if sys.stdin is not None else ""
         payload = load_hook_payload(raw_payload)

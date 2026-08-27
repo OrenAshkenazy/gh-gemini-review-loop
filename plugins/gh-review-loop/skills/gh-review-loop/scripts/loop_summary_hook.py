@@ -29,6 +29,7 @@ if HERE not in sys.path:
 from loop_state import (  # noqa: E402 — slim, stdlib-only (see #83)
     any_active_run,
     find_active_run,
+    reap_stale_sentinel,
     resolve_current_repo,
     summary_is_stale,
 )
@@ -70,6 +71,10 @@ def main() -> int:
     # Fast path: if no loop is active anywhere, skip the git/repo resolution
     # entirely so the hook is free on every unrelated Stop.
     try:
+        # The shell guard only checks the sentinel exists (#103); a stale one
+        # means a crashed/abandoned loop — reap it and stand down.
+        if reap_stale_sentinel():
+            return 0
         if not any_active_run():
             return 0
         repo = resolve_current_repo()
@@ -96,7 +101,10 @@ def main() -> int:
             encoding="utf-8",
             errors="replace",
             capture_output=True,
-            timeout=120,
+            # Must stay under the hooks.json Stop timeout (70s) so a stuck
+            # summary degrades to a skipped backstop, not a stalled session
+            # end (#103).
+            timeout=60,
         )
     except (OSError, ValueError, subprocess.SubprocessError):  # backstop must never block Stop
         return 0

@@ -96,3 +96,12 @@ python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py
 ```
 
 The script emits `warning: ... hit page limit ...` to stderr if any GraphQL page maxes out (review threads, reviews, PR comments, or comments within a thread) — older items may be silently missing.
+
+# Wait outcome handling (both modes)
+# Statuses: waiting, settling, ready (same call returns the threads),
+# timed_out, refused.
+# - refused, kind: withdrawn -> terminal: record --outcome human --gemini-unconfirmed.
+# - refused, kind: quota_exhausted -> ask the user now (stop the loop, or
+#   upgrade/add credits then re-run the same wait); do NOT re-request the review.
+# - timed_out -> record --gemini-unconfirmed; do not guess clean. Say the wait
+#   timed out — never invent feedback.

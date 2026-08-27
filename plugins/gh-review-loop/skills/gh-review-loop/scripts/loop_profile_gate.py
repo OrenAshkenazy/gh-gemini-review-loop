@@ -27,6 +27,7 @@ if HERE not in sys.path:
 from loop_state import (  # noqa: E402 — slim, stdlib-only (see #83)
     any_active_run,
     find_active_run,
+    reap_stale_sentinel,
     resolve_current_repo,
 )
 from hook_runtime import load_hook_payload, tool_name  # noqa: E402
@@ -58,6 +59,13 @@ BLOCK_MESSAGE = (
 
 
 def main() -> int:
+    # The shell guard only checks the sentinel exists (#103); a stale one
+    # means a crashed/abandoned loop. Reap BEFORE the tool filter so even a
+    # payload that doesn't match still disarms the stale loop (mirror of the
+    # ordering in loop_summary_gate).
+    if reap_stale_sentinel():
+        return 0
+
     try:
         raw_payload = sys.stdin.read() if sys.stdin is not None else ""
         payload = load_hook_payload(raw_payload)

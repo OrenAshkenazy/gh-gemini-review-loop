@@ -9,8 +9,11 @@ last_summary_seq and clears the gate.
 
 import io
 import json
+import os
+import time
 
 from fetch_gemini_threads import save_sticky_state
+from loop_state import SENTINEL_TTL_SECONDS, sentinel_path, touch_sentinel
 from loop_summary_gate import main as summary_gate_main
 from loop_summary_gate import stale_summary_for_push
 
@@ -127,6 +130,45 @@ class TestStaleSummaryForPush:
         })
         info = stale_summary_for_push("o/r")
         assert info == {"pr_number": 5, "update_seq": 3, "last_summary_seq": 0}
+
+
+class TestStaleSentinelReap:
+    def test_stale_sentinel_allows_push_and_is_reaped(self, tmp_path, monkeypatch):
+        # #103: the shell guard is existence-only, so the gate must disarm a
+        # crashed loop itself — and stand down before any repo resolution
+        # (resolve_current_repo would trip the hermetic-gh guard here).
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        _active_stale("o/r", number=7)
+        touch_sentinel()
+        old = time.time() - SENTINEL_TTL_SECONDS - 60
+        os.utime(sentinel_path(), (old, old))
+        monkeypatch.setattr(
+            "sys.stdin",
+            io.StringIO(json.dumps(
+                {"tool_name": "Bash", "tool_input": {"command": "git push origin"}}
+            )),
+        )
+
+        assert summary_gate_main() == 0
+        assert not sentinel_path().exists()
+
+    def test_stale_sentinel_reaped_on_non_push_command(self, tmp_path, monkeypatch):
+        # PR #110 review finding: the reap must run BEFORE the git-push filter,
+        # or ordinary Bash calls keep spawning this gate off a dead loop's
+        # sentinel until a push happens.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        touch_sentinel()
+        old = time.time() - SENTINEL_TTL_SECONDS - 60
+        os.utime(sentinel_path(), (old, old))
+        monkeypatch.setattr(
+            "sys.stdin",
+            io.StringIO(json.dumps(
+                {"tool_name": "Bash", "tool_input": {"command": "ls -la"}}
+            )),
+        )
+
+        assert summary_gate_main() == 0
+        assert not sentinel_path().exists()
 
 
 class TestBlockMessage:
