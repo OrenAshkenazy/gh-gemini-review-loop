@@ -315,29 +315,34 @@ def _reap_candidates() -> list[Path]:
 
 
 def reap_stale_sentinel(now: float | None = None) -> bool:
-    """Delete stale sentinel(s); True when no fresh sentinel remains.
+    """Reap stale sentinel(s); True when the gate should stand down.
 
     The hooks.json shell guard spawns a gate on bare existence; each gate
     calls this first so a crashed or abandoned loop disarms itself on the
     next hook fire instead of blocking edits/pushes for a dead run (#103).
-    Returns False while any candidate sentinel is still fresh — an active
-    loop must keep its gates armed even when a stale twin was just cleaned
-    up from the other config dir.
+
+    Mirrors the guard's selection exactly (PR #110 review): the first
+    candidate that exists is the marker that armed this gate, and only its
+    staleness decides the verdict — a fresh sentinel in the *other* config
+    dir must not keep the gates armed for the guard-selected dead run, and
+    a stale twin being cleaned up must not disarm an active loop. A stale
+    selected sentinel stands the gate down even when deletion fails
+    (read-only state dir): fail open, like the shell guard's old ``rm -f``.
+    Every stale candidate is unlinked best-effort along the way.
     """
     reference = time.time() if now is None else now
-    reaped = False
-    fresh = False
+    selected_stale: bool | None = None
     for path in _reap_candidates():
         try:
             mtime = path.stat().st_mtime
         except OSError:
             continue
-        if (reference - mtime) > SENTINEL_TTL_SECONDS:
+        stale = (reference - mtime) > SENTINEL_TTL_SECONDS
+        if selected_stale is None:
+            selected_stale = stale
+        if stale:
             try:
                 path.unlink()
-                reaped = True
             except OSError:
                 pass
-        else:
-            fresh = True
-    return reaped and not fresh
+    return bool(selected_stale)

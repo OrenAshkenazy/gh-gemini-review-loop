@@ -353,6 +353,45 @@ class TestSentinelTtl:
         assert not legacy.exists(), "stale legacy twin should still be cleaned"
         assert (new_dir / "loop-active").exists()
 
+    def test_reap_stands_down_when_unlink_fails(self, tmp_path, monkeypatch):
+        # PR #110 review: a read-only state dir must not wedge the gates on a
+        # dead run — a positively identified stale sentinel stands the gate
+        # down even when deletion fails (the old shell guard's rm -f was
+        # equally fail-open).
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        touch_sentinel()
+        old = time.time() - SENTINEL_TTL_SECONDS - 60
+        os.utime(sentinel_path(), (old, old))
+
+        def deny_unlink(self, missing_ok=False):
+            raise OSError("read-only state dir")
+
+        monkeypatch.setattr(Path, "unlink", deny_unlink)
+        assert reap_stale_sentinel()
+
+    def test_reap_ignores_fresh_unselected_legacy_sentinel(
+        self, tmp_path, monkeypatch
+    ):
+        # PR #110 review, inverse split: the guard selects the NEW marker
+        # (stale); a fresh legacy marker it did not select must not keep the
+        # gates armed for the dead run — the fresh loop re-arms them on the
+        # next hook fire once the stale marker is gone.
+        monkeypatch.delenv("GGRL_STATE_DIR", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        new_dir = tmp_path / ".config" / "gh-review-loop"
+        legacy_dir = tmp_path / ".config" / "gh-gemini-review-loop"
+        new_dir.mkdir(parents=True)
+        legacy_dir.mkdir(parents=True)
+        stale_new = new_dir / "loop-active"
+        stale_new.touch()
+        old = time.time() - SENTINEL_TTL_SECONDS - 60
+        os.utime(stale_new, (old, old))
+        (legacy_dir / "loop-active").touch()
+
+        assert reap_stale_sentinel()
+        assert not stale_new.exists()
+        assert (legacy_dir / "loop-active").exists()
+
 
 class TestSlimImports:
     def test_hook_entrypoints_do_not_import_fetch_module(self, tmp_path):
