@@ -997,6 +997,20 @@ class TestFormatCompactReceiptLine:
         assert "outcome clean" in out
         assert "(" not in out  # no new/carried split without the counts
 
+    def test_session_cycle_renders_in_header(self):
+        # Script-owned narration ordinal (#104): the agent copies N from here.
+        record = dict(self.RECORD, session_cycle=2)
+        out = metrics.format_compact_receipt_line(
+            record, terminal=False, receipt_url=self.URL,
+        )
+        assert out.startswith("[loop] Cycle receipt (session cycle 2): ")
+
+    def test_missing_session_cycle_keeps_bare_header(self):
+        out = metrics.format_compact_receipt_line(
+            self.RECORD, terminal=False, receipt_url=self.URL,
+        )
+        assert out.startswith("[loop] Cycle receipt: ")
+
     def test_zero_remaining_omits_open(self):
         record = dict(self.RECORD, remaining_actionable=0)
         out = metrics.format_compact_receipt_line(

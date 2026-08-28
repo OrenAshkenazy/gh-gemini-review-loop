@@ -1708,6 +1708,112 @@ class TestRunTracking:
         assert run["started_at"] == first_started
         assert run["finding_ids"] == ["t1", "t2"]
 
+    def test_first_fetch_starts_session_cycle_one(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        update_run_tracking(self._pr(), [("t1", "a.py")])
+        assert read_run_tracking(self._pr())["session_cycle"] == 1
+
+    def test_refetch_without_summary_stays_in_same_cycle(self, tmp_path, monkeypatch):
+        # A recovery re-fetch mid-cycle must not advance the ordinal (#104).
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")])
+        update_run_tracking(pr, [("t1", "a.py"), ("t2", "b.py")])
+        assert read_run_tracking(pr)["session_cycle"] == 1
+
+    def _post_rereview(self, pr):
+        """Mimic request_rereview.py's local cycle-transition stamp."""
+        from fetch_gemini_threads import load_sticky_state, save_sticky_state, _state_key
+        state = load_sticky_state()
+        run = state.setdefault(_state_key(pr), {}).setdefault("run", {})
+        run["rereviews_posted"] = run.get("rereviews_posted", 0) + 1
+        save_sticky_state(state)
+
+    def test_fetch_after_summary_and_rereview_starts_next_cycle(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")])
+        stamp_summary_emitted(pr)
+        self._post_rereview(pr)
+        update_run_tracking(pr, [("t2", "b.py")])
+        assert read_run_tracking(pr)["session_cycle"] == 2
+
+    def test_recovery_fetch_after_summary_before_rereview_stays_in_cycle(
+        self, tmp_path, monkeypatch
+    ):
+        # A session interrupted after --cycle-summary but before its push /
+        # re-review resumes with a --full recovery fetch: that fetch is still
+        # finishing the SAME cycle, so the ordinal must hold (#111 review).
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")])
+        stamp_summary_emitted(pr)
+        update_run_tracking(pr, [("t1", "a.py")])
+        assert read_run_tracking(pr)["session_cycle"] == 1
+        self._post_rereview(pr)
+        update_run_tracking(pr, [("t2", "b.py")])
+        assert read_run_tracking(pr)["session_cycle"] == 2
+
+    def test_second_rereview_without_a_new_summary_does_not_advance_twice(
+        self, tmp_path, monkeypatch
+    ):
+        # `last_summary_seq > 0` was permanently true once any summary had
+        # been emitted, so a second re-review arriving before the new cycle
+        # wrote its own summary advanced the ordinal off a stale one (#111
+        # review). The summary must be consumed when it advances a cycle.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")])
+        stamp_summary_emitted(pr)
+        self._post_rereview(pr)
+        update_run_tracking(pr, [("t2", "b.py")])
+        assert read_run_tracking(pr)["session_cycle"] == 2
+        # Cycle 2 has NOT emitted its own summary yet.
+        self._post_rereview(pr)
+        update_run_tracking(pr, [("t3", "c.py")])
+        assert read_run_tracking(pr)["session_cycle"] == 2
+        # Once cycle 2 summarizes and transitions, cycle 3 begins.
+        stamp_summary_emitted(pr)
+        self._post_rereview(pr)
+        update_run_tracking(pr, [("t4", "d.py")])
+        assert read_run_tracking(pr)["session_cycle"] == 3
+
+    def test_preexisting_pr_history_cannot_advance_the_ordinal(
+        self, tmp_path, monkeypatch
+    ):
+        # Evidence is local, so a PR carrying many historical @codex pings
+        # cannot advance a fresh run's ordinal (#111 review).
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")])
+        stamp_summary_emitted(pr)
+        update_run_tracking(pr, [("t1", "a.py")])
+        assert read_run_tracking(pr)["session_cycle"] == 1
+
+    def test_summary_reruns_do_not_advance_session_cycle(self, tmp_path, monkeypatch):
+        # --cycle-summary / --record-run pass bump_session_cycle=False: a
+        # read-only summary re-run after the stamp must not start a new cycle.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        update_run_tracking(pr, [("t1", "a.py")])
+        stamp_summary_emitted(pr)
+        update_run_tracking(pr, [("t1", "a.py")], bump_session_cycle=False)
+        update_run_tracking(pr, [("t1", "a.py")], bump_session_cycle=False)
+        assert read_run_tracking(pr)["session_cycle"] == 1
+
+    def test_full_three_cycle_sequence(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        pr = self._pr()
+        for expected in (1, 2, 3):
+            update_run_tracking(pr, [("t", "a.py")])
+            assert read_run_tracking(pr)["session_cycle"] == expected
+            # cycle-summary invocation: tracking update without a bump, then stamp
+            update_run_tracking(pr, [("t", "a.py")], bump_session_cycle=False)
+            stamp_summary_emitted(pr)
+            self._post_rereview(pr)  # the cycle pushes and requests a re-review
+
     def test_clear_removes_run_but_keeps_other_state(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
         pr = self._pr()
@@ -2275,6 +2381,40 @@ class TestSingleChannelReceiptDelivery:
 
         monkeypatch.setattr(fgt, "post_or_update_sticky_receipt", _post)
 
+    def test_cycle_ordinal_is_independent_of_agent_filtering(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # The ordinal must advance the same way under `--no-agent-filter`.
+        # An earlier design derived it from the PR's re-review comments, where
+        # the filtering mode changed the answer and pinned narration at
+        # session cycle 1 while the displayed cap climbed (#111 review).
+        # Evidence is now the local stamp, so filtering cannot affect it.
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        import fetch_gemini_threads as fgt
+        import request_rereview
+
+        pr = PullRequest(owner="o", repo="r", number=7)
+        posted: list = []
+        argv = [
+            "fetch_gemini_threads.py", "--judge-mode", "off",
+            "--no-agent-filter", "--no-resolve-outdated",
+            "--no-resolve-addressed-by-reply", "--no-color",
+        ]
+
+        self._stub(fgt, monkeypatch, pr, [], posted, rereviews=["c1"])
+        monkeypatch.setattr(sys, "argv", argv)
+        assert fgt.main() == 0
+        assert read_run_tracking(pr)["session_cycle"] == 1
+
+        # The cycle summarizes, pushes, and requests a re-review.
+        stamp_summary_emitted(pr)
+        request_rereview.record_rereview_posted("o/r", 7)
+
+        self._stub(fgt, monkeypatch, pr, [], posted, rereviews=["c1", "c2"])
+        monkeypatch.setattr(sys, "argv", argv)
+        assert fgt.main() == 0
+        assert read_run_tracking(pr)["session_cycle"] == 2
+
     def test_cycle_summary_posts_full_receipt_and_prints_pointer(
         self, tmp_path, monkeypatch, capsys
     ):
@@ -2303,8 +2443,9 @@ class TestSingleChannelReceiptDelivery:
         assert fgt.main() == 0
 
         out = capsys.readouterr().out
-        # Chat: one pointer line, not the full receipt.
-        assert "[loop] Cycle receipt:" in out
+        # Chat: one pointer line, not the full receipt. The header carries the
+        # script-owned session-cycle ordinal (#104).
+        assert "[loop] Cycle receipt (session cycle 1):" in out
         assert "verification passed" in out
         assert "https://github.com/o/r/pull/7#issuecomment-99" in out
         assert "Findings fetched:" not in out
@@ -2424,7 +2565,7 @@ class TestSingleChannelReceiptDelivery:
         assert fgt.main() == 0
 
         out = capsys.readouterr().out
-        assert "[loop] Summary:" in out
+        assert "[loop] Summary (session cycle 1):" in out
         assert "outcome clean" in out
         assert "#issuecomment-99" in out
         assert "Time to clean PR" not in out  # full receipt stays off stdout
@@ -3114,13 +3255,26 @@ class TestWaitElapsedAndDecay:
         assert fgt.wait_elapsed_seconds({}, None, now=now) == 0
         assert fgt.wait_elapsed_seconds({"started_at": "garbage"}, "also-garbage", now=now) == 0
 
-    def test_decay_schedule(self):
-        # 60s first chunk (early liveness), then 300s: each chunk costs a full
-        # agent turn on fallback runtimes, so later chunks stretch out (#85).
+    def test_decay_schedule_follows_persisted_checks_semantics(self):
+        # `checks` is incremented at the START of each chunk by
+        # begin_wait_chunk, so at the end of the first chunk checks == 1 and
+        # the 60s heartbeat has already been served — the next chunk is 300s.
+        # Reading `checks <= 1` as "still the first chunk" produced
+        # 60 -> 60 -> 300 -> 900 and burned an extra turn (#111 review).
         assert fgt.suggested_next_wait_seconds(0) == 60
-        assert fgt.suggested_next_wait_seconds(1) == 60
-        assert fgt.suggested_next_wait_seconds(2) == 300
-        assert fgt.suggested_next_wait_seconds(10) == 300
+        assert fgt.suggested_next_wait_seconds(1) == 300
+        assert fgt.suggested_next_wait_seconds(2) == 900
+        assert fgt.suggested_next_wait_seconds(10) == 900
+
+    def test_thirty_minute_wait_costs_at_most_four_chunks(self):
+        # The #102 acceptance shape: a 30-minute wait must not burn ~8 turns.
+        # Mirrors the real loop: chunk k runs for the duration suggested after
+        # k-1 chunks have completed.
+        elapsed, chunks = 0, 0
+        while elapsed < 1800:
+            elapsed += fgt.suggested_next_wait_seconds(chunks)
+            chunks += 1
+        assert chunks <= 4
 
 
 class TestRunWaitChunk:
@@ -3156,7 +3310,9 @@ class TestRunWaitChunk:
         )
         assert result["status"] == "waiting"
         assert result["checks"] == 1
-        assert result["next_wait_seconds"] == 60
+        # The 60s heartbeat chunk just ran; the next one steps up to 300s.
+        # This assertion previously encoded the 60 -> 60 off-by-one (#111).
+        assert result["next_wait_seconds"] == 300
         assert result["pull_request"] is None
 
     def test_settling_when_activity_not_yet_stable(self, tmp_path, monkeypatch):

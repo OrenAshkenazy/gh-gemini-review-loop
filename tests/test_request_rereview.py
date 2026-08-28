@@ -704,3 +704,99 @@ class TestMentionExtraction:
         capsys.readouterr()
         assert rc == 0
         assert posted == ["please review the latest changes"]
+
+
+class TestCycleTransitionStamp:
+    """The re-review request IS the cycle-boundary event (#111 review).
+
+    The session-cycle ordinal used to infer the boundary from the PR's
+    re-review comments, which broke three ways: `comments(last:100)` makes the
+    count non-monotonic on busy PRs, the all-user fallback count leaks other
+    people's pings when the agent login cannot be resolved, and PR history
+    outlives `clear_run_tracking()`. The stamp written here is local and fires
+    exactly once per posted request.
+    """
+
+    def _run(self, monkeypatch, tmp_path, *, dry_run=False):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            request_rereview, "post_rereview",
+            lambda repo, pr, phrase, **kw: {
+                "created_at": CREATED_AT, "repo": repo, "pr": pr,
+                "phrase": phrase, "posted": not dry_run, "dry_run": dry_run,
+            },
+        )
+        argv = ["--repo", "o/r", "--pr", "7", "--reviewer-mention", "@codex", "--json"]
+        assert request_rereview.main(argv) == 0
+
+    def _posted(self, tmp_path):
+        path = tmp_path / "state.json"
+        if not path.exists():
+            return 0
+        state = json.loads(path.read_text())
+        return state.get("o/r#7", {}).get("run", {}).get("rereviews_posted", 0)
+
+    def test_a_posted_request_stamps_exactly_once(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._run(monkeypatch, tmp_path)
+        capsys.readouterr()
+        assert self._posted(tmp_path) == 1
+        self._run(monkeypatch, tmp_path)
+        capsys.readouterr()
+        assert self._posted(tmp_path) == 2
+
+    def test_a_dry_run_closes_no_cycle(self, tmp_path, monkeypatch, capsys):
+        self._run(monkeypatch, tmp_path, dry_run=True)
+        capsys.readouterr()
+        assert self._posted(tmp_path) == 0
+
+    def test_the_stamp_preserves_sibling_state(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "state.json").write_text(
+            json.dumps({"o/r#7": {"commentId": 42, "run": {"session_cycle": 3}}})
+        )
+        self._run(monkeypatch, tmp_path)
+        capsys.readouterr()
+        state = json.loads((tmp_path / "state.json").read_text())
+        assert state["o/r#7"]["commentId"] == 42
+        assert state["o/r#7"]["run"]["session_cycle"] == 3
+        assert state["o/r#7"]["run"]["rereviews_posted"] == 1
+
+
+class TestStateKeyCasing:
+    """A case-mismatched --repo must not split the shared state (#111 review)."""
+
+    def test_existing_entry_wins_regardless_of_casing(self):
+        state = {"OrenAshkenazy/gh-review-loop#7": {"run": {}}}
+        assert (
+            request_rereview.state_key_for(state, "orenashkenazy/GH-Review-Loop", 7)
+            == "OrenAshkenazy/gh-review-loop#7"
+        )
+
+    def test_literal_key_when_no_entry_exists(self):
+        assert request_rereview.state_key_for({}, "o/r", 7) == "o/r#7"
+
+    def test_a_different_pr_number_is_not_matched(self):
+        state = {"o/r#8": {"run": {}}}
+        assert request_rereview.state_key_for(state, "o/r", 7) == "o/r#7"
+
+    def test_the_stamp_lands_on_the_fetchs_entry(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("GGRL_STATE_DIR", str(tmp_path))
+        (tmp_path / "state.json").write_text(
+            json.dumps({"OrenAshkenazy/gh-review-loop#7": {"run": {"session_cycle": 1}}})
+        )
+        monkeypatch.setattr(
+            request_rereview, "post_rereview",
+            lambda repo, pr, phrase, **kw: {
+                "created_at": CREATED_AT, "repo": repo, "pr": pr,
+                "phrase": phrase, "posted": True,
+            },
+        )
+        assert request_rereview.main([
+            "--repo", "orenashkenazy/GH-Review-Loop", "--pr", "7",
+            "--reviewer-mention", "@codex", "--json",
+        ]) == 0
+        capsys.readouterr()
+        state = json.loads((tmp_path / "state.json").read_text())
+        assert list(state) == ["OrenAshkenazy/gh-review-loop#7"]
+        assert state["OrenAshkenazy/gh-review-loop#7"]["run"]["rereviews_posted"] == 1

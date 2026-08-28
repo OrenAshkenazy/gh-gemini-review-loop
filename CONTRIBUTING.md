@@ -52,6 +52,10 @@ Keep PR titles concise and prefixed with the change type (`fix:`, `feat:`, `chor
 
 `CHANGELOG.md` is human-maintained under `[Unreleased]`. The release workflow does not modify it. When you open a PR, add an entry there too — it pairs with the auto-Release for users who prefer a single file.
 
+## Where docs go (SKILL.md placement rule)
+
+`SKILL.md` is loaded into every session's context — its size is a per-install cost, and it has re-inflated before (#88, #96). New behavior documentation goes in `plugins/gh-review-loop/skills/gh-review-loop/references/<topic>.md`; SKILL.md gets **at most one pointer line** in its load-on-demand table. Inline something in SKILL.md only if the agent needs it *every cycle*. This is enforced by a size-budget ratchet (`tests/test_doc_budgets.py` reading `tests/budgets.json`): if your PR pushes a budgeted file over its cap, CI fails until you either move the material into a reference file or raise the budget in `tests/budgets.json` in the same PR and justify the raise in the PR body.
+
 ## Tests and linting
 
 Local quick check before opening a PR:

@@ -63,19 +63,19 @@ Each repo can have a code-derived verification profile — the checks the verify
 Before `git push` on a non-terminal cycle: run `--cycle-summary` and relay its printed `[loop]` pointer line. For a terminal cycle **that follows a final push**: request re-review, capture `REREVIEW_AT`, wait with `--wait --after "$REREVIEW_AT"`, and set the terminal reviewer-confirmation flag from that wait result before `--record-run`. Terminal paths that publish nothing (already clean, cap reached, human decision, regression, no progress) record directly — no push, re-review, or wait. Enforced mechanically on hook runtimes: `loop_summary_gate.py` blocks `git push` while the summary is stale (exit 2 names the exact fix); `--record-run` is exempt. Violating the letter violates the spirit.
 </HARD-GATE>
 
-Emit one-line status updates at each phase transition (N = session cycle; M/K = re-review cap consumed — always show both):
+Emit one-line status updates at each phase transition. **N** = session cycle: copy it from the script (`[loop] session cycle N`, `loopStatus.sessionCycle`, or the receipt header) — never count it yourself. It exists only after a fetch, so the pre-fetch line omits it. **M/K** = cap consumed.
 
 | Phase | Narration line |
 |---|---|
-| Before fetch | `[loop] session cycle N — re-review cap: M/K consumed. Fetching threads from PR #<num>...` |
-| After fetch | `[loop] session cycle N — <K> actionable thread(s) (severity: <breakdown>). Fixing.` + judge tip/block if due |
+| Before fetch | `[loop] fetching threads from PR #<num>...` (no ordinal yet — the fetch is what reports it) |
+| After fetch | `[loop] session cycle N — re-review cap: M/K consumed. <J> actionable thread(s) (severity: <breakdown>). Fixing.` + judge tip/block if due |
 | After fixes | `[loop] session cycle N — fixes applied. Verifying via profile runner.` |
 | After verify | `[loop] session cycle N — verified (<test summary>).` |
 | Before push | `--cycle-summary` + relay pointer (HARD GATE), then `[loop] session cycle N — committing and pushing <sha>...` |
 | After push | `[loop] session cycle N — pushed. Requesting reviewer re-review. Cap now M/K.` |
 | Reviewer wait | Background task (primary) or chunked heartbeats (fallback) — Workflow step 8 |
 | Stop | `[loop] STOP — <stop-condition>: <one-line explanation>.` |
-| Done | `[loop] DONE — 0 actionable threads remaining. Cycles used: N/<cap>.` + relay the `--record-run` pointer; `remaining_actionable > 0` → `references/terminal-report.md` |
+| Done | `[loop] DONE — 0 actionable threads remaining. Cycles used: M/K.` (cap consumption, not N — a clean PR ends at `0/K`) + relay the `--record-run` pointer; `remaining_actionable > 0` → `references/terminal-report.md` |
 
 Skip narration only in pure non-interactive batch mode. User stepping away → pair with `--sticky-receipt`.
 
@@ -98,7 +98,7 @@ At the cap still run cleanup, terminal classification, metrics recording, and th
 5. **Check loop status** — count prior agent re-review requests; at or above the cap → Stopping Conditions.
 6. **Fetch, acknowledge, classify.** Default fetch (below). Summarize actionable findings grouped by file/behavior; none → report clean and stop. First run for the repo → profile decision NOW, before any edit (see Verification Profile), then relay the profile intro. Explanation requests get a reply draft, not a forced edit; conflicts or regression risk → stop and surface the tradeoff.
 7. **Fix + verify.** Scoped to feedback; read before editing; each change traceable to a feedback cluster; sweep per Pattern → Sweep → Converge. Verify via the profile runner; checks can't run → report why.
-8. **Commit, push, re-review, wait, record.** Commit; `--cycle-summary` + relay pointer; push. Within the cap, post the re-review via `request_rereview.py --repo OWNER/REPO --pr N --json` (never hand-write the trigger; `status: no_safe_trigger` → stop and relay exactly), capturing `created_at` as `REREVIEW_AT`. Then wait — primary (runtimes with background-task completion notifications, e.g. Claude Code): a **background** Bash task, one turn per wait:
+8. **Commit, push, re-review, wait, record.** Commit; `--cycle-summary` + relay pointer; push. Within the cap, post the re-review via `request_rereview.py --repo OWNER/REPO --pr N --json` (never hand-write the trigger — it also stamps the cycle boundary, so a hand-written ping leaves the ordinal stuck; `status: no_safe_trigger` → stop and relay exactly), capturing `created_at` as `REREVIEW_AT`. Then wait — primary (runtimes with background-task completion notifications, e.g. Claude Code): a **background** Bash task, one turn per wait:
    ```bash
    python3 "$GGRL_PLUGIN_ROOT/skills/gh-review-loop/scripts/fetch_gemini_threads.py" \
      --wait --after "$REREVIEW_AT" --timeout 1800

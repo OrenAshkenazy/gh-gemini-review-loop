@@ -1280,12 +1280,24 @@ def resolve_reviewer_selection(args: argparse.Namespace, pr: PullRequest) -> dic
     return state
 
 
-def update_run_tracking(pr: PullRequest, findings: list[tuple[str, str | None]]) -> None:
+def update_run_tracking(
+    pr: PullRequest,
+    findings: list[tuple[str, str | None]],
+    *,
+    bump_session_cycle: bool = True,
+) -> None:
     """Merge this invocation's findings into the run's tracking state.
 
     ``findings`` is a list of (thread_id, path) pairs. Sets ``started_at`` on
     the first call of a run; unions ids/paths on every call. Stored under the
     existing ``owner/repo#number`` key so it rides alongside sticky state.
+    ``bump_session_cycle=False`` (the --cycle-summary path) keeps the
+    session-cycle ordinal frozen: a read-only summary re-run must not start a
+    new cycle.
+
+    The session-cycle ordinal advances on evidence that the previous cycle
+    actually *transitioned* (pushed and asked for a re-review), not merely
+    that it emitted a summary — see the rules below.
     """
     state = load_sticky_state()
     key = _state_key(pr)
@@ -1296,7 +1308,48 @@ def update_run_tracking(pr: PullRequest, findings: list[tuple[str, str | None]])
     # Monotonic counter bumped on every fetch. The loop's Stop-hook backstop
     # compares it against last_summary_seq to tell whether the run advanced
     # since the agent last emitted a summary (see summary_is_stale).
-    run["update_seq"] = _safe_int(run.get("update_seq", 0)) + 1
+    prev_seq = _safe_int(run.get("update_seq", 0))
+    run["update_seq"] = prev_seq + 1
+    # Script-owned session-cycle ordinal (#104): 1 on the run's first fetch,
+    # +1 only once the previous cycle has demonstrably ENDED. Narration copies
+    # this number; the model must never compute it — model-tracked counters
+    # drift across context compaction.
+    #
+    # A cycle ends when it emitted its summary AND transitioned through a new
+    # re-review request. The re-review count is the transition evidence: a
+    # session interrupted after `--cycle-summary` but before the push/re-review
+    # resumes with a `--full` recovery fetch, which is still *finishing the
+    # same cycle*. Treating the summary alone as the boundary mislabeled that
+    # fetch (and every later narration line and metric) as a new cycle (#111
+    # review). Summary staleness is deliberately NOT part of this test: a
+    # recovery fetch advances update_seq past last_summary_seq, which would
+    # then block the legitimate bump for the rest of the run.
+    # Transition evidence is LOCAL: `request_rereview.py` bumps
+    # `rereviews_posted` exactly once per request it actually posts. Deriving
+    # it from the PR's comments failed three different ways (#111 review) —
+    # `comments(last:100)` makes the count non-monotonic on busy PRs, the
+    # all-user fallback count leaks other people's pings when the agent login
+    # cannot be resolved, and PR history outlives `clear_run_tracking()`.
+    #
+    # The summary is CONSUMED when it advances a cycle. `last_summary_seq > 0`
+    # was a permanently-true flag once any summary had been emitted, so a
+    # second re-review arriving before the new cycle wrote its own summary
+    # advanced the ordinal twice off one stale summary (#111 review).
+    posted = _safe_int(run.get("rereviews_posted", 0))
+    posted_baseline = _safe_int(run.get("rereviews_posted_at_cycle_start", 0))
+    summary_seq = _safe_int(run.get("last_summary_seq", 0))
+    summary_consumed = _safe_int(run.get("summary_consumed_seq", 0))
+    if "session_cycle" not in run:
+        run["session_cycle"] = 1
+        run["rereviews_posted_at_cycle_start"] = posted
+    elif (
+        bump_session_cycle
+        and summary_seq > summary_consumed
+        and posted > posted_baseline
+    ):
+        run["session_cycle"] = _safe_int(run.get("session_cycle")) + 1
+        run["rereviews_posted_at_cycle_start"] = posted
+        run["summary_consumed_seq"] = summary_seq
     ids = set(run.get("finding_ids", []))
     paths = set(run.get("finding_paths", []))
     for thread_id, path in findings:
@@ -1430,7 +1483,8 @@ def clear_wait_state(pr: PullRequest) -> None:
 
 
 WAIT_FIRST_CHUNK_SECONDS = 60
-WAIT_LATER_CHUNK_SECONDS = 300
+WAIT_SECOND_CHUNK_SECONDS = 300
+WAIT_LATER_CHUNK_SECONDS = 900
 
 # Cadence of the one-line liveness heartbeat a blocking --wait writes to
 # stderr while polling — the signal a user inspects when the wait runs as a
@@ -1472,14 +1526,27 @@ def wait_elapsed_seconds(
 
 
 def suggested_next_wait_seconds(checks: int) -> int:
-    """Decay schedule: 60s for the first chunk, 300s after.
+    """Duration for the NEXT chunk, given how many chunks have already run.
 
-    Chunked waits are the fallback for runtimes without background-task
-    completion notifications; every chunk costs a full agent turn. One early
-    heartbeat shows the loop is alive, then chunks stretch to 300s so a long
-    reviewer wait costs O(minutes/5) turns instead of O(minutes).
+    Schedule: 60s → 300s → 900s. Chunked waits are the fallback for runtimes
+    without background-task completion notifications; every chunk costs a full
+    agent turn. One early heartbeat shows the loop is alive, one mid-length
+    chunk catches fast reviewers, then chunks stretch to 900s so a 30-minute
+    reviewer wait costs ~4 turns instead of ~8 (#102). Tradeoff: staler
+    liveness signal late in a long wait.
+
+    ``checks`` follows the persisted counter in ``begin_wait_chunk``, which
+    increments at the START of each chunk — so at the end of the first chunk
+    ``checks == 1``. That chunk has already served the 60s heartbeat, so the
+    next one is 300s. Reading ``checks <= 1`` as "still the first chunk"
+    silently produced 60s → 60s → 300s → 900s and burned an extra turn on
+    every long wait (#111 review).
     """
-    return WAIT_FIRST_CHUNK_SECONDS if checks <= 1 else WAIT_LATER_CHUNK_SECONDS
+    if checks <= 0:
+        return WAIT_FIRST_CHUNK_SECONDS
+    if checks == 1:
+        return WAIT_SECOND_CHUNK_SECONDS
+    return WAIT_LATER_CHUNK_SECONDS
 
 
 def _latest_submitted_after(
@@ -3495,7 +3562,11 @@ def main() -> int:
         threads = sort_by_severity(threads)
         if not args.record_run and not args.stats:
             try:
-                update_run_tracking(pr, [(t["id"], t.get("path", "")) for t in threads])
+                update_run_tracking(
+                    pr,
+                    [(t["id"], t.get("path", "")) for t in threads],
+                    bump_session_cycle=not args.cycle_summary,
+                )
             except OSError as exc:
                 print(f"warning: could not update run tracking: {exc}", file=sys.stderr)
         if args.min_severity or args.drop_unknown_severity:
@@ -3652,7 +3723,11 @@ def main() -> int:
                 # per-fetch tracking above; --cycle-summary just reads what that
                 # path already accumulated this cycle.
                 if args.record_run:
-                    update_run_tracking(pr, [(t["id"], t.get("path", "")) for t in threads])
+                    update_run_tracking(
+                        pr,
+                        [(t["id"], t.get("path", "")) for t in threads],
+                        bump_session_cycle=False,
+                    )
                 run = read_run_tracking(pr)
             except OSError as exc:
                 print(f"warning: could not update or read run tracking: {exc}", file=sys.stderr)
@@ -3749,6 +3824,7 @@ def main() -> int:
                 verification_details=verification_details,
                 outcome=outcome,
                 outcome_reason=args.outcome_reason or f"outcome: {outcome}",
+                session_cycle=_safe_int(run.get("session_cycle")) or None,
                 started_at=run.get("started_at"),
                 finding_paths=finding_paths,
                 judge=metrics.build_judge_block(judge_ran, merged_judge_results),
@@ -4002,6 +4078,11 @@ def main() -> int:
                     },
                     "reviewerSelection": reviewer_selection,
                     "loopStatus": {
+                        # Script-owned narration ordinal (#104): copy it into
+                        # "session cycle N" lines; never model-compute it.
+                        "sessionCycle": _safe_int(
+                            read_run_tracking(pr).get("session_cycle")
+                        ) or None,
                         "reReviewRequests": len(rereviews),
                         "reReviewLimit": args.max_rereview_requests,
                         "limitReached": len(rereviews) >= args.max_rereview_requests,
@@ -4032,6 +4113,16 @@ def main() -> int:
             )
         )
     else:
+        # Script-owned narration ordinal (#104): the agent copies this N into
+        # its "session cycle N" lines instead of tracking a counter that
+        # drifts across context compaction.
+        session_cycle_n = _safe_int(read_run_tracking(pr).get("session_cycle"))
+        if session_cycle_n:
+            print(
+                color_loop_block(
+                    f"[loop] session cycle {session_cycle_n}", enabled=color_enabled
+                )
+            )
         print(
             render_markdown(
                 pull_request,

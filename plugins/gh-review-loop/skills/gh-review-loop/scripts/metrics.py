@@ -444,6 +444,11 @@ def format_compact_receipt_line(
     carried over)" on a clean terminal run.
     """
     header = "[loop] Summary" if terminal else "[loop] Cycle receipt"
+    # Script-owned session-cycle ordinal (#104): narration copies this value
+    # instead of model-tracking a counter that drifts across compaction.
+    session_cycle = _count(record.get("session_cycle"))
+    if session_cycle:
+        header += f" (session cycle {session_cycle})"
     parts = [
         f"findings {_count(record.get('findings_fetched'))} seen this run",
         f"{'fixed' if terminal else 'fixed locally'} {_count(record.get('fixed_count'))}",
@@ -579,6 +584,9 @@ def format_run_summary(record: dict[str, Any], *, terminal: bool = True) -> str:
     per-cycle snapshots from the final terminal receipt.
     """
     header = "[loop] Summary" if terminal else "[loop] Cycle receipt"
+    session_cycle = _count(record.get("session_cycle"))
+    if session_cycle:
+        header += f" (session cycle {session_cycle})"
     fixed_label = "Fixed" if terminal else "Fixed locally"
     lines = [
         header,
@@ -946,6 +954,7 @@ def build_record(
     verification_details: dict[str, Any] | None,
     outcome: str,
     outcome_reason: str,
+    session_cycle: int | None = None,
     started_at: str | None,
     finding_paths: list[str],
     judge: dict[str, Any] | None,
@@ -981,6 +990,7 @@ def build_record(
         "verification_details": verification_details or {},
         "outcome": outcome,
         "outcome_reason": outcome_reason,
+        "session_cycle": session_cycle,
         "started_at": started_at,
         "duration_seconds": duration,
         # Per-cycle active-work timing (excludes waits/idle). Empty on legacy
