@@ -251,8 +251,13 @@ def _anchored_tokens(thread: Any, root: Path) -> set[str]:
         or end < start
     ):
         return set()
+    # Same containment rule as the sweep: the path comes from a PR thread,
+    # which is untrusted. A symlink or ../ escape yields no tokens rather than
+    # tokens from a file the diff never touched.
+    target = sweep_siblings._contained_path(root, path)
+    if target is None:
+        return set()
     try:
-        target = root / path
         if target.stat().st_size > sweep_siblings.MAX_FILE_BYTES:
             return set()
         lines = target.read_text(encoding="utf-8", errors="replace").splitlines()

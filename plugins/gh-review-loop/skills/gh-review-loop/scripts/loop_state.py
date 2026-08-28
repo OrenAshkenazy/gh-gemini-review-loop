@@ -61,7 +61,10 @@ def state_dir() -> Path:
         return Path(env)
     new = _config_root() / STATE_DIR_NAME
     legacy = _config_root() / LEGACY_STATE_DIR_NAME
-    if new.exists() or not legacy.exists():
+    # is_dir(), not exists(): a stray *file* at the new path must not shadow
+    # a legacy directory full of user data, and mkdir(exist_ok=True) would
+    # crash on it anyway (exist_ok does not cover non-directories).
+    if new.is_dir() or not legacy.is_dir():
         return new
     return legacy
 
