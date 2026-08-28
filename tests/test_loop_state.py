@@ -547,3 +547,20 @@ class TestHooksJsonGuard:
         """statusMessage rendered on every matching tool call in every project;
         the fix removes it outright (#83)."""
         assert "statusMessage" not in HOOKS_JSON.read_text()
+
+
+def test_a_stray_file_at_the_new_path_does_not_shadow_legacy_data(tmp_path, monkeypatch):
+    """A file named gh-review-loop must not win resolution over a legacy dir.
+
+    exists() is true for files, so the old check routed every read to a path
+    that cannot hold state and every write into an uncaught FileExistsError,
+    while the user's real data sat untouched in the legacy directory.
+    """
+    monkeypatch.delenv("GGRL_STATE_DIR", raising=False)
+    monkeypatch.setattr(loop_state, "_config_root", lambda: tmp_path)
+    legacy = tmp_path / loop_state.LEGACY_STATE_DIR_NAME
+    legacy.mkdir()
+    (legacy / "preferences.json").write_text("{}")
+    (tmp_path / loop_state.STATE_DIR_NAME).write_text("not a directory")
+
+    assert loop_state.state_dir() == legacy

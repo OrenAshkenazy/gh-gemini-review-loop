@@ -431,3 +431,38 @@ class TestShapeMerging:
         assert cluster_findings._anchored_tokens(thread, repo) == (
             sweep_siblings.tokenize('conn = psycopg2.connect(dsn, sslmode="require")')
         )
+
+
+class TestAnchoredTokenContainment:
+    """The anchor path comes from a PR thread, which is untrusted.
+
+    The sweep already refuses symlinks and ../ escapes via _contained_path;
+    shape clustering reads the same untrusted paths and must apply the same
+    rule, or a crafted thread anchor leaks tokens from files the diff never
+    touched into the merge decision.
+    """
+
+    @staticmethod
+    def _thread(path, line, body="finding"):
+        return {"path": path, "line": line,
+                "comments": {"nodes": [{"author": {"login": "bot"}, "body": body}]}}
+
+    def test_a_symlinked_anchor_yields_no_tokens(self, tmp_path):
+        outside = tmp_path / "outside.py"
+        outside.write_text("secret_token_alpha = beta_gamma_delta()\n")
+        root = tmp_path / "repo"
+        root.mkdir()
+        (root / "link.py").symlink_to(outside)
+
+        threads = [self._thread("link.py", 1), self._thread("link.py", 1)]
+        clusters = cluster_findings.cluster(threads, root=root)
+        assert all(not c.signature.startswith("shape:") for c in clusters)
+
+    def test_a_dotdot_anchor_yields_no_tokens(self, tmp_path):
+        (tmp_path / "outside.py").write_text("secret_token_alpha = beta_gamma_delta()\n")
+        root = tmp_path / "repo"
+        root.mkdir()
+
+        threads = [self._thread("../outside.py", 1), self._thread("../outside.py", 1)]
+        clusters = cluster_findings.cluster(threads, root=root)
+        assert all(not c.signature.startswith("shape:") for c in clusters)

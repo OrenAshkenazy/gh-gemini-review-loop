@@ -77,6 +77,7 @@ If you're comparing alternatives, the closest is [pbakaus/agent-reviews](https:/
 `--list-reviewers` discovers which bots have commented on your PR; `--reviewer` persists your choice per PR.
 
 **Severity caveat, stated plainly:** only two marker conventions are parsed today — Codex's `![P0]`–`![P3]` and the `![critical]`–`![low]` alt-text form Gemini uses. For any other bot every finding is `unknown`, so `--min-severity high` keeps everything and `--drop-unknown-severity` drops everything. Use severity filtering only with a bot whose format is parsed.
+
 ## Why this exists
 
 Bot reviewers expand. You fix the two instances of a pattern it flagged, push, and the next review flags three more in files it hadn't reached yet. Round three finds two more. Each round costs you a context switch, and the bot never tells you it's converging.
